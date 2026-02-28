@@ -53,7 +53,7 @@ public:
 		}
 		cb.Upload();
 		camera->Animate(dt);
-		perFrameCb->viewProjTransform =
+		perFrameCb->viewProjMat =
 			camera->GetViewMatrix() * 
 			camera->GetProjMatrix();
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix();

@@ -12,7 +12,18 @@ LRESULT CALLBACK WindowProcess(HWND windowHandle, UINT message, WPARAM wParam, L
 		app->Destroy(); // make sure to clean up our resources before exiting
         PostQuitMessage(0); // PostQuitMessage tells Windows to post WM_QUIT, which will break our message loop
         return 0;
-    } // TODO: resize?
+	case WM_SIZE: // WM_SIZE is sent when the window is resized
+        if (app) {
+			int height = HIWORD(lParam); // the new height is stored in the high word of lParam
+			int width = LOWORD(lParam); // the new width is stored in the low word of lParam
+			app->Resize(width, height); // forward the new size to our app so it can resize its resources (e.g. swap chain)
+        }
+        break;
+    } 
+    // Forward all messages to the app so the camera can process keyboard/mouse input
+    if (app) {
+        app->ProcessMessage(windowHandle, message, wParam, lParam);
+    }
     return DefWindowProcW(windowHandle, message, wParam, lParam); // for other messages: default behavior (mostly nothing)
 }
 

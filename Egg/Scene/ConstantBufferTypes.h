@@ -8,7 +8,7 @@ __declspec(align(16)) struct PerObjectCb {
 };
 
 __declspec(align(16)) struct PerFrameCb {
-	Egg::Math::Float4x4 viewProjTransform;
+	Egg::Math::Float4x4 viewProjMat;
 	Egg::Math::Float4x4 rayDirTransform;
 	Egg::Math::Float4 cameraPos;
 	Egg::Math::Float4 lightPos;

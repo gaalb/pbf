@@ -37,7 +37,7 @@ public:
 		cb->modelTransform = Float4x4::Translation(Float3{ 0.0f, 0.0f, -0.5f }) * rotation * Float4x4::Translation(Float3{ 0.0f, 0.0f, 0.5f });
 		cb.Upload();
 		camera->Animate(dt);
-		perFrameCb->viewProjTransform =
+		perFrameCb->viewProjMat =
 			camera->GetViewMatrix() * 
 			camera->GetProjMatrix();
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix();

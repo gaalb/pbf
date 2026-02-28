@@ -9,6 +9,6 @@ __declspec(align(16)) struct PerObjectCb {
 };
 
 __declspec(align(16)) struct PerFrameCb {
-	Float4x4 viewProjTransform;
+	Float4x4 viewProjMat;
 	Float4x4 rayDirTransform;
 };

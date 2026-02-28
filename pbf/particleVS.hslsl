@@ -1,0 +1,4 @@
+// Root signature: defines what resources the shaders can access
+// ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT: we're sending vertex data from CPU
+// CBV(b0): one constant buffer at register b0 (our per-frame camera matrices)
+#define RootSig "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), CBV(b0)"

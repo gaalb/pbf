@@ -1,6 +1,10 @@
 #pragma once
 
 #include <Egg/SimpleApp.h>
+#include "ConstantBufferTypes.h"
+#include <Egg/Cam/FirstPerson.h>
+#include <Egg/ConstantBuffer.hpp>
+
 
 // SimpleApp gives us:
 // command allocator and command list for recording GPU commands
@@ -10,6 +14,9 @@
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
+	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
+	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
+
 	// this is the method we must implement from SimpleApp, Render() calls it,
 	// this is where we record all GPU commands to construct one frame
 	virtual void PopulateCommandList() override {
@@ -64,6 +71,35 @@ protected:
 	}
 
 	virtual void Update(float dt, float T) override {
-		// TODO: camera and simulation
+		camera->Animate(dt); // update camera position and orientation based on user input
+		perFrameCb->viewProjMat = // calculate the combined view-projection matrix and store it in the constant buffer
+			camera->GetViewMatrix() * // view matrix: world space -> camera space
+			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
+		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
+		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
+	}
+
+public:
+	virtual void CreateResources() override {
+		Egg::SimpleApp::CreateResources(); // ccreates command allocator, command list, PSO manager, and sync objects (fence)
+		perFrameCb.CreateResources(device.Get()); // Create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
+		camera = Egg::Cam::FirstPerson::Create();
+	}
+
+	virtual void LoadAssets() override {
+		// TODO
+	}
+
+	// When the window is resized, update the camera's aspect ratio
+	virtual void CreateSwapChainResources() override {
+		Egg::SimpleApp::CreateSwapChainResources();
+		if (camera) {
+			camera->SetAspect(aspectRatio);
+		}
+	}
+
+	// Forward window messages (keyboard, mouse) to the camera
+	virtual void ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override {
+		camera->ProcessMessage(hWnd, uMsg, wParam, lParam);
 	}
 };

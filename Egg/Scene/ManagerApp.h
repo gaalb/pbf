@@ -131,7 +131,7 @@ namespace Egg {
 				auto camera = cameras[currentCameraIndex];
 				camera->Animate(dt);
 
-				perFrameCb->viewProjTransform =
+				perFrameCb->viewProjMat =
 					camera->GetViewMatrix() *
 					camera->GetProjMatrix();
 				perFrameCb->rayDirTransform = camera->GetRayDirMatrix();
