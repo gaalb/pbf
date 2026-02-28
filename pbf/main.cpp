@@ -1,14 +1,18 @@
 #include "Egg/Common.h"
 #include <Egg/App.h>
 #include <Egg/Utility.h>
+#include "PbfApp.h"
+
+std::unique_ptr<Egg::App> app{ nullptr };
 
 // callback function we'll register to the window for handling messages
 LRESULT CALLBACK WindowProcess(HWND windowHandle, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_DESTROY:// WM_DESTROY is sent when the user clicks the X button        
+		app->Destroy(); // make sure to clean up our resources before exiting
         PostQuitMessage(0); // PostQuitMessage tells Windows to post WM_QUIT, which will break our message loop
         return 0;
-    }
+    } // TODO: resize?
     return DefWindowProcW(windowHandle, message, wParam, lParam); // for other messages: default behavior (mostly nothing)
 }
 
@@ -128,6 +132,19 @@ int APIENTRY wWinMain(
     DX_API("Failed to make window association")
         dxgiFactory->MakeWindowAssociation(windowHandle, DXGI_MWA_NO_ALT_ENTER);
 
+	app = std::make_unique<PbfApp>(); // create our application instance, which will manage the rendering loop and resources
+    // set attributes
+    app->SetDevice(device);
+    app->SetCommandQueue(commandQueue);
+    app->SetSwapChain(swapChain);
+    
+	// create and load resources, ordering is important here: some resources depend on others being created first
+    app->CreateResources(); // creates fence, command allocator, command list
+    app->CreateSwapChainResources(); // creates render target views and depth buffer
+    app->LoadAssets();  // we'll load shaders and geometry here later
+
+
+
     ShowWindow(windowHandle, nShowCmd); // make the window visible — nShowCmd controls if it's normal/minimized/etc.
 
     // message loop: Windows communicates with our app by putting messages into a queue
@@ -138,6 +155,9 @@ int APIENTRY wWinMain(
         if (PeekMessage(&winMessage, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&winMessage);  // translates virtual-key messages into character messages
             DispatchMessage(&winMessage);   // sends the message to our WindowProcess callback
+        } else {
+            // No messages waiting — this is where we update and render each frame
+            app->Run();
         }
         
     }
