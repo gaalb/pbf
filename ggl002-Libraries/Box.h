@@ -44,7 +44,7 @@ public:
 	}
 
 	void Draw(ID3D12GraphicsCommandList * commandList) {
-		shadedMesh->GetMaterial()->SetConstantBuffer(cons);
+		shadedMesh->GetMaterial()->SetConstantBuffer(constantBuffer);
 		shadedMesh->Draw(commandList);
 	}
 
