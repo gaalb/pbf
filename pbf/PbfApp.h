@@ -4,6 +4,9 @@
 #include "ConstantBufferTypes.h"
 #include <Egg/Cam/FirstPerson.h>
 #include <Egg/ConstantBuffer.hpp>
+#include <Egg/TextureCube.h>
+#include <Egg/Importer.h>
+#include <Egg/Mesh/Prefabs.h>
 
 
 // SimpleApp gives us:
@@ -18,6 +21,38 @@ protected:
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
 
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
+
+	Egg::Mesh::Shaded::P backgroundMesh;   // fullscreen quad + cubemap shader
+	Egg::TextureCube envTexture;            // the cubemap texture
+	com_ptr<ID3D12DescriptorHeap> srvHeap;  // descriptor heap for shader-visible textures
+
+	// uploads textures from CPU to GPU. Must be called after importing textures.
+	// similar to a render call: resets command list, records copy commands, executes, waits.
+	void UploadResources() {
+		// free the memory used by the previous frame's commands, must be done after GPU finished executing those commands
+		DX_API("Failed to reset command allocator (UploadResources)")
+			commandAllocator->Reset(); 
+		
+		// reset command list to start recording copy commands, no initial pipeline state needed for copy commands
+		DX_API("Failed to reset command list (UploadResources)")
+			commandList->Reset(commandAllocator.Get(), nullptr); 
+
+		// record the copy commands that transfer texture data from upload heap to default heap
+		envTexture.UploadResource(commandList.Get());
+
+		DX_API("Failed to close command list (UploadResources)")
+			commandList->Close();
+
+		// execute the copy commands
+		ID3D12CommandList* commandLists[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+
+		// wait for the GPU to finish copying before we release the upload buffers
+		WaitForPreviousFrame();
+
+		// the upload heap copies are done — we can free the temporary upload resources
+		envTexture.ReleaseUploadResources();
+	}
 
 	// this is the method we must implement from SimpleApp, Render() calls it,
 	// this is where we record all GPU commands to construct one frame
@@ -61,7 +96,8 @@ protected:
 		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
 		// draw commands here
-		particleMesh->Draw(commandList.Get()); // 
+		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
+		particleMesh->Draw(commandList.Get()); // draw particles on top
 
 		//tTransition the back buffer back to "present" state so the swap chain can display it
 		commandList->ResourceBarrier(1, // number of barriers
@@ -77,21 +113,72 @@ protected:
 
 	virtual void Update(float dt, float T) override {
 		camera->Animate(dt); // update camera position and orientation based on user input
-		perFrameCb->viewProjMat = // calculate the combined view-projection matrix and store it in the constant buffer
+		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
 			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
+		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
 
 public:
 	virtual void CreateResources() override {
-		Egg::SimpleApp::CreateResources(); // ccreates command allocator, command list, PSO manager, and sync objects (fence)
-		perFrameCb.CreateResources(device.Get()); // Create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
-		camera = Egg::Cam::FirstPerson::Create();
+		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
+		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
+		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+
+		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
+		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
+		// live in a descriptor heap, which has to be big enough to hold a descriptor for each of our resources, one of
+		// which is the cube map texture.
+		D3D12_DESCRIPTOR_HEAP_DESC dhd;
+		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
+		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
+		dhd.NumDescriptors = 1; // we've only got 1 texture for now
+		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // constant buffer / shader resource / unordered access views
+
+		DX_API("Failed to create SRV descriptor heap")
+			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf())); // pointer to heap in srvHeap
 	}
 
+
 	virtual void LoadAssets() override {
+		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube:
+		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
+		// 2. the upload heap resource, which the CPU can write to, and is used for staging
+		// the texture data is also copied to the upload heap by this function call, but not yet transferred to
+		// the default heap until we call UploadResources(), as this step requires the command queue
+		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
+		// create a Shader Resource View so the pixel shader can sample the cubemap
+		// note that this is different from the SRV heap that we created earlier, this SRV fills one slot
+		// in the SRV heap, specifically, slot (index) 0
+		envTexture.CreateSRV(device.Get(), srvHeap.Get(), 0);
+		// transfer texture data from upload heap to GPU-local memory
+		UploadResources();
+
+		// loadCso reads the pre-compiled .cso binary into a blob
+		com_ptr<ID3DBlob> bgVertexShader = Egg::Shader::LoadCso("Shaders/bgVS.cso"); // vertex shader
+		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
+		com_ptr<ID3D12RootSignature> bgRootSig = Egg::Shader::LoadRootSignature(device.Get(), bgVertexShader.Get());
+
+		Egg::Mesh::Material::P bgMaterial = Egg::Mesh::Material::Create();
+		bgMaterial->SetRootSignature(bgRootSig);
+		bgMaterial->SetVertexShader(bgVertexShader);
+		bgMaterial->SetPixelShader(bgPixelShader);
+		// enable depth testing — the background writes z=0.999999, so particles (closer) will draw in front
+		bgMaterial->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
+		bgMaterial->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
+		// bind the per-frame constant buffer (root parameter 0)
+		bgMaterial->SetConstantBuffer(perFrameCb);
+		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
+		bgMaterial->SetSrvHeap(1, srvHeap, 0);
+
+		// The fullscreen quad from Egg's prefab library — 2 triangles covering the entire screen
+		Egg::Mesh::Geometry::P bgGeometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
+
+		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
+
+
 		// generate test particle positions:  create a small cube of particles so we can see something on screen
 		std::vector<Egg::Math::Float3> positions;
 		int gridSize = 10; // 10x10x10 = 1000 particles

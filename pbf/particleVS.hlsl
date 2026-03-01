@@ -20,6 +20,7 @@ struct VSOutput
 cbuffer PerFrameCb : register(b0)
 {
     float4x4 viewProjMat; // combined view * projection matrix
+    float4x4 rayDirMat; // maps screen-space positions to world-space ray directions
     float4 cameraPos; // camera position in world space
 };
 
