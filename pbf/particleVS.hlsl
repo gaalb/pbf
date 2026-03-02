@@ -1,36 +1,22 @@
-// root signature: defines what resources the shaders can access
-// ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT: we're sending vertex data from CPU
-// CBV(b0): one constant buffer at register b0 (our per-frame camera matrices)
-#define RootSig "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), CBV(b0)"
+// Root signature shared by VS, GS, and PS
+// CBV(b0): per-frame constant buffer
+#define ParticleRootSig "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), CBV(b0)"
 
-// input from the vertex buffer — each particle is just a position
 struct IAOutput
 {
-    float3 position : POSITION;
+    float3 position : POSITION; // the world position of the vertex
 };
 
-// output to the pixel shader
+// VS just passes the world-space position to the geometry shader
 struct VSOutput
 {
-    float4 position : SV_Position; // clip space pos system-value semantic for rasterization
-    float4 color : COLOR; // we'll pass a color to the pixel shader
+    float3 worldPos : WORLDPOS; // the world position of the vertex, passed to GS for billboard generation
 };
 
-// per-frame data uploaded from CPU every frame
-cbuffer PerFrameCb : register(b0)
-{
-    float4x4 viewProjMat; // combined view * projection matrix
-    float4x4 rayDirMat; // maps screen-space positions to world-space ray directions
-    float4 cameraPos; // camera position in world space
-};
-
-[RootSignature(RootSig)]
+[RootSignature(ParticleRootSig)]
 VSOutput main(IAOutput input)
 {
     VSOutput output;
-    // transform the particle's world-space position to clip space
-    output.position = mul(viewProjMat, float4(input.position, 1.0f));
-    // simple red color for now
-    output.color = float4(1.0f, 0.0f, 0.0f, 1.0f);
+    output.worldPos = input.position;
     return output;
 }

@@ -31,6 +31,8 @@ cbuffer PerFrameCb : register(b0)
     float4x4 viewProjMat; // world space -> clip space  (view * projection)
     float4x4 rayDirMat; // NDC -> world space direction  (inverse of view-rotation * projection)
     float4 cameraPos; // camera position in world space
+    float4 lightDir; // must be here to match C++ layout
+    float4 particleParams; // must be here to match C++ layout
 };
 
 [RootSignature(BgRootSig)]

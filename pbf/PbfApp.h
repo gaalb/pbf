@@ -118,6 +118,9 @@ protected:
 			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
+		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
+		perFrameCb->particleParams = Egg::Math::Float4(0.9f, 0.1f, 0.7f, 0.08f); // x: particle radius 
+
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
 
@@ -178,7 +181,6 @@ public:
 
 		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
 
-
 		// generate test particle positions:  create a small cube of particles so we can see something on screen
 		std::vector<Egg::Math::Float3> positions;
 		int gridSize = 10; // 10x10x10 = 1000 particles
@@ -198,9 +200,9 @@ public:
 		}
 
 		// loadCso reads the pre-compiled .cso binary into a blob
-		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso"); // vertex shader
-		com_ptr<ID3DBlob> pixelShader = Egg::Shader::LoadCso("Shaders/particlePS.cso"); // pixel shader
-
+		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
+		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
+		com_ptr<ID3DBlob> pixelShader = Egg::Shader::LoadCso("Shaders/particlePS.cso");
 		// extract the root signature from the vertex shader
 		// the [RootSignature(...)] attribute we defined in the HLSL gets embedded in the compiled blob
 		com_ptr<ID3D12RootSignature> rootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
@@ -209,6 +211,7 @@ public:
 		Egg::Mesh::Material::P material = Egg::Mesh::Material::Create();
 		material->SetRootSignature(rootSig); 
 		material->SetVertexShader(vertexShader);
+		material->SetGeometryShader(geometryShader); // expand points into quads on the GPU
 		material->SetPixelShader(pixelShader);
 		// enable depth testing so particles occlude each other correctly
 		material->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));

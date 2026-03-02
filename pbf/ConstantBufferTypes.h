@@ -9,5 +9,7 @@ using namespace Egg::Math;
 __declspec(align(16)) struct PerFrameCb {
 	Float4x4 viewProjTransform; // combined view * projection matrix
 	Float4x4 rayDirTransform; // maps screen-space positions to world-space ray directions
-	Float4 cameraPos; // camera position in world space
+	Float4 cameraPos; // camera position in world space, w=1
+	Float4 lightDir; // xyz = direction toward light, w = unused
+	Float4 particleParams; // xyz are color, w is radius
 };
