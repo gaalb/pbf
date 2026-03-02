@@ -29,6 +29,9 @@
     <ClInclude Include="ConstantBufferTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ParticleTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="particleVS.hlsl">
@@ -46,5 +49,10 @@
     <FxCompile Include="particlePS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Particle.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

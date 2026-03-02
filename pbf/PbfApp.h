@@ -2,6 +2,7 @@
 
 #include <Egg/SimpleApp.h>
 #include "ConstantBufferTypes.h"
+#include "ParticleTypes.h"
 #include <Egg/Cam/FirstPerson.h>
 #include <Egg/ConstantBuffer.hpp>
 #include <Egg/TextureCube.h>
@@ -40,7 +41,7 @@ private:
 		bgMaterial->SetRootSignature(bgRootSig);
 		bgMaterial->SetVertexShader(bgVertexShader);
 		bgMaterial->SetPixelShader(bgPixelShader);
-		// enable depth testing — the background writes z=0.999999, so particles (closer) will draw in front
+		// enable depth testing - the background writes z=0.999999, so particles (closer) will draw in front
 		bgMaterial->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
 		bgMaterial->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// bind the per-frame constant buffer (root parameter 0)
@@ -48,35 +49,91 @@ private:
 		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
 		bgMaterial->SetSrvHeap(1, srvHeap, 0);
 
-		// The fullscreen quad from Egg's prefab library — 2 triangles covering the entire screen
+		// The fullscreen quad from Egg's prefab library - 2 triangles covering the entire screen
 		Egg::Mesh::Geometry::P bgGeometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
 
 		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
 	}
 
-	std::vector<Egg::Math::Float3> GenerateParticlePositions() {
+	std::vector<Particle> GenerateParticles() {
 		// create a small cube of particles so we can see something on screen
-		std::vector<Egg::Math::Float3> positions;
-		int gridSize = 10; // 10x10x10 = 1000 particles
-		float spacing = 0.2f;  // distance between particles
-		float offset = -(gridSize * spacing) / 2.0f; // center the cube around the origin
+		std::vector<Particle> particles;
+		float spacing = 0.2f; // distance between particles in world space
+		float offset = -(gridSize * spacing) / 2.0f; // shift so the cube is centered at the origin
 
 		for (int x = 0; x < gridSize; x++) {
 			for (int y = 0; y < gridSize; y++) {
 				for (int z = 0; z < gridSize; z++) {
-					positions.push_back(Egg::Math::Float3(
+					Particle p;
+					p.position = Egg::Math::Float3(
 						offset + x * spacing,
 						offset + y * spacing,
-						offset + z * spacing
-					));
+						offset + z * spacing);
+					p.velocity = Egg::Math::Float3(0.0f, 0.0f, 0.0f); // start at rest
+					particles.push_back(p);
 				}
 			}
 		}
-		return positions;
+		return particles;
+	}
+
+	void UploadParticles(const std::vector<Particle>& particles) {
+		// CPU side
+		void* pData; // will point to the upload buffer's CPU-accessible memory after mapping
+		CD3DX12_RANGE readRange(0, 0); // 0,0 tells DX12 we will not read from this mapping, only write
+		DX_API("Failed to map particle upload buffer")
+			particleUploadBuffer->Map(
+				0, // subresource index: 0 for buffers (only textures have multiple subresources)
+				&readRange,// read range hint: (0,0) means we won't read any data back
+				&pData); // output: CPU pointer to the upload buffer memory
+
+		memcpy(pData, particles.data(), particles.size() * sizeof(Particle)); // copy all particle data from CPU vector into upload buffer
+
+		particleUploadBuffer->Unmap( // we only use this buffer to upload data to the GPU, so we can unmap right after the copy
+			0, // subresource index
+			nullptr); // written range: nullptr means we wrote the entire buffer
+
+		// GPU side
+		DX_API("Failed to reset command allocator (UploadParticles)")
+			commandAllocator->Reset(); // free memory from previous command list recording
+		DX_API("Failed to reset command list (UploadParticles)")
+			commandList->Reset(commandAllocator.Get(), nullptr); // begin recording; nullptr = no initial pipeline state needed for copy commands
+
+		// transition particleBuffer from UAV to COPY_DEST:
+		// the GPU enforces that a resource's state matches how it's being used.
+		// it starts in UNORDERED_ACCESS (UAV), but CopyBufferRegion requires COPY_DEST.
+		commandList->ResourceBarrier(1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+				particleBuffer.Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // state before: UAV (how we created it)
+				D3D12_RESOURCE_STATE_COPY_DEST)); // state after: ready to receive a copy
+
+		commandList->CopyBufferRegion(
+			particleBuffer.Get(), // destination: the default heap buffer
+			0,  // destination offset in bytes: start from the beginning
+			particleUploadBuffer.Get(), // source: the upload heap buffer we just filled
+			0, // source offset in bytes: start from the beginning
+			numParticles * sizeof(Particle)); // number of bytes to copy
+
+		// transition particleBuffer back to UNORDERED_ACCESS so compute shaders can use it
+		commandList->ResourceBarrier(1,
+			&CD3DX12_RESOURCE_BARRIER::Transition(
+				particleBuffer.Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, // state before: we just copied into it
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS)); // state after: ready for compute shader read/write
+
+		DX_API("Failed to close command list (UploadParticles)")
+			commandList->Close(); // finalize the command list, no more commands can be added
+
+		ID3D12CommandList* commandLists[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists); // submit the copy commands to the GPU
+
+		WaitForPreviousFrame(); // block CPU until GPU has finished the copy before we proceed
 	}
 
 	void LoadParticles() {
-		std::vector<Egg::Math::Float3> positions = GenerateParticlePositions();
+		std::vector<Particle> particles = GenerateParticles(); // generate initial particle positions and zero velocities
+		UploadParticles(particles); // copy particle data from CPU to the GPU default heap buffer
 		// loadCso reads the pre-compiled .cso binary into a blob
 		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
 		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
@@ -97,16 +154,17 @@ private:
 		// bind the per-frame constant buffer so the shader can access camera matrices
 		material->SetConstantBuffer(perFrameCb);
 
-		// Upload the positions to a GPU vertex buffer
-		Egg::Mesh::Geometry::P geometry = Egg::Mesh::VertexStreamGeometry::Create( // vertex stream geometry: array of vertices
-			device.Get(), // D3D device, used to create GPU resources
-			positions.data(), // pointer to vertex data
-			(unsigned int)(positions.size() * sizeof(Egg::Math::Float3)), // total size in bytes
-			(unsigned int)sizeof(Egg::Math::Float3)); // stride: bytes per vertex
+		// TODO: this VertexStreamGeometry will be removed in a later step when the VS reads from the structured buffer instead
+		// temporarily using particles.data() so this compiles; stride is sizeof(Particle) since position is the first field
+		Egg::Mesh::Geometry::P geometry = Egg::Mesh::VertexStreamGeometry::Create(
+			device.Get(),
+			particles.data(),
+			(unsigned int)(particles.size() * sizeof(Particle)),
+			(unsigned int)sizeof(Particle));
 
 		// Tell the input layout that each vertex has a POSITION with 3 floats
 		geometry->AddInputElement({
-			"POSITION", // semantic name — must match the HLSL input
+			"POSITION", // semantic name - must match the HLSL input
 			0, // semantic index
 			DXGI_FORMAT_R32G32B32_FLOAT, // format: 3x 32-bit floats
 			0, // input slot
@@ -115,7 +173,7 @@ private:
 			0 // instance step rate (0 for per-vertex data)
 			});
 
-		// set topology to point list — each vertex is drawn as a single point
+		// set topology to point list - each vertex is drawn as a single point
 		geometry->SetTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
 
 		// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
@@ -123,12 +181,18 @@ private:
 	}
 
 protected:
+	static const int gridSize = 10; // number of particles along one edge of the cube
+	static const int numParticles = gridSize * gridSize * gridSize; // 1000
+
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
-	Egg::Mesh::Shaded::P backgroundMesh;   // fullscreen quad + cubemap shader
-	Egg::TextureCube envTexture;            // the cubemap texture
-	com_ptr<ID3D12DescriptorHeap> srvHeap;  // descriptor heap for shader-visible textures
+	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
+	Egg::TextureCube envTexture; // the cubemap texture
+	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible textures
+
+	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
+	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
 
 	// uploads textures from CPU to GPU. Must be called after importing textures.
 	// similar to a render call: resets command list, records copy commands, executes, waits.
@@ -154,7 +218,7 @@ protected:
 		// wait for the GPU to finish copying before we release the upload buffers
 		WaitForPreviousFrame();
 
-		// the upload heap copies are done — we can free the temporary upload resources
+		// the upload heap copies are done - we can free the temporary upload resources
 		envTexture.ReleaseUploadResources();
 	}
 
@@ -247,6 +311,36 @@ public:
 
 		DX_API("Failed to create SRV descriptor heap")
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf())); // pointer to heap in srvHeap
+
+		// create the particle buffer on the default heap (GPU-local, writable by compute shaders via UAV)
+		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes: 1000 particles * 24 bytes each
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT); // DEFAULT heap: GPU-local fast memory, not CPU-accessible
+		const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			bufferSize,  // size of the buffer in bytes
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // UAV flag: required for compute shaders to write to this buffer
+		DX_API("Failed to create particle buffer")
+			device->CreateCommittedResource( // allocation call
+				&defaultHeapProps, // allocate on the DEFAULT (GPU-local) heap
+				D3D12_HEAP_FLAG_NONE, // no special heap flags
+				&bufferDesc, 
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // initial state: UAV, matching how compute shaders will access it
+				nullptr, // optimized clear value: only used for render targets / depth buffers, not buffers
+				IID_PPV_ARGS(particleBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
+		particleBuffer->SetName(L"Particle Buffer"); // debug name for D3D12 validation layer
+
+		// create the upload buffer: same size, upload heap so the CPU can write initial particle data into it
+		// once the data is copied to the default heap, this buffer is no longer needed
+		const CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD); // UPLOAD heap: CPU-writable, GPU-readable, slower than default heap
+		const CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize); // same size, no UAV flag (CPU staging only)
+		DX_API("Failed to create particle upload buffer")
+			device->CreateCommittedResource(
+				&uploadHeapProps, // allocate on the UPLOAD heap
+				D3D12_HEAP_FLAG_NONE, // no special heap flags
+				&uploadBufferDesc,  // buffer shape: size, no special flags
+				D3D12_RESOURCE_STATE_GENERIC_READ, // upload heap resources must start in GENERIC_READ - the only valid state for upload heaps, means GPU can read from it
+				nullptr, // no optimized clear value
+				IID_PPV_ARGS(particleUploadBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
+		particleUploadBuffer->SetName(L"Particle Upload Buffer"); // debug name for D3D12 validation layer
 	}
 
 	virtual void LoadAssets() override {
