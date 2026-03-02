@@ -16,12 +16,116 @@
 // frame synchronization (WaitForPreviousFrame)
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
+private:
+	void LoadBackground() {
+		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube :
+		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
+		// 2. the upload heap resource, which the CPU can write to, and is used for staging
+		// the texture data is also copied to the upload heap by this function call, but not yet transferred to
+		// the default heap until we call UploadResources(), as this step requires the command queue
+		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
+		// create a Shader Resource View so the pixel shader can sample the cubemap
+		// note that this is different from the SRV heap that we created earlier, this SRV fills one slot
+		// in the SRV heap, specifically, slot (index) 0
+		envTexture.CreateSRV(device.Get(), srvHeap.Get(), 0);
+		// transfer texture data from upload heap to GPU-local memory
+		UploadResources();
+
+		// loadCso reads the pre-compiled .cso binary into a blob
+		com_ptr<ID3DBlob> bgVertexShader = Egg::Shader::LoadCso("Shaders/bgVS.cso"); // vertex shader
+		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
+		com_ptr<ID3D12RootSignature> bgRootSig = Egg::Shader::LoadRootSignature(device.Get(), bgVertexShader.Get());
+
+		Egg::Mesh::Material::P bgMaterial = Egg::Mesh::Material::Create();
+		bgMaterial->SetRootSignature(bgRootSig);
+		bgMaterial->SetVertexShader(bgVertexShader);
+		bgMaterial->SetPixelShader(bgPixelShader);
+		// enable depth testing — the background writes z=0.999999, so particles (closer) will draw in front
+		bgMaterial->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
+		bgMaterial->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
+		// bind the per-frame constant buffer (root parameter 0)
+		bgMaterial->SetConstantBuffer(perFrameCb);
+		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
+		bgMaterial->SetSrvHeap(1, srvHeap, 0);
+
+		// The fullscreen quad from Egg's prefab library — 2 triangles covering the entire screen
+		Egg::Mesh::Geometry::P bgGeometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
+
+		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
+	}
+
+	std::vector<Egg::Math::Float3> GenerateParticlePositions() {
+		// create a small cube of particles so we can see something on screen
+		std::vector<Egg::Math::Float3> positions;
+		int gridSize = 10; // 10x10x10 = 1000 particles
+		float spacing = 0.2f;  // distance between particles
+		float offset = -(gridSize * spacing) / 2.0f; // center the cube around the origin
+
+		for (int x = 0; x < gridSize; x++) {
+			for (int y = 0; y < gridSize; y++) {
+				for (int z = 0; z < gridSize; z++) {
+					positions.push_back(Egg::Math::Float3(
+						offset + x * spacing,
+						offset + y * spacing,
+						offset + z * spacing
+					));
+				}
+			}
+		}
+		return positions;
+	}
+
+	void LoadParticles() {
+		std::vector<Egg::Math::Float3> positions = GenerateParticlePositions();
+		// loadCso reads the pre-compiled .cso binary into a blob
+		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
+		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
+		com_ptr<ID3DBlob> pixelShader = Egg::Shader::LoadCso("Shaders/particlePS.cso");
+		// extract the root signature from the vertex shader
+		// the [RootSignature(...)] attribute we defined in the HLSL gets embedded in the compiled blob
+		com_ptr<ID3D12RootSignature> rootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
+
+		// create a material to hold shaders, root signature, blend/rasterizer/depth state
+		Egg::Mesh::Material::P material = Egg::Mesh::Material::Create();
+		material->SetRootSignature(rootSig);
+		material->SetVertexShader(vertexShader);
+		material->SetGeometryShader(geometryShader); // expand points into quads on the GPU
+		material->SetPixelShader(pixelShader);
+		// enable depth testing so particles occlude each other correctly
+		material->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
+		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
+		// bind the per-frame constant buffer so the shader can access camera matrices
+		material->SetConstantBuffer(perFrameCb);
+
+		// Upload the positions to a GPU vertex buffer
+		Egg::Mesh::Geometry::P geometry = Egg::Mesh::VertexStreamGeometry::Create( // vertex stream geometry: array of vertices
+			device.Get(), // D3D device, used to create GPU resources
+			positions.data(), // pointer to vertex data
+			(unsigned int)(positions.size() * sizeof(Egg::Math::Float3)), // total size in bytes
+			(unsigned int)sizeof(Egg::Math::Float3)); // stride: bytes per vertex
+
+		// Tell the input layout that each vertex has a POSITION with 3 floats
+		geometry->AddInputElement({
+			"POSITION", // semantic name — must match the HLSL input
+			0, // semantic index
+			DXGI_FORMAT_R32G32B32_FLOAT, // format: 3x 32-bit floats
+			0, // input slot
+			0,// byte offset within the vertex (position is first, so 0)
+			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this data is per-vertex, not per-instance
+			0 // instance step rate (0 for per-vertex data)
+			});
+
+		// set topology to point list — each vertex is drawn as a single point
+		geometry->SetTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+
+		// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
+		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
+	}
+
 protected:
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
-
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
-
 	Egg::Mesh::Shaded::P backgroundMesh;   // fullscreen quad + cubemap shader
 	Egg::TextureCube envTexture;            // the cubemap texture
 	com_ptr<ID3D12DescriptorHeap> srvHeap;  // descriptor heap for shader-visible textures
@@ -113,6 +217,7 @@ protected:
 
 	virtual void Update(float dt, float T) override {
 		camera->Animate(dt); // update camera position and orientation based on user input
+
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
 			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
@@ -144,104 +249,9 @@ public:
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf())); // pointer to heap in srvHeap
 	}
 
-
 	virtual void LoadAssets() override {
-		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube:
-		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
-		// 2. the upload heap resource, which the CPU can write to, and is used for staging
-		// the texture data is also copied to the upload heap by this function call, but not yet transferred to
-		// the default heap until we call UploadResources(), as this step requires the command queue
-		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
-		// create a Shader Resource View so the pixel shader can sample the cubemap
-		// note that this is different from the SRV heap that we created earlier, this SRV fills one slot
-		// in the SRV heap, specifically, slot (index) 0
-		envTexture.CreateSRV(device.Get(), srvHeap.Get(), 0);
-		// transfer texture data from upload heap to GPU-local memory
-		UploadResources();
-
-		// loadCso reads the pre-compiled .cso binary into a blob
-		com_ptr<ID3DBlob> bgVertexShader = Egg::Shader::LoadCso("Shaders/bgVS.cso"); // vertex shader
-		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
-		com_ptr<ID3D12RootSignature> bgRootSig = Egg::Shader::LoadRootSignature(device.Get(), bgVertexShader.Get());
-
-		Egg::Mesh::Material::P bgMaterial = Egg::Mesh::Material::Create();
-		bgMaterial->SetRootSignature(bgRootSig);
-		bgMaterial->SetVertexShader(bgVertexShader);
-		bgMaterial->SetPixelShader(bgPixelShader);
-		// enable depth testing — the background writes z=0.999999, so particles (closer) will draw in front
-		bgMaterial->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
-		bgMaterial->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
-		// bind the per-frame constant buffer (root parameter 0)
-		bgMaterial->SetConstantBuffer(perFrameCb);
-		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
-		bgMaterial->SetSrvHeap(1, srvHeap, 0);
-
-		// The fullscreen quad from Egg's prefab library — 2 triangles covering the entire screen
-		Egg::Mesh::Geometry::P bgGeometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
-
-		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
-
-		// generate test particle positions:  create a small cube of particles so we can see something on screen
-		std::vector<Egg::Math::Float3> positions;
-		int gridSize = 10; // 10x10x10 = 1000 particles
-		float spacing = 0.2f;  // distance between particles
-		float offset = -(gridSize * spacing) / 2.0f; // center the cube around the origin
-
-		for (int x = 0; x < gridSize; x++) {
-			for (int y = 0; y < gridSize; y++) {
-				for (int z = 0; z < gridSize; z++) {
-					positions.push_back(Egg::Math::Float3(
-						offset + x * spacing,
-						offset + y * spacing,
-						offset + z * spacing
-					));
-				}
-			}
-		}
-
-		// loadCso reads the pre-compiled .cso binary into a blob
-		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
-		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
-		com_ptr<ID3DBlob> pixelShader = Egg::Shader::LoadCso("Shaders/particlePS.cso");
-		// extract the root signature from the vertex shader
-		// the [RootSignature(...)] attribute we defined in the HLSL gets embedded in the compiled blob
-		com_ptr<ID3D12RootSignature> rootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
-
-		// create a material to hold shaders, root signature, blend/rasterizer/depth state
-		Egg::Mesh::Material::P material = Egg::Mesh::Material::Create();
-		material->SetRootSignature(rootSig); 
-		material->SetVertexShader(vertexShader);
-		material->SetGeometryShader(geometryShader); // expand points into quads on the GPU
-		material->SetPixelShader(pixelShader);
-		// enable depth testing so particles occlude each other correctly
-		material->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
-		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
-		// bind the per-frame constant buffer so the shader can access camera matrices
-		material->SetConstantBuffer(perFrameCb);		
-
-		// Upload the positions to a GPU vertex buffer
-		Egg::Mesh::Geometry::P geometry = Egg::Mesh::VertexStreamGeometry::Create( // vertex stream geometry: array of vertices
-			device.Get(), // D3D device, used to create GPU resources
-			positions.data(), // pointer to vertex data
-			(unsigned int)(positions.size() * sizeof(Egg::Math::Float3)), // total size in bytes
-			(unsigned int)sizeof(Egg::Math::Float3)); // stride: bytes per vertex
-
-		// Tell the input layout that each vertex has a POSITION with 3 floats
-		geometry->AddInputElement({
-			"POSITION", // semantic name — must match the HLSL input
-			0, // semantic index
-			DXGI_FORMAT_R32G32B32_FLOAT, // format: 3x 32-bit floats
-			0, // input slot
-			0,// byte offset within the vertex (position is first, so 0)
-			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this data is per-vertex, not per-instance
-			0 // instance step rate (0 for per-vertex data)
-			});
-
-		// set topology to point list — each vertex is drawn as a single point
-		geometry->SetTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-
-		// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
-		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
+		LoadBackground();
+		LoadParticles();
 	}
 
 	// When the window is resized, update the camera's aspect ratio

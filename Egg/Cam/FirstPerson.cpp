@@ -110,8 +110,8 @@ void Cam::FirstPerson::Animate(double dt)
 	if(ePressed)
 		position += Float3(0,1,0) * (shiftPressed?speed*5.0:speed) * dt;
 
-	yaw += mouseDelta.x * 0.02f;
-	pitch += mouseDelta.y * 0.02f;
+	yaw += mouseDelta.x * 0.005f;
+	pitch += mouseDelta.y * 0.005f;
 	pitch = Float1(pitch).Clamp(-3.14/2, +3.14/2).x;
 
 	mouseDelta = Float2::Zero;
