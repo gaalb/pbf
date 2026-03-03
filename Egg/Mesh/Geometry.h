@@ -49,7 +49,7 @@ namespace Egg {
 			
 			const D3D12_INPUT_LAYOUT_DESC & GetInputLayout() {
 				inputLayout.NumElements = (unsigned int)inputElements.size();
-				inputLayout.pInputElementDescs = &(inputElements.at(0));
+				inputLayout.pInputElementDescs = inputElements.empty() ? nullptr : &(inputElements.at(0)); // at(0) throws on an empty vector; return nullptr when there are no input elements
 				return inputLayout;
 			}
 
@@ -188,6 +188,20 @@ namespace Egg {
 				commandList->DrawIndexedInstanced(indexCount, 1, 0, 0, 0);
 			}
 
+		GG_ENDCLASS
+
+		// geometry with no vertex buffer: the vertex shader fetches data itself (e.g. from a StructuredBuffer via SV_VertexID)
+		// Draw() just sets the topology and fires DrawInstanced - no vertex buffer is bound
+		GG_SUBCLASS(NullGeometry, Geometry)
+		protected:
+			unsigned int vertexCount;
+		public:
+			NullGeometry(unsigned int vertexCount) : Geometry{}, vertexCount{ vertexCount } {}
+
+			virtual void Draw(ID3D12GraphicsCommandList* commandList) override {
+				commandList->IASetPrimitiveTopology(topology); // set the primitive topology (e.g. point list)
+				commandList->DrawInstanced(vertexCount, 1, 0, 0); // fire vertexCount vertices; GPU generates SV_VertexID 0..vertexCount-1
+			}
 		GG_ENDCLASS
 
 	}
