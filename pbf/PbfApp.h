@@ -187,6 +187,96 @@ private:
 		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
 	}
 
+	void PrepareCommandList() {
+		// reset the command allocator, freeing the memory used by the previous frame's commands
+		// this can only be done after the GPU finished executing those commands 
+		commandAllocator->Reset();
+
+		// command list must be reset before we start recording commands into it
+		// second param is initial pipeline state, don't need it yet
+		commandList->Reset(commandAllocator.Get(), nullptr);
+
+		// tell the GPU what region of the screen to draw to
+		commandList->RSSetViewports(1, &viewPort); // the visible area (full window)
+		commandList->RSSetScissorRects(1, &scissorRect); // the clipping rectangle (also full window)
+
+		// transition the current back buffer from "present" state to "render target" state so we can draw into it
+		commandList->ResourceBarrier(1, // number of barriers
+			&CD3DX12_RESOURCE_BARRIER::Transition( // helper function to create a transition barrier
+				renderTargets[swapChainBackBufferIndex].Get(), // resource: the current back buffer, identified by the swap chain's current back buffer index
+				D3D12_RESOURCE_STATE_PRESENT, // before: the back buffer was last used for presentation
+				D3D12_RESOURCE_STATE_RENDER_TARGET)); // after: we want to render into the back buffer
+
+		// get a CPU handle to the current back buffer's render target view (RTV)
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rHandle( // helper function to calculate a handle with an offset
+			rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), // start of the RTV heap
+			swapChainBackBufferIndex, // which back buffer
+			rtvDescriptorHandleIncrementSize); // byte offset between entries
+
+		// get a CPU handle to the depth stencil view (DSV)
+		CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+		// set the render target and depth buffer as the output for draw calls
+		commandList->OMSetRenderTargets(1, &rHandle, FALSE, &dsvHandle);
+
+		// clear the screen to a solid color
+		const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
+		commandList->ClearRenderTargetView(rHandle, clearColor, 0, nullptr);
+
+		// clear the depth buffer to 1.0 (maximum depth = far plane)
+		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+		// make the SRV heap visible to the GPU for this command list, so shaders can access textures in it
+		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf()); 
+	}
+
+	void CloseCommandList() {
+		//transition the back buffer back to "present" state so the swap chain can display it
+		commandList->ResourceBarrier(1, // number of barriers
+			&CD3DX12_RESOURCE_BARRIER::Transition( // helper function to create a transition barrier
+				renderTargets[swapChainBackBufferIndex].Get(), // resource: the current back buffer, identified by the swap chain's current back buffer index
+				D3D12_RESOURCE_STATE_RENDER_TARGET, // before: we just rendered into the back buffer
+				D3D12_RESOURCE_STATE_PRESENT)); // after: we want to present the back buffer
+
+		// close the command list, no more commands can be recorded until the next Reset()
+		DX_API("Failed to close command list")
+			commandList->Close();
+	}
+
+	void ComputePass() {
+		// switch to the compute pipeline: root signature first, then PSO
+		// (setting the root sig before the PSO is required — the PSO references the root sig)
+		commandList->SetComputeRootSignature(computeRootSig.Get());
+		commandList->SetPipelineState(computePso.Get());
+
+		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
+		// this is a root CBV — it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
+		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
+		
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
+			srvHeap->GetGPUDescriptorHandleForHeapStart(),
+			2, // slot index 2 = the particle UAV
+			descriptorSize);// stride in bytes between slots, so the helper can compute the correct GPU address
+		commandList->SetComputeRootDescriptorTable(1, uavHandle);
+
+		// dispatch ceil(numParticles / 256) thread groups along X.
+		// each group runs 256 threads, so this covers all 1000 particles (with 24 idle threads in the last group).
+		// the bounds check in the shader discards those idle threads.
+		UINT numGroups = (numParticles + 255) / 256;
+		commandList->Dispatch(numGroups, 1, 1);
+
+		// UAV barrier: stall the pipeline until all compute writes to particleBuffer are flushed.
+		// without this, the VS in the graphics pass below could read stale data from its SRV of the same buffer.
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+	}
+
+	void GraphicsPass() {
+		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
+		particleMesh->Draw(commandList.Get()); // draw particles on top
+	}
+
 protected:
 	static const int gridSize = 10; // number of particles along one edge of the cube
 	static const int numParticles = gridSize * gridSize * gridSize; // 1000
@@ -236,87 +326,13 @@ protected:
 	// this is the method we must implement from SimpleApp, Render() calls it,
 	// this is where we record all GPU commands to construct one frame
 	virtual void PopulateCommandList() override {
-		// reset the command allocator, freeing the memory used by the previous frame's commands
-		// this can only be done after the GPU finished executing those commands 
-		commandAllocator->Reset();
-
-		// command list must be reset before we start recording commands into it
-		// second param is initial pipeline state, don't need it yet
-		commandList->Reset(commandAllocator.Get(), nullptr);
-
-		// tell the GPU what region of the screen to draw to
-		commandList->RSSetViewports(1, &viewPort); // the visible area (full window)
-		commandList->RSSetScissorRects(1, &scissorRect); // the clipping rectangle (also full window)
-
-		// transition the current back buffer from "present" state to "render target" state so we can draw into it
-		commandList->ResourceBarrier(1, // number of barriers
-			&CD3DX12_RESOURCE_BARRIER::Transition( // helper function to create a transition barrier
-				renderTargets[swapChainBackBufferIndex].Get(), // resource: the current back buffer, identified by the swap chain's current back buffer index
-				D3D12_RESOURCE_STATE_PRESENT, // before: the back buffer was last used for presentation
-				D3D12_RESOURCE_STATE_RENDER_TARGET)); // after: we want to render into the back buffer
-
-		// get a CPU handle to the current back buffer's render target view (RTV)
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rHandle( // helper function to calculate a handle with an offset
-			rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), // start of the RTV heap
-			swapChainBackBufferIndex, // which back buffer
-			rtvDescriptorHandleIncrementSize); // byte offset between entries
-
-		// get a CPU handle to the depth stencil view (DSV)
-		CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(dsvHeap->GetCPUDescriptorHandleForHeapStart());
-
-		// set the render target and depth buffer as the output for draw calls
-		commandList->OMSetRenderTargets(1, &rHandle, FALSE, &dsvHandle);
-
-		// clear the screen to a solid color
-		const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-		commandList->ClearRenderTargetView(rHandle, clearColor, 0, nullptr);
-
-		// clear the depth buffer to 1.0 (maximum depth = far plane)
-		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
+		PrepareCommandList(); // set up the command list for a new frame: reset, set viewport/scissor, transition back buffer to render target
 		
-		// switch to the compute pipeline: root signature first, then PSO
-		// (setting the root sig before the PSO is required — the PSO references the root sig)
-		commandList->SetComputeRootSignature(computeRootSig.Get());
-		commandList->SetPipelineState(computePso.Get());
+		ComputePass(); // dispatch the compute shader to update particle positions on the GPU
 
-		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
-		// this is a root CBV — it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
-		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
+		GraphicsPass(); // draw the background and particles using the updated positions	
 
-		// make srvHeap visible to the GPU for this dispatch, then point root parameter 1 at slot 2 (the UAV)
-		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
-		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
-			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			2,              // slot index 2 = the particle UAV
-			descriptorSize);// stride in bytes between slots, so the helper can compute the correct GPU address
-		commandList->SetComputeRootDescriptorTable(1, uavHandle);
-
-		// dispatch ceil(numParticles / 256) thread groups along X.
-		// each group runs 256 threads, so this covers all 1000 particles (with 24 idle threads in the last group).
-		// the bounds check in the shader discards those idle threads.
-		UINT numGroups = (numParticles + 255) / 256;
-		commandList->Dispatch(numGroups, 1, 1);
-
-		// UAV barrier: stall the pipeline until all compute writes to particleBuffer are flushed.
-		// without this, the VS in the graphics pass below could read stale data from its SRV of the same buffer.
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// --- graphics pass ---
-		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
-		particleMesh->Draw(commandList.Get()); // draw particles on top
-
-		//tTransition the back buffer back to "present" state so the swap chain can display it
-		commandList->ResourceBarrier(1, // number of barriers
-			&CD3DX12_RESOURCE_BARRIER::Transition( // helper function to create a transition barrier
-				renderTargets[swapChainBackBufferIndex].Get(), // resource: the current back buffer, identified by the swap chain's current back buffer index
-				D3D12_RESOURCE_STATE_RENDER_TARGET, // before: we just rendered into the back buffer
-				D3D12_RESOURCE_STATE_PRESENT)); // after: we want to present the back buffer
-	
-		// close the command list, no more commands can be recorded until the next Reset()
-		DX_API("Failed to close command list")
-			commandList->Close();
+		CloseCommandList(); // transition back buffer to present state and close the command list
 	}
 
 	virtual void Update(float dt, float T) override {
