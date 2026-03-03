@@ -153,28 +153,17 @@ private:
 		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// bind the per-frame constant buffer so the shader can access camera matrices
 		material->SetConstantBuffer(perFrameCb);
+		// bind the particle SRV (slot 1 in srvHeap) to root parameter 1 so the VS can read particle positions
+		// root parameter 1 = DescriptorTable(SRV(t0)) as declared in the ParticleRootSig in particleVS.hlsl
+		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index
+		// so we must multiply the slot index by the descriptor increment size to get the correct byte offset
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		material->SetSrvHeap(1, srvHeap, 1 * descriptorSize); // slot 1 * bytes-per-slot = byte offset to the particle SRV
 
-		// TODO: this VertexStreamGeometry will be removed in a later step when the VS reads from the structured buffer instead
-		// temporarily using particles.data() so this compiles; stride is sizeof(Particle) since position is the first field
-		Egg::Mesh::Geometry::P geometry = Egg::Mesh::VertexStreamGeometry::Create(
-			device.Get(),
-			particles.data(),
-			(unsigned int)(particles.size() * sizeof(Particle)),
-			(unsigned int)sizeof(Particle));
-
-		// Tell the input layout that each vertex has a POSITION with 3 floats
-		geometry->AddInputElement({
-			"POSITION", // semantic name - must match the HLSL input
-			0, // semantic index
-			DXGI_FORMAT_R32G32B32_FLOAT, // format: 3x 32-bit floats
-			0, // input slot
-			0,// byte offset within the vertex (position is first, so 0)
-			D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this data is per-vertex, not per-instance
-			0 // instance step rate (0 for per-vertex data)
-			});
-
-		// set topology to point list - each vertex is drawn as a single point
-		geometry->SetTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+		// NullGeometry: no vertex buffer - the VS fetches positions from the structured buffer using SV_VertexID
+		// numParticles tells DrawInstanced how many vertices (and therefore SV_VertexID values) to generate
+		Egg::Mesh::Geometry::P geometry = Egg::Mesh::NullGeometry::Create(numParticles);
+		geometry->SetTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST); // each SV_VertexID maps to one point, expanded to a quad by the GS
 
 		// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
 		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
@@ -303,14 +292,18 @@ public:
 		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
 		// live in a descriptor heap, which has to be big enough to hold a descriptor for each of our resources, one of
 		// which is the cube map texture.
+		// descriptor heap layout:
+		//   slot 0: cubemap SRV       - sampled by the background pixel shader
+		//   slot 1: particle SRV (t0) - read by the vertex shader to fetch particle positions
+		//   slot 2: particle UAV (u0) - written by the compute shader to update particle positions and velocities
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 1; // we've only got 1 texture for now
-		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // constant buffer / shader resource / unordered access views
+		dhd.NumDescriptors = 3; // slot 0: cubemap SRV, slot 1: particle SRV, slot 2: particle UAV
+		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
-		DX_API("Failed to create SRV descriptor heap")
-			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf())); // pointer to heap in srvHeap
+		DX_API("Failed to create descriptor heap")
+			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
 
 		// create the particle buffer on the default heap (GPU-local, writable by compute shaders via UAV)
 		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes: 1000 particles * 24 bytes each
@@ -341,6 +334,45 @@ public:
 				nullptr, // no optimized clear value
 				IID_PPV_ARGS(particleUploadBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
 		particleUploadBuffer->SetName(L"Particle Upload Buffer"); // debug name for D3D12 validation layer
+
+		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// particle SRV (slot 1): read-only view for the vertex shader
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers always use UNKNOWN format (the stride defines the layout)
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; // this is a buffer, not a texture
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; // mandatory field for structured buffers; standard identity swizzle
+		srvDesc.Buffer.FirstElement = 0; // start from the first element in the buffer
+		srvDesc.Buffer.NumElements = numParticles; // total number of Particle elements accessible through this view
+		srvDesc.Buffer.StructureByteStride = sizeof(Particle); // size of each element in bytes: tells the GPU how to step through the buffer
+		srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; // no special flags (RAW flag would be set here for byte-address buffers)
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), // base address of the descriptor heap
+			1, // slot index 1
+			descriptorSize); // stride between slots in bytes
+		device->CreateShaderResourceView(particleBuffer.Get(), &srvDesc, srvHandle); // write the SRV descriptor into slot 1
+
+		// particle UAV (slot 2): read-write view for the compute shader
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers always use UNKNOWN format
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER; // this is a buffer, not a texture
+		uavDesc.Buffer.FirstElement = 0; // start from the first element
+		uavDesc.Buffer.NumElements = numParticles; // total number of Particle elements accessible through this view
+		uavDesc.Buffer.StructureByteStride = sizeof(Particle); // size of each element in bytes
+		uavDesc.Buffer.CounterOffsetInBytes = 0; // counter is used for append/consume buffers only - we don't use it
+		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE; // no special flags
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), // base address of the descriptor heap
+			2, // slot index 2
+			descriptorSize); // stride between slots in bytes
+		device->CreateUnorderedAccessView(
+			particleBuffer.Get(), // the resource this view points to
+			nullptr, // no counter resource (only needed for append/consume buffers)
+			&uavDesc,
+			uavHandle); // write the UAV descriptor into slot 2
 	}
 
 	virtual void LoadAssets() override {
