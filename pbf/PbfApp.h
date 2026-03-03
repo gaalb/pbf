@@ -131,6 +131,24 @@ private:
 		WaitForPreviousFrame(); // block CPU until GPU has finished the copy before we proceed
 	}
 
+	void LoadCompute() {
+		// load the compiled compute shader blob from disk
+		com_ptr<ID3DBlob> gravityShader = Egg::Shader::LoadCso("Shaders/gravityCS.cso");
+
+		// extract the root signature embedded in the shader bytecode via [RootSignature(GravityRootSig)],
+		// in orrder to get a pointer to it taht we can assign to psoDesc.pRootSignature
+		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), gravityShader.Get());
+
+		// describe the compute PSO — much simpler than a graphics PSO:
+		// no rasterizer, no blend state, no render targets, no input layout — just a root sig and one shader
+		D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+		psoDesc.pRootSignature = computeRootSig.Get();
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(gravityShader.Get()); // CS = compute shader bytecode
+
+		DX_API("Failed to create gravity compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(computePso.GetAddressOf()));
+	}
+
 	void LoadParticles() {
 		std::vector<Particle> particles = GenerateParticles(); // generate initial particle positions and zero velocities
 		UploadParticles(particles); // copy particle data from CPU to the GPU default heap buffer
@@ -182,6 +200,10 @@ protected:
 
 	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
+
+	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters: dt and numParticles, uploaded every frame
+	com_ptr<ID3D12PipelineState> computePso; // compute pipeline state: gravity shader + root signature compiled together
+	com_ptr<ID3D12RootSignature> computeRootSig; // root signature for the compute pass: CBV(b0) + DescriptorTable(UAV(u0))
 
 	// uploads textures from CPU to GPU. Must be called after importing textures.
 	// similar to a render call: resets command list, records copy commands, executes, waits.
@@ -252,7 +274,36 @@ protected:
 		// clear the depth buffer to 1.0 (maximum depth = far plane)
 		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-		// draw commands here
+		
+		// switch to the compute pipeline: root signature first, then PSO
+		// (setting the root sig before the PSO is required — the PSO references the root sig)
+		commandList->SetComputeRootSignature(computeRootSig.Get());
+		commandList->SetPipelineState(computePso.Get());
+
+		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
+		// this is a root CBV — it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
+		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
+
+		// make srvHeap visible to the GPU for this dispatch, then point root parameter 1 at slot 2 (the UAV)
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
+		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
+			srvHeap->GetGPUDescriptorHandleForHeapStart(),
+			2,              // slot index 2 = the particle UAV
+			descriptorSize);// stride in bytes between slots, so the helper can compute the correct GPU address
+		commandList->SetComputeRootDescriptorTable(1, uavHandle);
+
+		// dispatch ceil(numParticles / 256) thread groups along X.
+		// each group runs 256 threads, so this covers all 1000 particles (with 24 idle threads in the last group).
+		// the bounds check in the shader discards those idle threads.
+		UINT numGroups = (numParticles + 255) / 256;
+		commandList->Dispatch(numGroups, 1, 1);
+
+		// UAV barrier: stall the pipeline until all compute writes to particleBuffer are flushed.
+		// without this, the VS in the graphics pass below could read stale data from its SRV of the same buffer.
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// --- graphics pass ---
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 
@@ -280,12 +331,17 @@ protected:
 		perFrameCb->particleParams = Egg::Math::Float4(0.9f, 0.1f, 0.7f, 0.08f); // x: particle radius 
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
+
+		computeCb->dt = dt; // simulation timestep
+		computeCb->numParticles = numParticles; 
+		computeCb.Upload(); // memcpy to GPU
 	}
 
 public:
 	virtual void CreateResources() override {
 		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
 		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
+		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
 
 		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
@@ -378,6 +434,7 @@ public:
 	virtual void LoadAssets() override {
 		LoadBackground();
 		LoadParticles();
+		LoadCompute();
 	}
 
 	// When the window is resized, update the camera's aspect ratio

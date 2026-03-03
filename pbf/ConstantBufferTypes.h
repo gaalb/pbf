@@ -13,3 +13,10 @@ __declspec(align(16)) struct PerFrameCb {
 	Float4 lightDir; // xyz = direction toward light, w = unused
 	Float4 particleParams; // xyz are color, w is radius
 };
+
+// per-simulation-step data uploaded to the gravity compute shader before each dispatch
+__declspec(align(16)) struct ComputeCb {
+	float dt;           // simulation timestep in seconds, set each frame in Update()
+	UINT numParticles;  // total particle count; used for bounds check in the compute shader
+	float pad[2];       // padding to reach 16 bytes — GPU constant buffers are read in 16-byte chunks
+};
