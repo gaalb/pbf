@@ -295,6 +295,8 @@ protected:
 	com_ptr<ID3D12PipelineState> computePso; // compute pipeline state: gravity shader + root signature compiled together
 	com_ptr<ID3D12RootSignature> computeRootSig; // root signature for the compute pass: CBV(b0) + DescriptorTable(UAV(u0))
 
+	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
+
 	// uploads textures from CPU to GPU. Must be called after importing textures.
 	// similar to a render call: resets command list, records copy commands, executes, waits.
 	void UploadResources() {
@@ -328,7 +330,8 @@ protected:
 	virtual void PopulateCommandList() override {
 		PrepareCommandList(); // set up the command list for a new frame: reset, set viewport/scissor, transition back buffer to render target
 		
-		ComputePass(); // dispatch the compute shader to update particle positions on the GPU
+		if (physicsRunning)
+			ComputePass(); // dispatch the compute shader to update particle positions on the GPU
 
 		GraphicsPass(); // draw the background and particles using the updated positions	
 
@@ -461,8 +464,11 @@ public:
 		}
 	}
 
-	// Forward window messages (keyboard, mouse) to the camera
+	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys
 	virtual void ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override {
 		camera->ProcessMessage(hWnd, uMsg, wParam, lParam);
+
+		if (uMsg == WM_KEYDOWN && wParam == VK_SPACE)
+			physicsRunning = !physicsRunning; // toggle physics simulation on/off
 	}
 };
