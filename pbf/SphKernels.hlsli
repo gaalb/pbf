@@ -23,21 +23,34 @@ float Poly6(float3 r, float h)
 }
 
 
-// Spiky kernel gradient
+// Spiky kernel gradient  (Desbrun & Cani 1996)
+//
+// The gradient of W_spiky with respect to p_i, where r = p_i - p_j:
+//   grad_W(r, h) = -(45 / pi*h^6) * (h - |r|)^2 * (r / |r|)
+//
+// The negative sign means this points from i toward j -- in the direction
+// that decreases |r|, which increases W (moving i closer to j increases density).
+// This is the correct direction for use in the PBF position correction (Eq. 12):
+//   delta_p_i = (1/rho0) * sum_j (lambda_i + lambda_j) * grad_W(r_ij, h)
+// When lambda < 0 (too dense), the product is repulsive (pushes i away from j). Correct.
+//
+// r   -- vector from neighbor j toward particle i  (r = p_i - p_j)
+// h   -- smoothing radius
 float3 SpikyGrad(float3 r, float h)
 {
     float rLen = length(r);
 
-    // The rLen == 0 guard prevents a divide-by-zero when i == j.
+    // Guard: outside support radius contributes nothing.
+    // rLen < 1e-6 handles j == i (r = 0) to avoid divide-by-zero.
     if (rLen > h || rLen < 1e-6)
         return float3(0.0, 0.0, 0.0);
-    
+
     float coeff = 45.0 / (3.14159265 * pow(h, 6.0));
     float diff = h - rLen;
-    float3 rHat = r / rLen; 
+    float3 rHat = r / rLen; // unit vector from j toward i
 
-    // The gradient of the Spiky kernel points away from the neighbor (repulsive).
-    return coeff * diff * diff * rHat;
+    // Negative: gradient points from i toward j (toward the neighbor)
+    return -coeff * diff * diff * rHat;
 }
 
 #endif // SPH_KERNELS_HLSLI

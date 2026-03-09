@@ -395,8 +395,8 @@ protected:
 		computeCb->dt = dt;
 		computeCb->numParticles = numParticles;
 		computeCb->h = 0.4f;     // smoothing radius -- roughly 2.5x particle spacing of 0.2
-		computeCb->rho0 = 1000.0f; // rest density -- estimated from kernel sum at initial spacing, needs tuning
-		computeCb->epsilon = 100.0f; // lambda relaxation -- prevents division by zero, needs tuning
+		computeCb->rho0 = 100.0f; // rest density -- estimated from kernel sum at initial spacing, needs tuning
+		computeCb->epsilon = 5.0f; // lambda relaxation -- prevents division by zero, needs tuning
 		computeCb.Upload();
 	}
 
