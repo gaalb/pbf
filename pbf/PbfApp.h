@@ -67,7 +67,7 @@ private:
 					Particle p;
 					p.position = Egg::Math::Float3(
 						offset + x * spacing,
-						offset + y * spacing,
+						offset + y * spacing + 3.0, // start the box a bit off the ground for a fall splash
 						offset + z * spacing);
 					p.velocity = Egg::Math::Float3(0.0f, 0.0f, 0.0f); // start at rest
 					particles.push_back(p);
@@ -132,21 +132,36 @@ private:
 	}
 
 	void LoadCompute() {
-		// load the compiled compute shader blob from disk
-		com_ptr<ID3DBlob> gravityShader = Egg::Shader::LoadCso("Shaders/gravityCS.cso");
+		// load all four compiled compute shader blobs
+		com_ptr<ID3DBlob> predictShader  = Egg::Shader::LoadCso("Shaders/predictCS.cso");
+		com_ptr<ID3DBlob> lambdaShader   = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
+		com_ptr<ID3DBlob> deltaShader    = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
+		com_ptr<ID3DBlob> finalizeShader = Egg::Shader::LoadCso("Shaders/finalizeCS.cso");
 
-		// extract the root signature embedded in the shader bytecode via [RootSignature(GravityRootSig)],
-		// in orrder to get a pointer to it taht we can assign to psoDesc.pRootSignature
-		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), gravityShader.Get());
+		// all four shaders embed the same root signature string, so we extract it once
+		// from predictCS and reuse it for all four PSO descriptors
+		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), predictShader.Get());
 
-		// describe the compute PSO — much simpler than a graphics PSO:
-		// no rasterizer, no blend state, no render targets, no input layout — just a root sig and one shader
+		// compute PSO descriptor: much simpler than a graphics PSO --
+		// no rasterizer, blend state, render targets, or input layout; just root sig + shader bytecode
 		D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
 		psoDesc.pRootSignature = computeRootSig.Get();
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(gravityShader.Get()); // CS = compute shader bytecode
 
-		DX_API("Failed to create gravity compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(computePso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get());
+		DX_API("Failed to create predict compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(predictPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(lambdaShader.Get());
+		DX_API("Failed to create lambda compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(lambdaPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(deltaShader.Get());
+		DX_API("Failed to create delta compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(deltaPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(finalizeShader.Get());
+		DX_API("Failed to create finalize compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(finalizePso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -244,32 +259,50 @@ private:
 	}
 
 	void ComputePass() {
-		// switch to the compute pipeline: root signature first, then PSO
-		// (setting the root sig before the PSO is required — the PSO references the root sig)
-		commandList->SetComputeRootSignature(computeRootSig.Get());
-		commandList->SetPipelineState(computePso.Get());
-
-		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
-		// this is a root CBV — it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
-		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
-		
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
 			srvHeap->GetGPUDescriptorHandleForHeapStart(),
 			2, // slot index 2 = the particle UAV
-			descriptorSize);// stride in bytes between slots, so the helper can compute the correct GPU address
+			descriptorSize);
+
+		// switch to the compute pipeline: root signature first, then PSO
+		// (setting the root sig before the PSO is required � the PSO references the root sig)
+		// all four shaders share the same root signature, so we set it once here.
+		// root parameter bindings (CBV + UAV) also persist across PSO swaps as long
+		// as we don't call SetComputeRootSignature again.
+		commandList->SetComputeRootSignature(computeRootSig.Get());
+		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
+		// this is a root CBV � it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
+		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
 		commandList->SetComputeRootDescriptorTable(1, uavHandle);
 
-		// dispatch ceil(numParticles / 256) thread groups along X.
-		// each group runs 256 threads, so this covers all 1000 particles (with 24 idle threads in the last group).
-		// the bounds check in the shader discards those idle threads.
+		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
-		commandList->Dispatch(numGroups, 1, 1);
 
-		// UAV barrier: stall the pipeline until all compute writes to particleBuffer are flushed.
-		// without this, the VS in the graphics pass below could read stale data from its SRV of the same buffer.
+		// apply gravity, store result in predictedPosition
+		commandList->SetPipelineState(predictPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
+		// constraint solver loop
+		for (int iter = 0; iter < solverIterations; iter++) {
+			// compute lambda for each particle from predictedPositions
+			commandList->SetPipelineState(lambdaPso.Get());
+			commandList->Dispatch(numGroups, 1, 1);
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+			// compute delta_p from lambdas, update predictedPosition, clamp to box
+			commandList->SetPipelineState(deltaPso.Get());
+			commandList->Dispatch(numGroups, 1, 1);
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+		}
+
+		// commit predictedPosition to position, derive velocity from displacement
+		commandList->SetPipelineState(finalizePso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+
+		// UAV barrier so the graphics pass SRV sees the finalized positions
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 	}
 
 	void GraphicsPass() {
@@ -280,6 +313,7 @@ private:
 protected:
 	static const int gridSize = 10; // number of particles along one edge of the cube
 	static const int numParticles = gridSize * gridSize * gridSize; // 1000
+	static const int solverIterations = 5; // how many times to run [lambdaCS -> deltaCS] per frame
 
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
@@ -291,9 +325,16 @@ protected:
 	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
 
-	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters: dt and numParticles, uploaded every frame
-	com_ptr<ID3D12PipelineState> computePso; // compute pipeline state: gravity shader + root signature compiled together
-	com_ptr<ID3D12RootSignature> computeRootSig; // root signature for the compute pass: CBV(b0) + DescriptorTable(UAV(u0))
+	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters uploaded every frame
+
+	// all four compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
+	// so we extract the root sig from one shader and reuse it for all four PSOs
+	com_ptr<ID3D12RootSignature> computeRootSig;
+
+	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
+	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
+	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to box
+	com_ptr<ID3D12PipelineState> finalizePso; // commit p* to position, update velocity
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 
@@ -347,13 +388,16 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Egg::Math::Float4(0.9f, 0.1f, 0.7f, 0.08f); // x: particle radius 
+		perFrameCb->particleParams = Egg::Math::Float4(0.9f, 0.1f, 0.7f, 0.1f); // xyz are color, w is radius
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 
-		computeCb->dt = dt; // simulation timestep
-		computeCb->numParticles = numParticles; 
-		computeCb.Upload(); // memcpy to GPU
+		computeCb->dt = dt;
+		computeCb->numParticles = numParticles;
+		computeCb->h = 0.4f;     // smoothing radius -- roughly 2.5x particle spacing of 0.2
+		computeCb->rho0 = 1000.0f; // rest density -- estimated from kernel sum at initial spacing, needs tuning
+		computeCb->epsilon = 100.0f; // lambda relaxation -- prevents division by zero, needs tuning
+		computeCb.Upload();
 	}
 
 public:
@@ -381,7 +425,7 @@ public:
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
 
 		// create the particle buffer on the default heap (GPU-local, writable by compute shaders via UAV)
-		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes: 1000 particles * 24 bytes each
+		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes: 1000 particles * particle size
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT); // DEFAULT heap: GPU-local fast memory, not CPU-accessible
 		const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
 			bufferSize,  // size of the buffer in bytes

@@ -52,9 +52,24 @@
     <FxCompile Include="gravityCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
+    <FxCompile Include="predictCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="lambdaCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="deltaCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="finalizeCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Particle.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="SphKernels.hlsli">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>
