@@ -23,5 +23,6 @@ __declspec(align(16)) struct ComputeCb {
 	float rho0; // rest density (kg/m^3); constraint target: rho_i / rho0 - 1 = 0
 
 	float epsilon; // constraint force mixing relaxation parameter
-	float pad[3]; // padding to reach 32 bytes (next 16-byte boundary)
+	float viscosity; // XSPH viscosity coefficient c
+	float pad[2]; // padding to reach 32 bytes (next 16-byte boundary)
 };

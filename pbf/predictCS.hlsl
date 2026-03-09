@@ -24,7 +24,8 @@ cbuffer ComputeCb : register(b0)
     float h; // SPH smoothing radius (unused in this pass)
     float rho0; // rest density (unused in this pass)
     float epsilon; // lambda relaxation (unused in this pass)
-    float pad[3]; // padding to 32 bytes 
+    float viscosity; // XSPH viscosity coefficient (unused in this pass)
+    float pad[2]; // padding to 32 bytes
 };
 
 // RWStructuredBuffer: read-write access to the particle array.

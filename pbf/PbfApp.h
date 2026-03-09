@@ -132,14 +132,15 @@ private:
 	}
 
 	void LoadCompute() {
-		// load all four compiled compute shader blobs
-		com_ptr<ID3DBlob> predictShader  = Egg::Shader::LoadCso("Shaders/predictCS.cso");
-		com_ptr<ID3DBlob> lambdaShader   = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
-		com_ptr<ID3DBlob> deltaShader    = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
-		com_ptr<ID3DBlob> finalizeShader = Egg::Shader::LoadCso("Shaders/finalizeCS.cso");
+		// load all five compiled compute shader blobs
+		com_ptr<ID3DBlob> predictShader    = Egg::Shader::LoadCso("Shaders/predictCS.cso");
+		com_ptr<ID3DBlob> lambdaShader     = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
+		com_ptr<ID3DBlob> deltaShader      = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
+		com_ptr<ID3DBlob> finalizeShader   = Egg::Shader::LoadCso("Shaders/finalizeCS.cso");
+		com_ptr<ID3DBlob> viscosityShader  = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
 
-		// all four shaders embed the same root signature string, so we extract it once
-		// from predictCS and reuse it for all four PSO descriptors
+		// all five shaders embed the same root signature string, so we extract it once
+		// from predictCS and reuse it for all five PSO descriptors
 		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), predictShader.Get());
 
 		// compute PSO descriptor: much simpler than a graphics PSO --
@@ -162,6 +163,10 @@ private:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(finalizeShader.Get());
 		DX_API("Failed to create finalize compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(finalizePso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(viscosityShader.Get());
+		DX_API("Failed to create viscosity compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(viscosityPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -266,13 +271,13 @@ private:
 			descriptorSize);
 
 		// switch to the compute pipeline: root signature first, then PSO
-		// (setting the root sig before the PSO is required — the PSO references the root sig)
+		// (setting the root sig before the PSO is required - the PSO references the root sig)
 		// all four shaders share the same root signature, so we set it once here.
 		// root parameter bindings (CBV + UAV) also persist across PSO swaps as long
 		// as we don't call SetComputeRootSignature again.
 		commandList->SetComputeRootSignature(computeRootSig.Get());
 		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
-		// this is a root CBV — it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
+		// this is a root CBV - it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
 		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
 		commandList->SetComputeRootDescriptorTable(1, uavHandle);
 
@@ -300,9 +305,13 @@ private:
 		// commit predictedPosition to position, derive velocity from displacement
 		commandList->SetPipelineState(finalizePso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
-
-		// UAV barrier so the graphics pass SRV sees the finalized positions
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// XSPH viscosity: smooth velocity field toward neighborhood average
+		// position reads are race-free here (finalizeCS finished, barrier issued above)
+		commandList->SetPipelineState(viscosityPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get())); // finalize before graphics pass
 	}
 
 	void GraphicsPass() {
@@ -331,10 +340,11 @@ protected:
 	// so we extract the root sig from one shader and reuse it for all four PSOs
 	com_ptr<ID3D12RootSignature> computeRootSig;
 
-	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
-	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
-	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to box
-	com_ptr<ID3D12PipelineState> finalizePso; // commit p* to position, update velocity
+	com_ptr<ID3D12PipelineState> predictPso;    // apply gravity, compute position prediction p*
+	com_ptr<ID3D12PipelineState> lambdaPso;     // compute lambda per particle
+	com_ptr<ID3D12PipelineState> deltaPso;      // compute delta_p, update p*, clamp to box
+	com_ptr<ID3D12PipelineState> finalizePso;   // commit p* to position, update velocity
+	com_ptr<ID3D12PipelineState> viscosityPso;  // XSPH velocity smoothing
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 
@@ -394,9 +404,10 @@ protected:
 
 		computeCb->dt = dt;
 		computeCb->numParticles = numParticles;
-		computeCb->h = 0.4f;     // smoothing radius -- roughly 2.5x particle spacing of 0.2
+		computeCb->h = 0.4f;     // smoothing radius 
 		computeCb->rho0 = 100.0f; // rest density -- estimated from kernel sum at initial spacing, needs tuning
 		computeCb->epsilon = 5.0f; // lambda relaxation -- prevents division by zero, needs tuning
+		computeCb->viscosity = 0.001f; // XSPH viscosity coefficient -- 0 = off, higher = more viscous
 		computeCb.Upload();
 	}
 

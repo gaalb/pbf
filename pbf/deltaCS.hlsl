@@ -32,7 +32,8 @@ cbuffer ComputeCb : register(b0)
     float h; // SPH smoothing radius
     float rho0; // rest density
     float epsilon; // unused in this pass
-    float pad[3]; // padding to 32 bytes
+    float viscosity; // XSPH viscosity coefficient (unused in this pass)
+    float pad[2]; // padding to 32 bytes
 };
 
 RWStructuredBuffer<Particle> particles : register(u0);

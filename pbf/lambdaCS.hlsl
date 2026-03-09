@@ -32,7 +32,8 @@ cbuffer ComputeCb : register(b0)
     float h; // SPH smoothing radius
     float rho0; // rest density -- target of the constraint
     float epsilon; // relaxation factor for the lambda denominator
-    float pad[3]; // padding to 32 bytes
+    float viscosity; // XSPH viscosity coefficient (unused in this pass)
+    float pad[2]; // padding to 32 bytes
 };
 
 RWStructuredBuffer<Particle> particles : register(u0);
