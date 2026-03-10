@@ -20,15 +20,15 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 15, gridY = 15, gridZ = 15; // number of particles along each axis of the initial grid
+	const int gridX = 12, gridY = 20, gridZ = 12; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; 
-	const int solverIterations = 5; // how many times to run [lambdaCS -> deltaCS] per frame
+	const int solverIterations = 4; // how many times to run [lambdaCS -> deltaCS] per frame
 	const float particleSpacing = 0.25f; // distance between particles in world space
-	const float h = particleSpacing * 3; // SPH smoothing radius: how far out to look for neighbors
-	const float rho0 = 64.0f; // rest density: constraint target
+	const float h = particleSpacing * 3.5f; // SPH smoothing radius: how far out to look for neighbors
+	const float rho0 = 1.0f / powf(particleSpacing, 3.0f); // rest density: constraint target
 	const float epsilon = 5.0f; // constraint force mixing relaxation parameter
-	const float viscosity = 0.01f; // XSPH viscosity coefficient
+	const float viscosity = 0.001f; // XSPH viscosity coefficient
 	const Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
 	const Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
 	const float sCorrK = 0.1f; // artificial pressure magnitude coefficient (paper: 0.1)
@@ -401,7 +401,7 @@ protected:
 	}
 
 	virtual void Update(float dt, float T) override {
-		dt = std::min(dt, 1.0f / 30.0f); // cap at ~33ms: prevents energy spikes on window drag or stutter
+		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
 		camera->Animate(dt); // update camera position and orientation based on user input
 
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
