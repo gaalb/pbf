@@ -20,44 +20,51 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
+	// constants to tweak for different simulation setups
+	// these values are based on the Macklin + Muller 2013 article
 	const int gridX = 12, gridY = 20, gridZ = 12; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
-	const int numParticles = gridX * gridY * gridZ; 
-	const int solverIterations = 4; // how many times to run [lambdaCS -> deltaCS] per frame
-	const float particleSpacing = 0.25f; // distance between particles in world space
-	const float h = particleSpacing * 3.5f; // SPH smoothing radius: how far out to look for neighbors
-	const float rho0 = 1.0f / powf(particleSpacing, 3.0f); // rest density: constraint target
-	const float epsilon = 5.0f; // constraint force mixing relaxation parameter
-	const float viscosity = 0.001f; // XSPH viscosity coefficient
-	Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
-	Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
-	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
+	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
+	const int solverIterations = 4; // how many newton steps to take per frame
+	// starting particle distance, which we also treat as the desired particle distance, to compute rest 
+	// density and particle display size
+	const float particleSpacing = 0.25f; 
+	const float h = particleSpacing * 3.5f; // SPH smoothing radius, the larger the more neighbors each particle has
+	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
+	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
+	const float rho0 = 1.0f / powf(particleSpacing, 3.0f); 
+	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
+	const float epsilon = 5.0f; 
+	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
+	const float viscosity = 0.01f; // paper suggests 0.01
+	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
 	const float sCorrK = 0.1f; // artificial pressure magnitude coefficient (paper: 0.1)
 	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float4 particleParams = Float4(0.9f, 0.1f, 0.7f, 0.5*particleSpacing); // xyz are color, w is radius
+	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
 
+	// non-constant members
+	Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
+	Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
-	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
+
+	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame -> graphics data
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
 	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
-	Egg::TextureCube envTexture; // the cubemap texture
-	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible textures
-
-	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
+	Egg::TextureCube envTexture; // the cubemap texture for the skybox background
+	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible resources
+	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
-
-	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters uploaded every frame
-
+	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
 	// all four compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
 	// so we extract the root sig from one shader and reuse it for all four PSOs
 	com_ptr<ID3D12RootSignature> computeRootSig;
-
-	com_ptr<ID3D12PipelineState> predictPso;    // apply gravity, compute position prediction p*
-	com_ptr<ID3D12PipelineState> lambdaPso;     // compute lambda per particle
-	com_ptr<ID3D12PipelineState> deltaPso;      // compute delta_p, update p*, clamp to box
-	com_ptr<ID3D12PipelineState> finalizePso;   // commit p* to position, update velocity
-	com_ptr<ID3D12PipelineState> viscosityPso;  // XSPH velocity smoothing
+	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
+	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
+	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
+	com_ptr<ID3D12PipelineState> finalizePso; // commit p* to position, update velocity
+	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
