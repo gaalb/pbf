@@ -23,7 +23,7 @@
 #define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
 #include "Particle.hlsli" // Particle struct
-#include "SphKernels.hlsli" // SpikyGrad
+#include "SphKernels.hlsli" // SpikyGrad, Poly6
 
 cbuffer ComputeCb : register(b0)
 {
@@ -35,6 +35,10 @@ cbuffer ComputeCb : register(b0)
     float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
     float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
     float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
+    float sCorrK; // offset 48 (4 bytes): artificial pressure k
+    float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
+    float sCorrN; // offset 56 (4 bytes): artificial pressure n
+    float pad; // offset 60 (4 bytes): padding to reach 64 bytes
 };
 
 RWStructuredBuffer<Particle> particles : register(u0);
@@ -50,6 +54,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 pi = particles[i].predictedPosition; // cache to avoid repeated UAV reads
     float lambdaI = particles[i].lambda;
 
+    // Precompute the s_corr denominator, same for every (i,j) pair.
+    // Poly6 only uses the squared magnitude so the direction does not matter.
+    float poly6AtDeltaQ = Poly6(float3(sCorrDeltaQ, 0, 0), h);
+
     float3 deltaP = float3(0, 0, 0);
 
     for (uint j = 0; j < numParticles; j++)
@@ -59,10 +67,21 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // r_ij points from neighbor j toward particle i
             float3 r = pi - particles[j].predictedPosition;
 
-            // Eq. 12: each neighbor contributes (lambda_i + lambda_j) * grad_W_spiky(r_ij, h)
-            // lambda_i + lambda_j: positive when both particles are compressed, producing a repulsive correction
-            // grad_W_spiky points away from j toward i, so the correction pushes i away from compressed neighbors
-            deltaP += (lambdaI + particles[j].lambda) * SpikyGrad(r, h);
+            // Eq. 13: artificial pressure term s_corr to suppress tensile instability.
+            // When lambda > 0 (sparse region), the standard Eq. 12 correction becomes attractive,
+            // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
+            // that counteracts this without disturbing the bulk behavior.
+            // s_corr = -k * (W(r, h) / W(delta_q, h))^n
+            // The ratio is between 0 and 1 for r >= delta_q (Poly6 is decreasing), so s_corr is in [-k, 0].
+            // At r == delta_q the ratio is 1 and s_corr == -k (maximum repulsion).
+            // For r much larger than delta_q the ratio approaches 0 and s_corr vanishes.
+            float wRatio = Poly6(r, h) / poly6AtDeltaQ;
+            float sCorr = -sCorrK * pow(wRatio, sCorrN);
+
+            // Eq. 12 + 13: position correction with artificial pressure included
+            // lambda_i + lambda_j: positive when compressed (repulsive), negative when sparse (attractive)
+            // adding s_corr shifts the effective lambda slightly repulsive even in sparse regions
+            deltaP += (lambdaI + particles[j].lambda + sCorr) * SpikyGrad(r, h);
         }
     }
     deltaP /= rho0;

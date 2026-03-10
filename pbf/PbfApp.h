@@ -20,17 +20,21 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 10, gridY = 20, gridZ = 10; // number of particles along each axis of the initial grid
+	const int gridX = 15, gridY = 15, gridZ = 15; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; 
 	const int solverIterations = 5; // how many times to run [lambdaCS -> deltaCS] per frame
 	const float particleSpacing = 0.25f; // distance between particles in world space
-	const float h = 0.3f; // SPH smoothing radius: how far out to look for neighbors
-	const float rho0 = 110.0f; // rest density: constraint target
+	const float h = particleSpacing * 3; // SPH smoothing radius: how far out to look for neighbors
+	const float rho0 = 64.0f; // rest density: constraint target
 	const float epsilon = 5.0f; // constraint force mixing relaxation parameter
-	const float viscosity = 0.001f; // XSPH viscosity coefficient
-	const Float3 boxMin = Float3(-1.5f, -1.5f, -1.5f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(1.5f, 100.0f, 1.5f); // simulation boundary maximum corner (world space)
+	const float viscosity = 0.01f; // XSPH viscosity coefficient
+	const Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
+	const float sCorrK = 0.1f; // artificial pressure magnitude coefficient (paper: 0.1)
+	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
+	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
+	const Float4 particleParams = Float4(0.9f, 0.1f, 0.7f, 0.5*particleSpacing); // xyz are color, w is radius
 
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
@@ -406,7 +410,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Egg::Math::Float4(0.9f, 0.1f, 0.7f, 0.1f); // xyz are color, w is radius
+		perFrameCb->particleParams = particleParams;
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 
@@ -418,6 +422,9 @@ protected:
 		computeCb->epsilon = epsilon;
 		computeCb->boxMax = boxMax;
 		computeCb->viscosity = viscosity;
+		computeCb->sCorrK = sCorrK;
+		computeCb->sCorrDeltaQ = sCorrDeltaQ;
+		computeCb->sCorrN = sCorrN;
 		computeCb.Upload();
 	}
 

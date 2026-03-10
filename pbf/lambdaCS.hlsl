@@ -34,7 +34,12 @@ cbuffer ComputeCb : register(b0)
     float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
     float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
     float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
+    float sCorrK; // offset 48 (4 bytes): artificial pressure k
+    float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
+    float sCorrN; // offset 56 (4 bytes): artificial pressure n
+    float pad; // offset 60 (4 bytes): padding to reach 64 bytes
 };
+
 RWStructuredBuffer<Particle> particles : register(u0);
 
 [RootSignature(LambdaRootSig)]
