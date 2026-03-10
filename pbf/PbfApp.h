@@ -29,8 +29,9 @@ protected:
 	const float rho0 = 1.0f / powf(particleSpacing, 3.0f); // rest density: constraint target
 	const float epsilon = 5.0f; // constraint force mixing relaxation parameter
 	const float viscosity = 0.001f; // XSPH viscosity coefficient
-	const Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
+	Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
+	Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
+	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
 	const float sCorrK = 0.1f; // artificial pressure magnitude coefficient (paper: 0.1)
 	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
@@ -59,6 +60,7 @@ protected:
 	com_ptr<ID3D12PipelineState> viscosityPso;  // XSPH velocity smoothing
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
+	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
 
 	void LoadBackground() {
@@ -404,6 +406,16 @@ protected:
 		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
 		camera->Animate(dt); // update camera position and orientation based on user input
 
+		// translate the bounding box on the XZ plane based on held arrow keys
+		// left/right move along X, up/down move along Z (both corners shift by the same offset)
+		Float3 boxShift = Float3(0.0f, 0.0f, 0.0f);
+		if (arrowLeft) boxShift.x -= boxMoveSpeed * dt;
+		if (arrowRight) boxShift.x += boxMoveSpeed * dt;
+		if (arrowUp) boxShift.z += boxMoveSpeed * dt;
+		if (arrowDown) boxShift.z -= boxMoveSpeed * dt;
+		boxMin += boxShift;
+		boxMax += boxShift;
+
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
 			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
@@ -542,5 +554,19 @@ public:
 
 		if (uMsg == WM_KEYDOWN && wParam == VK_SPACE)
 			physicsRunning = !physicsRunning; // toggle physics simulation on/off
+
+		// track arrow key held state for continuous box translation in Update()
+		if (uMsg == WM_KEYDOWN) {
+			if (wParam == VK_LEFT) arrowLeft = true;
+			if (wParam == VK_RIGHT) arrowRight = true;
+			if (wParam == VK_UP) arrowUp = true;
+			if (wParam == VK_DOWN) arrowDown = true;
+		}
+		if (uMsg == WM_KEYUP) {
+			if (wParam == VK_LEFT) arrowLeft = false;
+			if (wParam == VK_RIGHT) arrowRight = false;
+			if (wParam == VK_UP) arrowUp = false;
+			if (wParam == VK_DOWN) arrowDown = false;
+		}
 	}
 };
