@@ -26,16 +26,15 @@
 
 cbuffer ComputeCb : register(b0)
 {
-    // Must match ComputeCb in ConstantBufferTypes.h -- same order, same offsets.
-    float dt; // unused in this pass
-    uint  numParticles; // loop bound and bounds check
-    float h; // SPH smoothing radius
-    float rho0; // rest density -- target of the constraint
-    float epsilon; // relaxation factor for the lambda denominator
-    float viscosity; // XSPH viscosity coefficient (unused in this pass)
-    float pad[2]; // padding to 32 bytes
+    float dt; // offset 0 (4 bytes): simulation timestep in seconds
+    uint numParticles; // offset 4 (4 bytes): total particle count
+    float h; // offset 8 (4 bytes): SPH smoothing radius
+    float rho0; // offset 12 (4 bytes): rest density
+    float3 boxMin; // offset 16 (12 bytes): simulation box minimum corner (world space)
+    float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
+    float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
+    float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
 };
-
 RWStructuredBuffer<Particle> particles : register(u0);
 
 [RootSignature(LambdaRootSig)]

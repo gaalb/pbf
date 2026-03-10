@@ -27,21 +27,17 @@
 
 cbuffer ComputeCb : register(b0)
 {
-    float dt; // unused in this pass
-    uint numParticles; // loop bound and bounds check
-    float h; // SPH smoothing radius
-    float rho0; // rest density
-    float epsilon; // unused in this pass
-    float viscosity; // XSPH viscosity coefficient (unused in this pass)
-    float pad[2]; // padding to 32 bytes
+    float dt; // offset 0 (4 bytes): simulation timestep in seconds
+    uint numParticles; // offset 4 (4 bytes): total particle count
+    float h; // offset 8 (4 bytes): SPH smoothing radius
+    float rho0; // offset 12 (4 bytes): rest density
+    float3 boxMin; // offset 16 (12 bytes): simulation box minimum corner (world space)
+    float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
+    float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
+    float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
 };
 
 RWStructuredBuffer<Particle> particles : register(u0);
-
-// Simulation boundary box. Particles are clamped to this region after each delta_p step.
-// Particles start in roughly [-1, +0.8] in all axes; the box gives room to fall and spread.
-static const float3 boxMin = float3(-1.5, -1.5, -1.5);
-static const float3 boxMax = float3(1.5, 100.0, 1.5);
 
 [RootSignature(DeltaRootSig)]
 [numthreads(256, 1, 1)]

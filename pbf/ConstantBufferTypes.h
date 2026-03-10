@@ -15,14 +15,14 @@ __declspec(align(16)) struct PerFrameCb {
 };
 
 // per-simulation-step data uploaded to all PBF compute shaders before each dispatch
-// must be 16-byte aligned; total size = 32 bytes (two 16-byte chunks)
+// must be 16-byte aligned, hence the not-so-didactic ordering under here, that avoids padding
 __declspec(align(16)) struct ComputeCb {
-	float dt; // simulation timestep in seconds, set each frame in Update()
-	UINT  numParticles; // total particle count; used for bounds check in every compute shader
-	float h; // SPH smoothing radius — particles within this distance are neighbors
-	float rho0; // rest density (kg/m^3); constraint target: rho_i / rho0 - 1 = 0
-
-	float epsilon; // constraint force mixing relaxation parameter
-	float viscosity; // XSPH viscosity coefficient c
-	float pad[2]; // padding to reach 32 bytes (next 16-byte boundary)
+	float dt; // offset 0 (4 bytes): simulation timestep in seconds
+	UINT numParticles; // offset 4 (4 bytes): total particle count; used for bounds check in every compute shader
+	float h; // offset 8 (4 bytes): SPH smoothing radius
+	float rho0; // offset 12 (4 bytes): rest density, constraint target: rho_i / rho0 - 1 = 0
+	Float3 boxMin; // offset 16 (12 bytes): simulation box minimum corner (world space)
+	float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
+	Float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
+	float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
 };

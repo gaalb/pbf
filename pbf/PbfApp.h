@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <Egg/SimpleApp.h>
 #include "ConstantBufferTypes.h"
 #include "ParticleTypes.h"
@@ -9,6 +10,7 @@
 #include <Egg/Importer.h>
 #include <Egg/Mesh/Prefabs.h>
 
+using namespace Egg::Math;
 
 // SimpleApp gives us:
 // command allocator and command list for recording GPU commands
@@ -17,7 +19,44 @@
 // frame synchronization (WaitForPreviousFrame)
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
-private:
+protected:
+	const int gridX = 10, gridY = 20, gridZ = 10; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int numParticles = gridX * gridY * gridZ; 
+	const int solverIterations = 5; // how many times to run [lambdaCS -> deltaCS] per frame
+	const float particleSpacing = 0.25f; // distance between particles in world space
+	const float h = 0.3f; // SPH smoothing radius: how far out to look for neighbors
+	const float rho0 = 110.0f; // rest density: constraint target
+	const float epsilon = 5.0f; // constraint force mixing relaxation parameter
+	const float viscosity = 0.001f; // XSPH viscosity coefficient
+	const Float3 boxMin = Float3(-1.5f, -1.5f, -1.5f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(1.5f, 100.0f, 1.5f); // simulation boundary maximum corner (world space)
+
+	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
+	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
+	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
+	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
+	Egg::TextureCube envTexture; // the cubemap texture
+	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible textures
+
+	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
+	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
+
+	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters uploaded every frame
+
+	// all four compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
+	// so we extract the root sig from one shader and reuse it for all four PSOs
+	com_ptr<ID3D12RootSignature> computeRootSig;
+
+	com_ptr<ID3D12PipelineState> predictPso;    // apply gravity, compute position prediction p*
+	com_ptr<ID3D12PipelineState> lambdaPso;     // compute lambda per particle
+	com_ptr<ID3D12PipelineState> deltaPso;      // compute delta_p, update p*, clamp to box
+	com_ptr<ID3D12PipelineState> finalizePso;   // commit p* to position, update velocity
+	com_ptr<ID3D12PipelineState> viscosityPso;  // XSPH velocity smoothing
+
+	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
+
+
 	void LoadBackground() {
 		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube :
 		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
@@ -57,19 +96,16 @@ private:
 
 	std::vector<Particle> GenerateParticles() {
 		// create a small cube of particles so we can see something on screen
-		std::vector<Particle> particles;
-		float spacing = 0.2f; // distance between particles in world space
-		float offset = -(gridSize * spacing) / 2.0f; // shift so the cube is centered at the origin
-
-		for (int x = 0; x < gridSize; x++) {
-			for (int y = 0; y < gridSize; y++) {
-				for (int z = 0; z < gridSize; z++) {
+		std::vector<Particle> particles; 
+		Float3 grid = Float3(gridX, gridY, gridZ);
+		Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
+		offset += Float3(offsetX, offsetY, offsetZ); // apply user-defined world space offset
+		for (int x = 0; x < grid.x; x++) {
+			for (int y = 0; y < grid.y; y++) {
+				for (int z = 0; z < grid.z; z++) {
 					Particle p;
-					p.position = Egg::Math::Float3(
-						offset + x * spacing,
-						offset + y * spacing + 3.0, // start the box a bit off the ground for a fall splash
-						offset + z * spacing);
-					p.velocity = Egg::Math::Float3(0.0f, 0.0f, 0.0f); // start at rest
+					p.position = offset + Float3(x, y, z) * particleSpacing;
+					p.velocity = Float3(0.0f, 0.0f, 0.0f); // start at rest
 					particles.push_back(p);
 				}
 			}
@@ -319,35 +355,6 @@ private:
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 	}
 
-protected:
-	static const int gridSize = 10; // number of particles along one edge of the cube
-	static const int numParticles = gridSize * gridSize * gridSize; // 1000
-	static const int solverIterations = 5; // how many times to run [lambdaCS -> deltaCS] per frame
-
-	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
-	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame
-	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
-	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
-	Egg::TextureCube envTexture; // the cubemap texture
-	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible textures
-
-	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible, lives for the duration of the app
-	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
-
-	Egg::ConstantBuffer<ComputeCb> computeCb; // simulation parameters uploaded every frame
-
-	// all four compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
-	// so we extract the root sig from one shader and reuse it for all four PSOs
-	com_ptr<ID3D12RootSignature> computeRootSig;
-
-	com_ptr<ID3D12PipelineState> predictPso;    // apply gravity, compute position prediction p*
-	com_ptr<ID3D12PipelineState> lambdaPso;     // compute lambda per particle
-	com_ptr<ID3D12PipelineState> deltaPso;      // compute delta_p, update p*, clamp to box
-	com_ptr<ID3D12PipelineState> finalizePso;   // commit p* to position, update velocity
-	com_ptr<ID3D12PipelineState> viscosityPso;  // XSPH velocity smoothing
-
-	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
-
 	// uploads textures from CPU to GPU. Must be called after importing textures.
 	// similar to a render call: resets command list, records copy commands, executes, waits.
 	void UploadResources() {
@@ -390,6 +397,7 @@ protected:
 	}
 
 	virtual void Update(float dt, float T) override {
+		dt = std::min(dt, 1.0f / 30.0f); // cap at ~33ms: prevents energy spikes on window drag or stutter
 		camera->Animate(dt); // update camera position and orientation based on user input
 
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
@@ -404,10 +412,12 @@ protected:
 
 		computeCb->dt = dt;
 		computeCb->numParticles = numParticles;
-		computeCb->h = 0.4f;     // smoothing radius 
-		computeCb->rho0 = 100.0f; // rest density -- estimated from kernel sum at initial spacing, needs tuning
-		computeCb->epsilon = 5.0f; // lambda relaxation -- prevents division by zero, needs tuning
-		computeCb->viscosity = 0.001f; // XSPH viscosity coefficient -- 0 = off, higher = more viscous
+		computeCb->h = h;
+		computeCb->rho0 = rho0;
+		computeCb->boxMin = boxMin;
+		computeCb->epsilon = epsilon;
+		computeCb->boxMax = boxMax;
+		computeCb->viscosity = viscosity;
 		computeCb.Upload();
 	}
 
