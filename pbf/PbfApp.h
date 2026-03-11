@@ -38,7 +38,7 @@ protected:
 	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
 	const float viscosity = 0.01f; // paper suggests 0.01
 	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
-	const float sCorrK = 0.1f; // artificial pressure magnitude coefficient (paper: 0.1)
+	const float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
 	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float4 particleParams = Float4(0.9f, 0.1f, 0.7f, 0.5*particleSpacing); // xyz are color, w is radius

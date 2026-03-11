@@ -32,10 +32,10 @@ void main(point VSOutput input[1], inout TriangleStream<GSOutput> outputStream)
     float radius = particleParams.w;
 
     // compute billboard axes: the quad always faces the camera
-    float3 forward = normalize(cameraPos.xyz - center); // points from particle toward camera
+    float3 forward = normalize(cameraPos.xyz - center); // points particle -> camera
     float3 worldUp = float3(0, 1, 0); // we're supposing the camera always stands upright
     float3 right = normalize(cross(worldUp, forward)); // billboard's local right
-    float3 up = cross(forward, right); // billboard's local up
+    float3 up = normalize(cross(forward, right)); // billboard's local up
 
     // che 4 corners of the quad, offset from center by +-right and +-up
     // UV coordinates map from -1 to 1 so we can compute sphere normals in the PS

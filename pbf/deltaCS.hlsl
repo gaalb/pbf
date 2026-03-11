@@ -78,9 +78,18 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float wRatio = Poly6(r, h) / poly6AtDeltaQ;
             float sCorr = -sCorrK * pow(wRatio, sCorrN);
 
-            // Eq. 12 + 13: position correction with artificial pressure included
-            // lambda_i + lambda_j: positive when compressed (repulsive), negative when sparse (attractive)
-            // adding s_corr shifts the effective lambda slightly repulsive even in sparse regions
+            // Eq. 12 + 13: position correction with artificial pressure included.
+            // Sign chain: sCorrK > 0, pow >= 0, so sCorr <= 0 always.
+            // SpikyGrad with r = p_i - p_j points from i toward j.
+            // A negative coefficient times that direction pushes i away from j -- repulsive.
+            // So sCorr is a genuinely repulsive contribution, as the paper states.
+            //
+            // The "surface tension-like effect" the paper mentions is emergent, not direct:
+            // sCorr keeps the bulk density slightly below rho0, so even bulk particles
+            // end up with a weakly positive lambda (attractive). At the surface, where
+            // particle counts are low and density is even lower, this mild attraction
+            // creates a coherent surface instead of the violent clumping (tensile instability)
+            // that occurs without s_corr. Raising sCorrK increases this surface cohesion.
             deltaP += (lambdaI + particles[j].lambda + sCorr) * SpikyGrad(r, h);
         }
     }
