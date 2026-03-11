@@ -75,20 +75,22 @@ protected:
 		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
 		// 2. the upload heap resource, which the CPU can write to, and is used for staging
 		// the texture data is also copied to the upload heap by this function call, but not yet transferred to
-		// the default heap until we call UploadResources(), as this step requires the command queue
+		// the default heap until we call UploadBackground(), as this step requires the command queue
 		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
 		// create a Shader Resource View so the pixel shader can sample the cubemap
-		// note that this is different from the SRV heap that we created earlier, this SRV fills one slot
+		// note that this is different from the SRV *heap* that we created earlier, this SRV fills one slot
 		// in the SRV heap, specifically, slot (index) 0
 		envTexture.CreateSRV(device.Get(), srvHeap.Get(), 0);
 		// transfer texture data from upload heap to GPU-local memory
-		UploadResources();
+		UploadBackground();
 
 		// loadCso reads the pre-compiled .cso binary into a blob
 		com_ptr<ID3DBlob> bgVertexShader = Egg::Shader::LoadCso("Shaders/bgVS.cso"); // vertex shader
 		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
 		com_ptr<ID3D12RootSignature> bgRootSig = Egg::Shader::LoadRootSignature(device.Get(), bgVertexShader.Get());
 
+		// the material of a mesh is what handles shader configuration, which includes root signature, 
+		// shader bytecode, pipeline state settings, and resource bindings (SRV/UAV/CBV)
 		Egg::Mesh::Material::P bgMaterial = Egg::Mesh::Material::Create();
 		bgMaterial->SetRootSignature(bgRootSig);
 		bgMaterial->SetVertexShader(bgVertexShader);
@@ -102,13 +104,15 @@ protected:
 		bgMaterial->SetSrvHeap(1, srvHeap, 0);
 
 		// The fullscreen quad from Egg's prefab library - 2 triangles covering the entire screen
+		// the geometry of a mesh is what handles raw vertex data
 		Egg::Mesh::Geometry::P bgGeometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
 
+		// Mesh = material + geometry
 		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
 	}
 
 	std::vector<Particle> GenerateParticles() {
-		// create a small cube of particles so we can see something on screen
+		// create and return an evenly spaced grid of particles so we can see something on screen
 		std::vector<Particle> particles; 
 		Float3 grid = Float3(gridX, gridY, gridZ);
 		Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
@@ -130,7 +134,7 @@ protected:
 		// CPU side
 		void* pData; // will point to the upload buffer's CPU-accessible memory after mapping
 		CD3DX12_RANGE readRange(0, 0); // 0,0 tells DX12 we will not read from this mapping, only write
-		DX_API("Failed to map particle upload buffer")
+		DX_API("Failed to map particle upload buffer") // grab a CPU pointer to the memory of the upload buffer resource
 			particleUploadBuffer->Map(
 				0, // subresource index: 0 for buffers (only textures have multiple subresources)
 				&readRange,// read range hint: (0,0) means we won't read any data back
@@ -141,6 +145,7 @@ protected:
 		particleUploadBuffer->Unmap( // we only use this buffer to upload data to the GPU, so we can unmap right after the copy
 			0, // subresource index
 			nullptr); // written range: nullptr means we wrote the entire buffer
+		// after the unmap, pData is no longer valid
 
 		// GPU side
 		DX_API("Failed to reset command allocator (UploadParticles)")
@@ -197,8 +202,8 @@ protected:
 		D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
 		psoDesc.pRootSignature = computeRootSig.Get();
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get());
-		DX_API("Failed to create predict compute PSO")
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get()); // initialize descriptor with cd3dx12 helper
+		DX_API("Failed to create predict compute PSO") // create pso using the descriptor and store it in a com_ptr
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(predictPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(lambdaShader.Get());
@@ -370,19 +375,19 @@ protected:
 
 	// uploads textures from CPU to GPU. Must be called after importing textures.
 	// similar to a render call: resets command list, records copy commands, executes, waits.
-	void UploadResources() {
+	void UploadBackground() {
 		// free the memory used by the previous frame's commands, must be done after GPU finished executing those commands
-		DX_API("Failed to reset command allocator (UploadResources)")
+		DX_API("Failed to reset command allocator (UploadBackground)")
 			commandAllocator->Reset(); 
 		
 		// reset command list to start recording copy commands, no initial pipeline state needed for copy commands
-		DX_API("Failed to reset command list (UploadResources)")
+		DX_API("Failed to reset command list (UploadBackground)")
 			commandList->Reset(commandAllocator.Get(), nullptr); 
 
 		// record the copy commands that transfer texture data from upload heap to default heap
 		envTexture.UploadResource(commandList.Get());
 
-		DX_API("Failed to close command list (UploadResources)")
+		DX_API("Failed to close command list (UploadBackground)")
 			commandList->Close();
 
 		// execute the copy commands
@@ -409,10 +414,7 @@ protected:
 		CloseCommandList(); // transition back buffer to present state and close the command list
 	}
 
-	virtual void Update(float dt, float T) override {
-		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
-		camera->Animate(dt); // update camera position and orientation based on user input
-
+	void UpdateBoundingBox(float dt) {
 		// translate the bounding box on the XZ plane based on held arrow keys
 		// left/right move along X, up/down move along Z (both corners shift by the same offset)
 		Float3 boxShift = Float3(0.0f, 0.0f, 0.0f);
@@ -422,7 +424,9 @@ protected:
 		if (arrowDown) boxShift.z -= boxMoveSpeed * dt;
 		boxMin += boxShift;
 		boxMax += boxShift;
+	}
 
+	void UpdatePerFrameCb() {
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
 			camera->GetProjMatrix(); // projection matrix: camera space -> clip space
@@ -432,7 +436,9 @@ protected:
 		perFrameCb->particleParams = particleParams;
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
+	}
 
+	void UpdateComputeCb(float dt) {
 		computeCb->dt = dt;
 		computeCb->numParticles = numParticles;
 		computeCb->h = h;
@@ -447,32 +453,20 @@ protected:
 		computeCb.Upload();
 	}
 
-public:
-	virtual void CreateResources() override {
-		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
-		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
-		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
-		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+	virtual void Update(float dt, float T) override {
+		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
+		camera->Animate(dt); // update camera position and orientation based on user input
 
-		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
-		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
-		// live in a descriptor heap, which has to be big enough to hold a descriptor for each of our resources, one of
-		// which is the cube map texture.
-		// descriptor heap layout:
-		//   slot 0: cubemap SRV       - sampled by the background pixel shader
-		//   slot 1: particle SRV (t0) - read by the vertex shader to fetch particle positions
-		//   slot 2: particle UAV (u0) - written by the compute shader to update particle positions and velocities
-		D3D12_DESCRIPTOR_HEAP_DESC dhd;
-		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
-		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 3; // slot 0: cubemap SRV, slot 1: particle SRV, slot 2: particle UAV
-		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
+		UpdateBoundingBox(dt);
 
-		DX_API("Failed to create descriptor heap")
-			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
+		UpdatePerFrameCb();
+		
+		UpdateComputeCb(dt);		
+	}
 
+	void CreateParticleBuffer() {
 		// create the particle buffer on the default heap (GPU-local, writable by compute shaders via UAV)
-		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes: 1000 particles * particle size
+		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT); // DEFAULT heap: GPU-local fast memory, not CPU-accessible
 		const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
 			bufferSize,  // size of the buffer in bytes
@@ -481,12 +475,15 @@ public:
 			device->CreateCommittedResource( // allocation call
 				&defaultHeapProps, // allocate on the DEFAULT (GPU-local) heap
 				D3D12_HEAP_FLAG_NONE, // no special heap flags
-				&bufferDesc, 
+				&bufferDesc,
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // initial state: UAV, matching how compute shaders will access it
 				nullptr, // optimized clear value: only used for render targets / depth buffers, not buffers
 				IID_PPV_ARGS(particleBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
 		particleBuffer->SetName(L"Particle Buffer"); // debug name for D3D12 validation layer
+	}
 
+	void CreateUploadBuffer() {
+		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes
 		// create the upload buffer: same size, upload heap so the CPU can write initial particle data into it
 		// once the data is copied to the default heap, this buffer is no longer needed
 		const CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD); // UPLOAD heap: CPU-writable, GPU-readable, slower than default heap
@@ -500,7 +497,9 @@ public:
 				nullptr, // no optimized clear value
 				IID_PPV_ARGS(particleUploadBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
 		particleUploadBuffer->SetName(L"Particle Upload Buffer"); // debug name for D3D12 validation layer
+	}
 
+	void CreateSrv() {
 		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -519,7 +518,11 @@ public:
 			1, // slot index 1
 			descriptorSize); // stride between slots in bytes
 		device->CreateShaderResourceView(particleBuffer.Get(), &srvDesc, srvHandle); // write the SRV descriptor into slot 1
+	}
 
+	void CreateUav() {
+		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		// particle UAV (slot 2): read-write view for the compute shader
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 		uavDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers always use UNKNOWN format
@@ -539,6 +542,43 @@ public:
 			nullptr, // no counter resource (only needed for append/consume buffers)
 			&uavDesc,
 			uavHandle); // write the UAV descriptor into slot 2
+	}
+
+	void CreateDescriptorHeap() {
+		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
+		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
+		// live in a descriptor heap, which has to be big enough to hold a descriptor for each of our resources, one of
+		// which is the cube map texture.
+		// descriptor heap layout:
+		//   slot 0: cubemap SRV       - sampled by the background pixel shader
+		//   slot 1: particle SRV (t0) - read by the vertex shader to fetch particle positions
+		//   slot 2: particle UAV (u0) - written by the compute shader to update particle positions and velocities
+		D3D12_DESCRIPTOR_HEAP_DESC dhd;
+		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
+		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
+		dhd.NumDescriptors = 3; // slot 0: cubemap SRV, slot 1: particle SRV, slot 2: particle UAV
+		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
+
+		DX_API("Failed to create descriptor heap")
+			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
+	}
+
+public:
+	virtual void CreateResources() override {
+		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
+		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
+		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
+		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+
+		CreateDescriptorHeap();
+
+		CreateParticleBuffer();
+
+		CreateUploadBuffer();
+		
+		CreateSrv();
+		
+		CreateUav();
 	}
 
 	virtual void LoadAssets() override {
