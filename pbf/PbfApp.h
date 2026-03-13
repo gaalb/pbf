@@ -42,6 +42,7 @@ protected:
 	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float4 particleParams = Float4(0.9f, 0.1f, 0.7f, 0.5*particleSpacing); // xyz are color, w is radius
+	const float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
 	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
 
 	// non-constant members
@@ -65,6 +66,8 @@ protected:
 	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
 	com_ptr<ID3D12PipelineState> finalizePso; // commit p* to position, update velocity
 	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing
+	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in predictedPosition
+	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
@@ -192,6 +195,8 @@ protected:
 		com_ptr<ID3DBlob> deltaShader      = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
 		com_ptr<ID3DBlob> finalizeShader   = Egg::Shader::LoadCso("Shaders/finalizeCS.cso");
 		com_ptr<ID3DBlob> viscosityShader  = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
+		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
+		com_ptr<ID3DBlob> confinementShader = Egg::Shader::LoadCso("Shaders/confinementCS.cso");
 
 		// all five shaders embed the same root signature string, so we extract it once
 		// from predictCS and reuse it for all five PSO descriptors
@@ -221,6 +226,14 @@ protected:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(viscosityShader.Get());
 		DX_API("Failed to create viscosity compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(viscosityPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(vorticityShader.Get());
+		DX_API("Failed to create vorticity compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(vorticityPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(confinementShader.Get());
+		DX_API("Failed to create confinement compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(confinementPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -361,6 +374,17 @@ protected:
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
+		// vorticity estimation: compute curl of velocity field per particle,
+		// store result in predictedPosition (which is redundant after finalizeCS)
+		commandList->SetPipelineState(vorticityPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// vorticity confinement: read stored omega values, apply corrective force to velocity
+		commandList->SetPipelineState(confinementPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
 		// XSPH viscosity: smooth velocity field toward neighborhood average
 		// position reads are race-free here (finalizeCS finished, barrier issued above)
 		commandList->SetPipelineState(viscosityPso.Get());
@@ -450,6 +474,7 @@ protected:
 		computeCb->sCorrK = sCorrK;
 		computeCb->sCorrDeltaQ = sCorrDeltaQ;
 		computeCb->sCorrN = sCorrN;
+		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb.Upload();
 	}
 

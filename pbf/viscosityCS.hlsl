@@ -14,6 +14,12 @@
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write velocity)
+//
+// Note that there is a slight deviationn from the paper at this point: in the paper, they
+// finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
+// constraints and viscosity, THEN commit the position. This means that the vorticity and
+// viscosity corrections see updated velocity but the old positions, as opposed to my implementation
+// where they see the updated velocity and position. TODO: fix
 
 #define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
@@ -46,11 +52,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    // Note that there is a slight deviationn from the paper at this point: in the paper, they
-    // finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
-    // constraints and viscosity, THEN commit the position. This means that the vorticity and
-    // viscosity corrections see updated velocity but the old positions, as opposed to my implementation
-    // where they see the updated velocity and position. TODO: fix
     float3 pi = particles[i].position; // committed position after finalizeCS
     float3 vi = particles[i].velocity; // velocity after finalizeCS: (p* - p_old) / dt
 
@@ -63,8 +64,16 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float3 r = pi - particles[j].position; 
             float3 vj = particles[j].velocity;
 
-            // note that r is pi-pj, whereas the velocity contribution is vj-vi
-            // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity
+            // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity.
+            // The full XSPH formula (Schechter & Bridson 2012) is:
+            //   sum_j (m_j / rho_j) * (v_j - v_i) * W(r_ij, h)
+            // m_j = 1 is dropped as a uniform constant; it only scales the sum and is
+            // absorbed into the viscosity coefficient c.
+            // 1/rho_j is also dropped. Unlike m_j, rho_j varies per particle, so omitting it
+            // changes the relative weighting of neighbors and is not trivially justified.
+            // The assumption is that PBF keeps rho_j ≈ rho0 for all j (incompressibility),
+            // making 1/rho_j approximately uniform. Under that assumption it too is absorbed
+            // into c, and the formula reduces to what we compute here.
             xsphSum += (vj - vi) * Poly6(r, h);
         }
     }
