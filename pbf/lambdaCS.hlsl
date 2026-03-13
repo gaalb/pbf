@@ -7,7 +7,7 @@
 // Evaluates the density constraint: C_i = rho_i / rho0 - 1
 //
 // Computes lambda_i used by deltaCS for position corrections:
-// lambda_i = -C_i / ( sum_k |grad_pk(C_i)|^2 + eps )
+// lambda_i = -C_i / ( sum_k(|grad_pk(C_i)|^2) + eps )
 //
 // The denominator sums the squared gradient of C_i with respect to every particle k.
 // two cases depending on whether k == i or k == j:
@@ -61,7 +61,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float rho = 0.0; // density estimate rho_i
     float3 gradI = float3(0,0,0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
-    float gradSqSum = 0.0; // accumulates sum_k( |grad_pk(C_i)|^2 )
+    float gradSqSum = 0.0; // accumulates sum_k(|grad_pk(C_i)|^2) for the k=j case
 
     for (uint j = 0; j < numParticles; j++)
     {
@@ -69,7 +69,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         float3 r = pi - particles[j].predictedPosition;
 
         // Density: every particle j including i itself contributes.
-        // Poly6 uses |r|^2 with no division, so r=0 (j==i) is safe and gives a nonzero value.
         rho += Poly6(r, h);
 
         if (j != i)
@@ -85,7 +84,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     }
 
     // k=i case
-    // grad_pi(C_i) = (1/rho0) * sum_{j != i}( grad_W_spiky(r_ij, h) )
+    // grad_pi(C_i) = (1/rho0) * sum_{j != i}(grad_W_spiky(r_ij, h))
     // gradI now holds the raw sum; apply the 1/rho0 factor and add its squared magnitude.
     gradI /= rho0;
     gradSqSum += dot(gradI, gradI); // add |grad_pi(C_i)|^2 to denominator
@@ -93,6 +92,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // Density constraint value
     float C = rho / rho0 - 1.0; // 0 at rest density, > 0 if compressed, < 0 if sparse
 
-    // lambda_i = -C_i / ( sum_k(|grad_pk(C_i)|^2) + eps )
+    // Newton step length lambdda
     particles[i].lambda = -C / (gradSqSum + epsilon);
 }

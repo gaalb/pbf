@@ -49,9 +49,6 @@
     <FxCompile Include="particlePS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="gravityCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
     <FxCompile Include="predictCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>

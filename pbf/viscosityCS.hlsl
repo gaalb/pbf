@@ -5,7 +5,7 @@
 // v_i = v_i + c * sum_{j != i} (v_j - v_i) * W_poly6(p_i - p_j, h)
 //
 // Each particle's velocity is nudged toward the weighted average of its neighbors'
-// velocities. c controls how strongly -- 0 means no viscosity, 1 means full averaging.
+// velocities. c controls how strongly: 0 means no viscosity, 1 means full averaging.
 //
 // Position reads are race-free: finalizeCS has finished and a UAV barrier was issued.
 // Velocity reads have the same Gauss-Seidel race as deltaCS: thread i reads velocity[j]
@@ -46,6 +46,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
+    // Note that there is a slight deviationn from the paper at this point: in the paper, they
+    // finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
+    // constraints and viscosity, THEN commit the position. This means that the vorticity and
+    // viscosity corrections see updated velocity but the old positions, as opposed to my implementation
+    // where they see the updated velocity and position. TODO: fix
     float3 pi = particles[i].position; // committed position after finalizeCS
     float3 vi = particles[i].velocity; // velocity after finalizeCS: (p* - p_old) / dt
 
@@ -55,9 +60,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     {
         if (j != i)
         {
-            float3 r = pi - particles[j].position;
+            float3 r = pi - particles[j].position; 
             float3 vj = particles[j].velocity;
 
+            // note that r is pi-pj, whereas the velocity contribution is vj-vi
             // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity
             xsphSum += (vj - vi) * Poly6(r, h);
         }

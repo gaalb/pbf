@@ -1,9 +1,9 @@
-// PBF prediction phase
+// PBF prediction phase (Macklin & Muller 2013):
 // Each thread handles one particle:
 //   1. Apply external forces (gravity) to velocity.
 //   2. Compute a predicted position:  p* = position + velocity * dt
 //
-// The committed 'position' field is intentionally NOT updated here.
+// The committed 'position' field is intentionally not updated here.
 // It stays frozen at its value from the previous frame until finalizeCS,
 // which computes the new velocity as (p* - position) / dt and commits p*.
 //
@@ -47,14 +47,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    // --- Step 1a: apply gravity ---
-    // Semi-implicit Euler: update velocity first, then use the updated velocity
-    // for the position prediction. This gives slightly better energy conservation
-    // than explicit Euler (using the old velocity for position).
+    // apply gravity: update velocity first, then use the updated velocity
+    // for the position prediction, I think this is called semi implicit euler
     particles[i].velocity += float3(0.0, -9.8, 0.0) * dt;
 
-    // --- Step 1b: predict position ---
     // p* is our best guess of where the particle will end up if no constraints
-    // are applied. The constraint solver will nudge p* until density is satisfied.
+    // are applied. The constraint solver will nudge p* to satisfy density better
     particles[i].predictedPosition = particles[i].position + particles[i].velocity * dt;
 }

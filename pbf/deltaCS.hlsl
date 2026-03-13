@@ -15,6 +15,8 @@
 // predictedPosition[j] while thread j may already have overwritten predictedPosition[j]
 // in the same dispatch. A strictly correct Jacobi step would require double-buffering:
 // deltaCS reads from one buffer and writes to a separate buffer, with no overlap.
+// As it is, I think this is what's called a Gauss-Seidel step, which is not strictly correct
+// but in my experience, it still does converge.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
@@ -51,7 +53,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pi = particles[i].predictedPosition; // cache to avoid repeated UAV reads
+    // cache to avoid repeated UAV reads
+    float3 pi = particles[i].predictedPosition; 
     float lambdaI = particles[i].lambda;
 
     // Precompute the s_corr denominator, same for every (i,j) pair.
@@ -72,19 +75,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
             // that counteracts this without disturbing the bulk behavior.
             // s_corr = -k * (W(r, h) / W(delta_q, h))^n
-            // The ratio is between 0 and 1 for r >= delta_q (Poly6 is decreasing), so s_corr is in [-k, 0].
-            // At r == delta_q the ratio is 1 and s_corr == -k (maximum repulsion).
-            // For r much larger than delta_q the ratio approaches 0 and s_corr vanishes.
             float wRatio = Poly6(r, h) / poly6AtDeltaQ;
-            float sCorr = -sCorrK * pow(wRatio, sCorrN);
+            float sCorr = -sCorrK * pow(wRatio, sCorrN); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
 
-            // Eq. 12 + 13: position correction with artificial pressure included.
-            // Sign chain: sCorrK > 0, pow >= 0, so sCorr <= 0 always.
+            // Eq. 12 + 13: position correction with artificial pressure included..
             // SpikyGrad with r = p_i - p_j points from i toward j.
             // A negative coefficient times that direction pushes i away from j -- repulsive.
-            // So sCorr is a genuinely repulsive contribution, as the paper states.
-            //
-            // The "surface tension-like effect" the paper mentions is emergent, not direct:
+            // So sCorr is a repulsive contribution. The "surface tension-like effect" is because
             // sCorr keeps the bulk density slightly below rho0, so even bulk particles
             // end up with a weakly positive lambda (attractive). At the surface, where
             // particle counts are low and density is even lower, this mild attraction
@@ -98,7 +95,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // Update the predicted position
     float3 newPos = pi + deltaP;
 
-    // Clamp to the simulation box.
+    // Perform collision check, for now this is just a simple clamp to keep particles inside the simulation box.
     // clamp() applies component-wise: newPos.x is clamped to [boxMin.x, boxMax.x], etc.
     newPos = clamp(newPos, boxMin, boxMax);
 

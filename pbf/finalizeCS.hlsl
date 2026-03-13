@@ -7,9 +7,6 @@
 //   position_i = predictedPosition_i
 //
 // Velocity is derived from the displacement rather than integrated directly.
-// This means any corrections applied by deltaCS (pressure, boundary clamping)
-// are automatically reflected in the new velocity -- no explicit collision
-// response or velocity reflection is needed.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
@@ -48,7 +45,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 oldPos = particles[i].position;
     float3 newPos = particles[i].predictedPosition;
 
-    // velocity = displacement / dt (implicit velocity update from PBF)
+    // velocity = displacement / dt (implicit velocity update from PBF)0
     particles[i].velocity = (newPos - oldPos) / dt;
 
     // commit the predicted position as the new current position
