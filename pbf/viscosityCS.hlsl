@@ -39,7 +39,7 @@ cbuffer ComputeCb : register(b0)
     float sCorrK; // offset 48 (4 bytes): artificial pressure k
     float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
-    float pad; // offset 60 (4 bytes): padding to reach 64 bytes
+    float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
 };
 
 RWStructuredBuffer<Particle> particles : register(u0);
