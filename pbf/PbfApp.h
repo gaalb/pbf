@@ -9,6 +9,9 @@
 #include <Egg/TextureCube.h>
 #include <Egg/Importer.h>
 #include <Egg/Mesh/Prefabs.h>
+#include <imgui.h>
+#include <imgui_impl_win32.h>
+#include <imgui_impl_dx12.h>
 
 using namespace Egg::Math;
 
@@ -20,29 +23,34 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	// constants to tweak for different simulation setups
-	// these values are based on the Macklin + Muller 2013 article
 	const int gridX = 12, gridY = 20, gridZ = 12; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
-	const int solverIterations = 4; // how many newton steps to take per frame
-	// starting particle distance, which we also treat as the desired particle distance, to compute rest 
+
+	// parameters that are tunable via ImGui each frame
+	int solverIterations = 4; // how many newton steps to take per frame
+	// starting particle distance, which we also treat as the desired particle distance, to compute rest
 	// density and particle display size
-	const float particleSpacing = 0.25f; 
-	const float h = particleSpacing * 3.5f; // SPH smoothing radius, the larger the more neighbors each particle has
+	float particleSpacing = 0.25f;
+	float hMultiplier = 3.5f; // h = particleSpacing * hMultiplier, the larger the more neighbors each particle has
+	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
+	float epsilon = 5.0f;
+	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
+	float viscosity = 0.01f; // paper suggests 0.01
+	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
+	float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
+	float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
+
+	// parameters derived from tunable parameters
+	float h = particleSpacing * hMultiplier; // SPH smoothing radius
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
-	const float rho0 = 1.0f / powf(particleSpacing, 3.0f); 
-	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
-	const float epsilon = 5.0f; 
-	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
-	const float viscosity = 0.01f; // paper suggests 0.01
-	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
-	const float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
-	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
+	float rho0 = 1.0f / powf(particleSpacing, 3.0f);
+	float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
+
+	// non-tunable constants
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
-	const Float4 particleParams = Float4(0.9f, 0.1f, 0.7f, 0.5*particleSpacing); // xyz are color, w is radius
-	const float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
+	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
 
 	// non-constant members
@@ -68,6 +76,7 @@ protected:
 	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing
 	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in predictedPosition
 	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
+	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
@@ -425,15 +434,67 @@ protected:
 		envTexture.ReleaseUploadResources();
 	}
 
+	void ImGuiPass() {
+		// begin a new ImGui frame, which gives us a clean slate to construct the UI for this frame
+		ImGui_ImplDX12_NewFrame(); // tell ImGui about the new frame for DX12
+		ImGui_ImplWin32_NewFrame(); // tell ImGui about the new frame for Win32 (input handling, time, etc)
+		// the core library consumes the input state the backends just wrote and begins a new frame
+		ImGui::NewFrame(); // after this we can create ImGui widgets for this frame
+
+
+		// InputFloat/InputInt: text field with +/- stepper buttons. Type a value and press Enter.
+		// The "step" argument is how much the +/- buttons change the value per click.
+		// This is the immediate mode paradigm: we construct the same UI every frame, and ImGui handles the state internally.
+		// InputFloat/Int reads the current value from the pointer, renders the widget into the draw list, and
+		// writes the value back to the pointer if the user changed it
+		ImGui::Begin("PBF Controls");
+		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
+		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
+		ImGui::InputFloat("Particle spacing [0.25]", &particleSpacing, 0.01f, 0.1f, "%.4f");
+		ImGui::InputFloat("h multiplier [3.5]", &hMultiplier, 0.1f, 0.5f, "%.2f");
+		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
+		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.005f, 0.01f, "%.4f");
+		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.01f, 0.05f, "%.4f");
+		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.005f, 0.01f, "%.4f");
+		// show derived values as read-only text for reference
+		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
+		ImGui::Text("%d particles, h = %.4f, rho0 = %.2f",numParticles, h, rho0);
+		ImGui::End();
+
+		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
+		// (positions, sizes, clipping), and produces an ImDrawData structure : a list of vertex buffers, index
+		// buffers, and draw commands that describe exactly what triangles to draw and with what textures.No
+		// GPU calls happen here — it's pure CPU-side geometry generation.
+		ImGui::Render();
+		// ImGui needs its own SRV heap bound (for the font texture), so we switch heaps here.
+		// The scene's srvHeap was used during GraphicsPass; that's done, so this is safe.
+		commandList->SetDescriptorHeaps(1, imguiSrvHeap.GetAddressOf());
+		// This is where ImGui's geometry actually gets drawn. GetDrawData() returns the ImDrawData that
+		// Render() produced.The D3D12 backend takes it and :
+		//  1. Selects this frame's rotating vertex/index buffer pair (alternating between 2 sets for double buffering)
+		//	2. Maps the upload buffers and copies ImGui's vertex + index data into them
+		//	3. Sets its own root signature and PSO on the command list
+		//	4. Sets the viewport, blend factor, and stencil ref
+		//	5. For each draw command : sets the scissor rect(ImGui uses scissor for clipping), binds the font
+		//		texture SRV, and issues an indexed draw call
+		//
+		//	After this returns, the command list contains all the triangles needed to render the UI panel, text,
+		//	and input fields on top of our scene.
+		ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList.Get());
+	}
+
 	// this is the method we must implement from SimpleApp, Render() calls it,
 	// this is where we record all GPU commands to construct one frame
 	virtual void PopulateCommandList() override {
 		PrepareCommandList(); // set up the command list for a new frame: reset, set viewport/scissor, transition back buffer to render target
-		
+
 		if (physicsRunning)
 			ComputePass(); // dispatch the compute shader to update particle positions on the GPU
 
-		GraphicsPass(); // draw the background and particles using the updated positions	
+		GraphicsPass(); // draw the background and particles using the updated positions
+
+		// draw the parameter tuning UI *after* the main scene so it appears on top
+		ImGuiPass(); 
 
 		CloseCommandList(); // transition back buffer to present state and close the command list
 	}
@@ -450,6 +511,14 @@ protected:
 		boxMax += boxShift;
 	}
 
+	// recompute values that depend on the primary tunables (particleSpacing, hMultiplier)
+	// must be called each frame before uploading constant buffers, because sliders may have changed
+	void RecomputeDerivedParams() {
+		h = particleSpacing * hMultiplier;
+		rho0 = 1.0f / powf(particleSpacing, 3.0f);
+		sCorrDeltaQ = 0.2f * h;
+	}
+
 	void UpdatePerFrameCb() {
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
@@ -457,7 +526,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = particleParams;
+		perFrameCb->particleParams = Float4(particleColor.x, particleColor.y, particleColor.z, 0.5f * particleSpacing);
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
@@ -484,9 +553,11 @@ protected:
 
 		UpdateBoundingBox(dt);
 
+		RecomputeDerivedParams(); // recalculate h, rho0, sCorrDeltaQ from current slider values
+
 		UpdatePerFrameCb();
-		
-		UpdateComputeCb(dt);		
+
+		UpdateComputeCb(dt);
 	}
 
 	void CreateParticleBuffer() {
@@ -588,12 +659,26 @@ protected:
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
 	}
 
+	void CreateImGuiDescriptorHeap() {
+		// create a dedicated 1-slot SRV descriptor heap for ImGui's internal font texture.
+		// this is separate from our scene's srvHeap so we don't have to change the existing layout.
+		D3D12_DESCRIPTOR_HEAP_DESC imguiHeapDesc = {};
+		imguiHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		imguiHeapDesc.NumDescriptors = 1;
+		imguiHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		DX_API("Failed to create ImGui SRV descriptor heap")
+			device->CreateDescriptorHeap(&imguiHeapDesc, IID_PPV_ARGS(imguiSrvHeap.GetAddressOf()));
+	}
+	
 public:
+
 	virtual void CreateResources() override {
 		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
 		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
 		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+
+		CreateImGuiDescriptorHeap();
 
 		CreateDescriptorHeap();
 
@@ -602,8 +687,8 @@ public:
 		CreateUploadBuffer();
 		
 		CreateSrv();
-		
-		CreateUav();
+
+		CreateUav();		
 	}
 
 	virtual void LoadAssets() override {
@@ -618,6 +703,46 @@ public:
 		if (camera) {
 			camera->SetAspect(aspectRatio);
 		}
+	}
+
+	// Call once after CreateResources + LoadAssets, from main.cpp where the HWND is available.
+	// Sets up ImGui context and its Win32 + D3D12 backends. At this point the D3D12 device, command queue, and
+	//imguiSrvHeap all exist.
+	void InitImGui(HWND hwnd) {
+		IMGUI_CHECKVERSION(); // checks that the headers and compiled .lib are from the same version of ImGui
+		// create the ImGui context, which stores ImGui's internal state and is needed before calling any ImGui functions
+		ImGui::CreateContext(); 
+		ImGui::StyleColorsDark();
+		
+		ImGui_ImplWin32_Init(hwnd); // Win32 backend: handles mouse position, keyboard input, cursor shape
+
+		// D3D12 backend: renders ImGui's vertex/index buffers using our device and command queue.
+		// We use the legacy single-descriptor path: one SRV for the font texture atlas.
+		// Internally ImGui_ImplDX12_Init creates a root signature and PSO, allocates 
+		// a two vertex/index buffers for swapping, creatres its own command allocator and command list,
+		// writes the font texture srv into LegacySingleSrvCpuDescriptor and LegacySingleSrvGpuDescriptor
+		ImGui_ImplDX12_InitInfo initInfo;
+		initInfo.Device = device.Get();
+		initInfo.CommandQueue = commandQueue.Get();
+		initInfo.NumFramesInFlight = 2; // matches our double-buffered swap chain
+		initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // must match swap chain format
+		initInfo.SrvDescriptorHeap = imguiSrvHeap.Get();
+		initInfo.LegacySingleSrvCpuDescriptor = imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
+		initInfo.LegacySingleSrvGpuDescriptor = imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
+		ImGui_ImplDX12_Init(&initInfo);
+	}
+
+	void ShutdownImGui() {
+		// Teardown in reverse order of initialization :
+		// 1. ImGui_ImplDX12_Shutdown() — releases all D3D12 objects the backend created(PSOs, root
+		//	  signatures, vertex / index buffers, command allocator, command list, font texture + its SRV)
+		// 2. ImGui_ImplWin32_Shutdown() — unhooks from the window, clears input state
+		// 3. ImGui::DestroyContext() — frees the global context(GImGui), setting it to nullptr.This is why
+		//	  the GetCurrentContext() != nullptr guard in WindowProcess is necessary — messages arriving after
+		//    this point must not call into ImGui.
+		ImGui_ImplDX12_Shutdown();
+		ImGui_ImplWin32_Shutdown();
+		ImGui::DestroyContext();
 	}
 
 	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys

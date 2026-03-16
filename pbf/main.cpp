@@ -2,13 +2,39 @@
 #include <Egg/App.h>
 #include <Egg/Utility.h>
 #include "PbfApp.h"
+#include <imgui.h> // core ImGui functionality
+#include <imgui_impl_win32.h> // ImGui's Win32 backend for handling window messages
 
-std::unique_ptr<Egg::App> app{ nullptr };
+// This is a forward declaration of a function that lives inside imgui_impl_win32.cpp. It's the Win32
+// backend's message handler. We need to call it from our WindowProcess, but the header doesn't declare
+// it directly(to avoid pulling in windows.h from ImGui headers), so we declare it ourselves with
+// extern.We must forward Win32 messages to it so ImGui can track mouse position, clicks, keyboard input, etc.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+std::unique_ptr<PbfApp> app{ nullptr };
 
 // callback function we'll register to the window for handling messages
 LRESULT CALLBACK WindowProcess(HWND windowHandle, UINT message, WPARAM wParam, LPARAM lParam) {
+    // let ImGui see every message first, so it can track mouse/keyboard state.
+    // guard: after ShutdownImGui() destroys the context, Windows still delivers
+    // a few trailing messages (e.g. WM_NCDESTROY). Without this check, those
+    // would call into ImGui with a null context and trigger an assertion failure.
+    if (ImGui::GetCurrentContext() != nullptr) {
+        //ImGui_ImplWin32_WndProcHandler translates the
+        // raw Win32 message into ImGui's internal input state â€” for example, WM_MOUSEMOVE updates io.MousePos,
+        // WM_LBUTTONDOWN sets io.MouseDown[0] = true, WM_CHAR appends to the text input queue.
+        //
+        // If the handler returns true, it means ImGui fully consumed the message(e.g., the user is typing
+        // into an InputFloat field â€” those characters should not also move the camera).We return immediately
+        // without forwarding to our app.
+        if (ImGui_ImplWin32_WndProcHandler(windowHandle, message, wParam, lParam))
+            return true; 
+    }
+
     switch (message) {
-    case WM_DESTROY:// WM_DESTROY is sent when the user clicks the X button        
+    case WM_DESTROY:// WM_DESTROY is sent when the user clicks the X button
+		app->ShutdownImGui(); // release ImGui resources before destroying the D3D12 device
 		app->Destroy(); // make sure to clean up our resources before exiting
         PostQuitMessage(0); // PostQuitMessage tells Windows to post WM_QUIT, which will break our message loop
         return 0;
@@ -19,23 +45,46 @@ LRESULT CALLBACK WindowProcess(HWND windowHandle, UINT message, WPARAM wParam, L
 			app->Resize(width, height); // forward the new size to our app so it can resize its resources (e.g. swap chain)
         }
         break;
-    } 
-    // Forward all messages to the app so the camera can process keyboard/mouse input
-    if (app) {
-        app->ProcessMessage(windowHandle, message, wParam, lParam);
+    }
+
+    // This is the input arbitration logic â€” deciding whether our app or ImGui "owns" each message.
+    // ImGui::GetIO() returns the IO structure where ImGui exposes two flags :
+    // - WantCaptureMouse - true when the mouse is hovering over or interacting with an ImGui window
+    // - WantCaptureKeyboard - true when an ImGui text field has focus
+    // We check mouse and keyboard capture separately: hovering over the ImGui panel
+    // should block mouse input but not keyboard input, and vice versa.
+    // Key-up and mouse-up events are always forwarded regardless of capture state,
+    // because if a key-down was forwarded but the matching key-up is blocked
+    // (e.g. mouse drifted over ImGui between press and release), the camera's
+    // "key held" flag would get stuck and movement would continue forever.
+    if (app && ImGui::GetCurrentContext() != nullptr) {
+        ImGuiIO& io = ImGui::GetIO();
+
+        bool isKeyboard = (message >= WM_KEYFIRST && message <= WM_KEYLAST);
+        bool isMouse = (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST);
+        bool isKeyUp = (message == WM_KEYUP || message == WM_SYSKEYUP);
+        bool isMouseUp = (message == WM_LBUTTONUP || message == WM_RBUTTONUP || message == WM_MBUTTONUP);
+
+        bool blocked = false;
+        if (isKeyboard && !isKeyUp && io.WantCaptureKeyboard) blocked = true;
+        if (isMouse && !isMouseUp && io.WantCaptureMouse) blocked = true;
+
+        if (!blocked) {
+            app->ProcessMessage(windowHandle, message, wParam, lParam);
+        }
     }
     return DefWindowProcW(windowHandle, message, wParam, lParam); // for other messages: default behavior (mostly nothing)
 }
 
 HWND InitWindow(HINSTANCE hInstance) {
-    // this string identifies our window class — it's an arbitrary name we pick,
+    // this string identifies our window class ï¿½ it's an arbitrary name we pick,
     // used to connect the window class registration with the window creation below
     const wchar_t* windowClassName = L"PBFWindowClass";
 
     WNDCLASSW windowClass;
     ZeroMemory(&windowClass, sizeof(WNDCLASSW)); // zero out any memory trash
     windowClass.lpfnWndProc = WindowProcess;      // assign our callback function to handle window messages
-    windowClass.lpszClassName = windowClassName;   // assign the class name — used later in CreateWindowExW
+    windowClass.lpszClassName = windowClassName;   // assign the class name ï¿½ used later in CreateWindowExW
     windowClass.hInstance = hInstance;              // the OS uses this to identify which program owns the window
 
 	
@@ -46,8 +95,8 @@ HWND InitWindow(HINSTANCE hInstance) {
         windowClassName,      // must match the class name we registered above
         L"Position Based Fluids", // the text that appears in the title bar
         WS_OVERLAPPEDWINDOW,  // standard window style: title bar, border, minimize/maximize/close buttons
-        CW_USEDEFAULT,        // initial X position — let Windows decide
-        CW_USEDEFAULT,        // initial Y position — let Windows decide
+        CW_USEDEFAULT,        // initial X position ï¿½ let Windows decide
+        CW_USEDEFAULT,        // initial Y position ï¿½ let Windows decide
         1280, 720,            // window width and height in pixels (including title bar and borders)
         NULL,                 // no parent window
         NULL,                 // no menu
@@ -64,7 +113,7 @@ void InitDX12(
     com_ptr<ID3D12Device>& device) {
     DX_API("Failed to create debug layer")
         D3D12GetDebugInterface(IID_PPV_ARGS(debugController.GetAddressOf()));
-    debugController->EnableDebugLayer(); // turn on the debug layer — causes D3D12 to validate API calls
+    debugController->EnableDebugLayer(); // turn on the debug layer ï¿½ causes D3D12 to validate API calls
     DX_API("Failed to create DXGI factory")
         CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory.GetAddressOf()));
 
@@ -137,11 +186,11 @@ void InitSwapChain(
         tempSwapChain.As(&swapChain); // .As() is a helper function that queries for the requested interface and casts if successful
 }
 
-std::unique_ptr<Egg::App> InitPbfApp(
+std::unique_ptr<PbfApp> InitPbfApp(
     com_ptr<ID3D12Device> device,
     com_ptr<ID3D12CommandQueue> commandQueue,
     com_ptr<IDXGISwapChain3> swapChain) {
-	std::unique_ptr<Egg::App> pbfApp = std::make_unique<PbfApp>();
+	auto pbfApp = std::make_unique<PbfApp>();
 
     // set attributes
     pbfApp->SetDevice(device);
@@ -166,7 +215,7 @@ void RunMessageLoop() {
             DispatchMessage(&winMessage);   // sends the message to our WindowProcess callback
         }
         else {
-            // No messages waiting — this is where we update and render each frame
+            // No messages waiting ï¿½ this is where we update and render each frame
             app->Run();
         }
 
@@ -196,11 +245,13 @@ int APIENTRY wWinMain(
 
     app = InitPbfApp(device, commandQueue, swapChain); // create our application instance, which will manage the rendering loop and resources
 
+    app->InitImGui(windowHandle); // initialize Dear ImGui for the parameter tuning UI
+
     // Disable ALT+Enter fullscreen shortcut
     DX_API("Failed to make window association")
         dxgiFactory->MakeWindowAssociation(windowHandle, DXGI_MWA_NO_ALT_ENTER);
 
-    ShowWindow(windowHandle, nShowCmd); // make the window visible — nShowCmd controls if it's normal/minimized/etc.
+    ShowWindow(windowHandle, nShowCmd); // make the window visible - nShowCmd controls if it's normal/minimized/etc.
 
     RunMessageLoop();
     
