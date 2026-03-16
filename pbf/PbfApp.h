@@ -448,6 +448,7 @@ protected:
 		// InputFloat/Int reads the current value from the pointer, renders the widget into the draw list, and
 		// writes the value back to the pointer if the user changed it
 		ImGui::Begin("PBF Controls");
+		ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
 		ImGui::InputFloat("Particle spacing [0.25]", &particleSpacing, 0.01f, 0.1f, "%.4f");
@@ -456,6 +457,7 @@ protected:
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.005f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.01f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.005f, 0.01f, "%.4f");
+		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
 		ImGui::Text("%d particles, h = %.4f, rho0 = %.2f",numParticles, h, rho0);
@@ -464,7 +466,7 @@ protected:
 		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
 		// (positions, sizes, clipping), and produces an ImDrawData structure : a list of vertex buffers, index
 		// buffers, and draw commands that describe exactly what triangles to draw and with what textures.No
-		// GPU calls happen here — it's pure CPU-side geometry generation.
+		// GPU calls happen here ï¿½ it's pure CPU-side geometry generation.
 		ImGui::Render();
 		// ImGui needs its own SRV heap bound (for the font texture), so we switch heaps here.
 		// The scene's srvHeap was used during GraphicsPass; that's done, so this is safe.
@@ -734,11 +736,11 @@ public:
 
 	void ShutdownImGui() {
 		// Teardown in reverse order of initialization :
-		// 1. ImGui_ImplDX12_Shutdown() — releases all D3D12 objects the backend created(PSOs, root
+		// 1. ImGui_ImplDX12_Shutdown() ï¿½ releases all D3D12 objects the backend created(PSOs, root
 		//	  signatures, vertex / index buffers, command allocator, command list, font texture + its SRV)
-		// 2. ImGui_ImplWin32_Shutdown() — unhooks from the window, clears input state
-		// 3. ImGui::DestroyContext() — frees the global context(GImGui), setting it to nullptr.This is why
-		//	  the GetCurrentContext() != nullptr guard in WindowProcess is necessary — messages arriving after
+		// 2. ImGui_ImplWin32_Shutdown() ï¿½ unhooks from the window, clears input state
+		// 3. ImGui::DestroyContext() ï¿½ frees the global context(GImGui), setting it to nullptr.This is why
+		//	  the GetCurrentContext() != nullptr guard in WindowProcess is necessary ï¿½ messages arriving after
 		//    this point must not call into ImGui.
 		ImGui_ImplDX12_Shutdown();
 		ImGui_ImplWin32_Shutdown();

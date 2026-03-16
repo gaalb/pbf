@@ -19,7 +19,7 @@ Cam::FirstPerson::FirstPerson()
 	viewMatrix = Float4x4::View(position, ahead, Float3::UnitY);
 	rayDirMatrix = (Float4x4::View(Float3::Zero, ahead, Float3::UnitY) * projMatrix).Invert();
 
-	speed = 0.5f;
+	speed = 2.5f;
 
 	lastMousePos = Int2::Zero;
 	mouseDelta = Float2::Zero;
@@ -98,17 +98,17 @@ void Cam::FirstPerson::UpdateProj()
 void Cam::FirstPerson::Animate(double dt)
 {
 	if(wPressed)
-		position += ahead * (shiftPressed?speed*5.0:speed) * dt;
+		position += ahead * speed * dt;
 	if(sPressed)
-		position -= ahead * (shiftPressed?speed*5.0:speed) * dt;
+		position -= ahead * speed * dt;
 	if(aPressed)
-		position -= right * (shiftPressed?speed*5.0:speed) * dt;
+		position -= right * speed * dt;
 	if(dPressed)
-		position += right * (shiftPressed?speed*5.0:speed) * dt;
+		position += right * speed * dt;
 	if(qPressed)
-		position -= Float3(0,1,0) * (shiftPressed?speed*5.0:speed) * dt;
+		position -= Float3(0,1,0) * speed * dt;
 	if(ePressed)
-		position += Float3(0,1,0) * (shiftPressed?speed*5.0:speed) * dt;
+		position += Float3(0,1,0) * speed * dt;
 
 	yaw += mouseDelta.x * 0.005f;
 	pitch += mouseDelta.y * 0.005f;
@@ -137,8 +137,6 @@ void Cam::FirstPerson::ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			qPressed = true;
 		else if(wParam == 'E')
 			ePressed = true;
-		else if(wParam == VK_SHIFT)
-			shiftPressed = true;
 	}
 	else if(uMsg == WM_KEYUP)
 	{
@@ -154,8 +152,6 @@ void Cam::FirstPerson::ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			qPressed = false;
 		else if(wParam == 'E')
 			ePressed = false;
-		else if(wParam == VK_SHIFT)
-			shiftPressed = false;
 		else if(wParam == VK_ADD)
 			speed *= 2;
 		else if(wParam == VK_SUBTRACT)
@@ -169,7 +165,6 @@ void Cam::FirstPerson::ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 		dPressed = false;
 		qPressed = false;
 		ePressed = false;
-		shiftPressed = false;
 	}
 	else if(uMsg == WM_LBUTTONDOWN)
 	{

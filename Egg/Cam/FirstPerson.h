@@ -32,7 +32,6 @@ namespace Egg { namespace Cam {
 		bool dPressed;
 		bool qPressed;
 		bool ePressed;
-		bool shiftPressed;
 
 		void UpdateView();
 		void UpdateProj();
