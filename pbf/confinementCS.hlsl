@@ -12,7 +12,7 @@
 //   3. Compute confinement force: f_i = vorticityEpsilon * (N_i x omega_i)
 //   4. Apply as a velocity correction: v_i += dt * f_i
 //
-// Per the paper's ordering, this pass uses the OLD positions (positionCommitCS has not run yet).
+// Per the paper's ordering, this pass uses the OLD positions (updatePositionCS has not run yet).
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb

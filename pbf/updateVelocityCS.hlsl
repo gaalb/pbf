@@ -1,16 +1,16 @@
-// Velocity commit pass (Macklin & Muller 2013, Algorithm 1 line 21):
+// Update velocity pass (Macklin & Muller 2013, Algorithm 1 line 21):
 //
 // After the constraint solver has converged, derive velocity from displacement:
 //   v_i = (predictedPosition_i - position_i) / dt
 //
-// Position is NOT committed here. Per the paper, vorticity confinement and viscosity
-// run next and need the old positions. positionCommitCS commits position at the very end.
+// Position is NOT updated here. Per the paper, vorticity confinement and viscosity
+// run next and need the old positions. updatePositionCS updates position at the very end.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + position, write velocity)
 
-#define VelocityCommitRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
 #include "Particle.hlsli" // Particle struct
 
@@ -32,7 +32,7 @@ cbuffer ComputeCb : register(b0)
 
 RWStructuredBuffer<Particle> particles : register(u0);
 
-[RootSignature(VelocityCommitRootSig)]
+[RootSignature(UpdateVelocityRootSig)]
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {

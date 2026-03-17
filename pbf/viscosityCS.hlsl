@@ -10,7 +10,7 @@
 // scratch back to velocity.
 //
 // Per the paper's ordering, this pass uses the OLD positions (position has not been committed
-// yet — positionCommitCS runs after this).
+// yet — updatePositionCS runs after this).
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb

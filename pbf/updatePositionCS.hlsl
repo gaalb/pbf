@@ -1,17 +1,17 @@
-// Position commit pass (Macklin & Muller 2013):
+// Update position pass (Macklin & Muller 2013, Algorithm 1 line 23):
 //
-// Commits the solver's final predictedPosition as the new current position:
+// Updates the current position from the solver's final predictedPosition:
 //   position_i = predictedPosition_i
 //
 // This runs last in the frame, after vorticity confinement and viscosity have used the
-// old positions. This matches the paper's ordering where position is committed after
+// old positions. This matches the paper's ordering where position is updated after
 // all velocity post-processing.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write position)
 
-#define PositionCommitRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define UpdatePositionRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
 #include "Particle.hlsli" // Particle struct
 
@@ -33,7 +33,7 @@ cbuffer ComputeCb : register(b0)
 
 RWStructuredBuffer<Particle> particles : register(u0);
 
-[RootSignature(PositionCommitRootSig)]
+[RootSignature(UpdatePositionRootSig)]
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {

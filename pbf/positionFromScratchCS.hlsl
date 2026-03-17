@@ -2,7 +2,7 @@
 //
 // deltaCS writes its corrected position to the scratch field to avoid a Gauss-Seidel race.
 // This shader copies scratch back to predictedPosition so the next solver iteration
-// (or velocityCommitCS) sees a consistent snapshot.
+// (or updateVelocityCS) sees a consistent snapshot.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb

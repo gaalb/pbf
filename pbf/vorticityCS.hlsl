@@ -4,8 +4,8 @@
 //   omega_i = sum_j (v_j - v_i) x grad_W_spiky( p_i - p_j, h)
 //
 // Result is stored in particles[i].omega, and consumed by confinementCS in the next pass.
-// Per the paper's ordering, this pass uses updated velocity (from velocityCommitCS) but
-// the OLD positions (positionCommitCS has not run yet).
+// Per the paper's ordering, this pass uses updated velocity (from updateVelocityCS) but
+// the OLD positions (updatePositionCS has not run yet).
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb

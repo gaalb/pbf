@@ -73,12 +73,12 @@ protected:
 	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
 	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
 	com_ptr<ID3D12PipelineState> positionFromScratchPso; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
-	com_ptr<ID3D12PipelineState> velocityCommitPso; // derive velocity from displacement: v = (p* - x) / dt
+	com_ptr<ID3D12PipelineState> updateVelocityPso; // update velocity from displacement: v = (p* - x) / dt
 	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in omega
 	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
 	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing, writes to scratch
 	com_ptr<ID3D12PipelineState> velocityFromScratchPso; // copy scratch -> velocity (Jacobi commit after viscosity)
-	com_ptr<ID3D12PipelineState> positionCommitPso; // commit predictedPosition -> position (final step per paper)
+	com_ptr<ID3D12PipelineState> updatePositionPso; // update position from predictedPosition (final step per paper)
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
@@ -206,12 +206,12 @@ protected:
 		com_ptr<ID3DBlob> lambdaShader = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
 		com_ptr<ID3DBlob> deltaShader = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
 		com_ptr<ID3DBlob> positionFromScratchShader = Egg::Shader::LoadCso("Shaders/positionFromScratchCS.cso");
-		com_ptr<ID3DBlob> velocityCommitShader = Egg::Shader::LoadCso("Shaders/velocityCommitCS.cso");
+		com_ptr<ID3DBlob> updateVelocityShader = Egg::Shader::LoadCso("Shaders/updateVelocityCS.cso");
 		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
 		com_ptr<ID3DBlob> confinementShader = Egg::Shader::LoadCso("Shaders/confinementCS.cso");
 		com_ptr<ID3DBlob> viscosityShader = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
 		com_ptr<ID3DBlob> velocityFromScratchShader = Egg::Shader::LoadCso("Shaders/velocityFromScratchCS.cso");
-		com_ptr<ID3DBlob> positionCommitShader = Egg::Shader::LoadCso("Shaders/positionCommitCS.cso");
+		com_ptr<ID3DBlob> updatePositionShader = Egg::Shader::LoadCso("Shaders/updatePositionCS.cso");
 
 		// all shaders embed the same root signature string, so we extract it once
 		// from predictCS and reuse it for all PSO descriptors
@@ -238,9 +238,9 @@ protected:
 		DX_API("Failed to create positionFromScratch compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(positionFromScratchPso.GetAddressOf()));
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(velocityCommitShader.Get());
-		DX_API("Failed to create velocityCommit compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(velocityCommitPso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(updateVelocityShader.Get());
+		DX_API("Failed to create updateVelocity compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(updateVelocityPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(vorticityShader.Get());
 		DX_API("Failed to create vorticity compute PSO")
@@ -258,9 +258,9 @@ protected:
 		DX_API("Failed to create velocityFromScratch compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(velocityFromScratchPso.GetAddressOf()));
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(positionCommitShader.Get());
-		DX_API("Failed to create positionCommit compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(positionCommitPso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(updatePositionShader.Get());
+		DX_API("Failed to create updatePosition compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(updatePositionPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -401,8 +401,8 @@ protected:
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 		}
 
-		// derive velocity from displacement (position stays old for vorticity/viscosity)
-		commandList->SetPipelineState(velocityCommitPso.Get());
+		// update velocity from displacement (position stays old for vorticity/viscosity)
+		commandList->SetPipelineState(updateVelocityPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
@@ -426,8 +426,8 @@ protected:
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-		// commit predictedPosition -> position 
-		commandList->SetPipelineState(positionCommitPso.Get());
+		// update position from predictedPosition 
+		commandList->SetPipelineState(updatePositionPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 	}
