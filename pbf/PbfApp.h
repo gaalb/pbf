@@ -76,6 +76,7 @@ protected:
 	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing
 	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in predictedPosition
 	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
+	com_ptr<ID3D12PipelineState> commitPso; // copy newPredictedPosition -> predictedPosition (Jacobi commit)
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
@@ -206,9 +207,10 @@ protected:
 		com_ptr<ID3DBlob> viscosityShader  = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
 		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
 		com_ptr<ID3DBlob> confinementShader = Egg::Shader::LoadCso("Shaders/confinementCS.cso");
+		com_ptr<ID3DBlob> commitShader = Egg::Shader::LoadCso("Shaders/commitCS.cso");
 
-		// all five shaders embed the same root signature string, so we extract it once
-		// from predictCS and reuse it for all five PSO descriptors
+		// all shaders embed the same root signature string, so we extract it once
+		// from predictCS and reuse it for all PSO descriptors
 		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), predictShader.Get());
 
 		// compute PSO descriptor: much simpler than a graphics PSO --
@@ -243,6 +245,10 @@ protected:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(confinementShader.Get());
 		DX_API("Failed to create confinement compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(confinementPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(commitShader.Get());
+		DX_API("Failed to create commit compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(commitPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -372,8 +378,13 @@ protected:
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-			// compute delta_p from lambdas, update predictedPosition, clamp to box
+			// compute delta_p from lambdas, write result to newPredictedPosition
 			commandList->SetPipelineState(deltaPso.Get());
+			commandList->Dispatch(numGroups, 1, 1);
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+			// commit: copy newPredictedPosition -> predictedPosition for next iteration
+			commandList->SetPipelineState(commitPso.Get());
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 		}

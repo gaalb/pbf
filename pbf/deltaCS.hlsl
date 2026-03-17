@@ -8,19 +8,15 @@
 //
 // Then clamp p*_i to the simulation box so particles don't escape the domain.
 //
-// Note on ordering: the algorithm as written in the paper implies two separate
-// steps -- lambdaCS reads predictedPosition (written by predictCS or the previous deltaCS),
-// then deltaCS reads that same predictedPosition to compute delta_p and writes a new
-// predictedPosition. Within a single deltaCS dispatch however, thread i reads
-// predictedPosition[j] while thread j may already have overwritten predictedPosition[j]
-// in the same dispatch. A strictly correct Jacobi step would require double-buffering:
-// deltaCS reads from one buffer and writes to a separate buffer, with no overlap.
-// As it is, I think this is what's called a Gauss-Seidel step, which is not strictly correct
-// but in my experience, it still does converge.
+// To avoid a Gauss-Seidel race (thread i reading predictedPosition[j] while thread j
+// overwrites it in the same dispatch), this shader writes its result to the scratch field
+// newPredictedPosition. A separate commitCS pass then copies the scratch field back to
+// predictedPosition before the next solver iteration, ensuring all threads in the next
+// iteration see a consistent snapshot.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + lambda, write predictedPosition)
+//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + lambda, write newPredictedPosition)
 
 #define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
@@ -99,5 +95,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // clamp() applies component-wise: newPos.x is clamped to [boxMin.x, boxMax.x], etc.
     newPos = clamp(newPos, boxMin, boxMax);
 
-    particles[i].predictedPosition = newPos;
+    particles[i].newPredictedPosition = newPos;
 }
