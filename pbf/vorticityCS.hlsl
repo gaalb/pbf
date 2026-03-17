@@ -4,15 +4,12 @@
 //   omega_i = sum_j (v_j - v_i) x grad_W_spiky( p_i - p_j, h)
 //
 // Result is stored in particles[i].omega, and consumed by confinementCS in the next pass.
+// Per the paper's ordering, this pass uses updated velocity (from velocityCommitCS) but
+// the OLD positions (positionCommitCS has not run yet).
+//
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write omega)
-//
-// Note that there is a slight deviationn from the paper at this point: in the paper, they
-// finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
-// constraints and viscosity, THEN commit the position. This means that the vorticity and
-// viscosity corrections see updated velocity but the old positions, as opposed to my implementation
-// where they see the updated velocity and position. TODO: fix
 
 
 #define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0))"

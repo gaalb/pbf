@@ -1,25 +1,20 @@
-// XSPH viscosity pass (Macklin & Muller 2013):
+// XSPH viscosity pass (Macklin & Muller 2013, Algorithm 1 line 22):
 //
-// After finalizeCS has committed positions and computed velocities from displacement,
-// this pass applies XSPH viscosity to smooth the velocity field:
-// v_i = v_i + c * sum_{j != i} (v_j - v_i) * W_poly6(p_i - p_j, h)
+// Smooths the velocity field toward the neighborhood average:
+// v_new_i = v_i + c * sum_{j != i} (v_j - v_i) * W_poly6(p_i - p_j, h)
 //
-// Each particle's velocity is nudged toward the weighted average of its neighbors'
-// velocities. c controls how strongly: 0 means no viscosity, 1 means full averaging.
+// c controls how strongly: 0 means no viscosity, 1 means full averaging.
 //
-// Position reads are race-free: finalizeCS has finished and a UAV barrier was issued.
-// Velocity reads have the same Gauss-Seidel race as deltaCS: thread i reads velocity[j]
-// while thread j may have already written its corrected velocity[j] in this dispatch.
+// To avoid a Gauss-Seidel race (thread i reads velocity[j] while thread j overwrites it),
+// the corrected velocity is written to the scratch field. velocityFromScratchCS then copies
+// scratch back to velocity.
+//
+// Per the paper's ordering, this pass uses the OLD positions (position has not been committed
+// yet — positionCommitCS runs after this).
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write velocity)
-//
-// Note that there is a slight deviationn from the paper at this point: in the paper, they
-// finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
-// constraints and viscosity, THEN commit the position. This means that the vorticity and
-// viscosity corrections see updated velocity but the old positions, as opposed to my implementation
-// where they see the updated velocity and position. TODO: fix
+//   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write scratch)
 
 #define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
@@ -78,5 +73,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         }
     }
 
-    particles[i].velocity = vi + viscosity * xsphSum;
+    particles[i].scratch = vi + viscosity * xsphSum;
 }

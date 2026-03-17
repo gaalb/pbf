@@ -10,13 +10,13 @@
 //
 // To avoid a Gauss-Seidel race (thread i reading predictedPosition[j] while thread j
 // overwrites it in the same dispatch), this shader writes its result to the scratch field
-// newPredictedPosition. A separate commitCS pass then copies the scratch field back to
+// scratch. A separate positionFromScratchCS pass then copies the scratch field back to
 // predictedPosition before the next solver iteration, ensuring all threads in the next
 // iteration see a consistent snapshot.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + lambda, write newPredictedPosition)
+//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + lambda, write scratch)
 
 #define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
@@ -95,5 +95,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // clamp() applies component-wise: newPos.x is clamped to [boxMin.x, boxMax.x], etc.
     newPos = clamp(newPos, boxMin, boxMax);
 
-    particles[i].newPredictedPosition = newPos;
+    particles[i].scratch = newPos;
 }

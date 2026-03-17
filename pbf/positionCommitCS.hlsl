@@ -1,14 +1,17 @@
-// Commit pass for Jacobi-correct position updates:
+// Position commit pass (Macklin & Muller 2013):
 //
-// deltaCS writes its corrected position to newPredictedPosition to avoid
-// a Gauss-Seidel race. This shader copies that result back to predictedPosition
-// so the next solver iteration (or finalizeCS) sees a consistent snapshot.
+// Commits the solver's final predictedPosition as the new current position:
+//   position_i = predictedPosition_i
+//
+// This runs last in the frame, after vorticity confinement and viscosity have used the
+// old positions. This matches the paper's ordering where position is committed after
+// all velocity post-processing.
 //
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read newPredictedPosition, write predictedPosition)
+//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write position)
 
-#define CommitRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define PositionCommitRootSig "CBV(b0), DescriptorTable(UAV(u0))"
 
 #include "Particle.hlsli" // Particle struct
 
@@ -30,7 +33,7 @@ cbuffer ComputeCb : register(b0)
 
 RWStructuredBuffer<Particle> particles : register(u0);
 
-[RootSignature(CommitRootSig)]
+[RootSignature(PositionCommitRootSig)]
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
@@ -38,5 +41,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    particles[i].predictedPosition = particles[i].newPredictedPosition;
+    particles[i].position = particles[i].predictedPosition;
 }

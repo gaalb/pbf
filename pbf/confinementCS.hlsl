@@ -12,15 +12,11 @@
 //   3. Compute confinement force: f_i = vorticityEpsilon * (N_i x omega_i)
 //   4. Apply as a velocity correction: v_i += dt * f_i
 //
+// Per the paper's ordering, this pass uses the OLD positions (positionCommitCS has not run yet).
+//
 // Root signature:
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + omega, write velocity)
-//
-// Note that there is a slight deviationn from the paper at this point: in the paper, they
-// finalize vi with respect to constraints and collision contributions, THEN apply vorticity  
-// constraints and viscosity, THEN commit the position. This means that the vorticity and
-// viscosity corrections see updated velocity but the old positions, as opposed to my implementation
-// where they see the updated velocity and position. TODO: fix
 
 
 #define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0))"

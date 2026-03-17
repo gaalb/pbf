@@ -66,17 +66,19 @@ protected:
 	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
 	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
-	// all four compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
-	// so we extract the root sig from one shader and reuse it for all four PSOs
+	// all compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
+	// so we extract the root sig from one shader and reuse it for all PSOs
 	com_ptr<ID3D12RootSignature> computeRootSig;
 	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
 	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
 	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
-	com_ptr<ID3D12PipelineState> finalizePso; // commit p* to position, update velocity
-	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing
-	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in predictedPosition
+	com_ptr<ID3D12PipelineState> positionFromScratchPso; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
+	com_ptr<ID3D12PipelineState> velocityCommitPso; // derive velocity from displacement: v = (p* - x) / dt
+	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in omega
 	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
-	com_ptr<ID3D12PipelineState> commitPso; // copy newPredictedPosition -> predictedPosition (Jacobi commit)
+	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing, writes to scratch
+	com_ptr<ID3D12PipelineState> velocityFromScratchPso; // copy scratch -> velocity (Jacobi commit after viscosity)
+	com_ptr<ID3D12PipelineState> positionCommitPso; // commit predictedPosition -> position (final step per paper)
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
@@ -199,15 +201,17 @@ protected:
 	}
 
 	void LoadCompute() {
-		// load all five compiled compute shader blobs
-		com_ptr<ID3DBlob> predictShader    = Egg::Shader::LoadCso("Shaders/predictCS.cso");
-		com_ptr<ID3DBlob> lambdaShader     = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
-		com_ptr<ID3DBlob> deltaShader      = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
-		com_ptr<ID3DBlob> finalizeShader   = Egg::Shader::LoadCso("Shaders/finalizeCS.cso");
-		com_ptr<ID3DBlob> viscosityShader  = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
+		// load all compiled compute shader blobs
+		com_ptr<ID3DBlob> predictShader = Egg::Shader::LoadCso("Shaders/predictCS.cso");
+		com_ptr<ID3DBlob> lambdaShader = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
+		com_ptr<ID3DBlob> deltaShader = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
+		com_ptr<ID3DBlob> positionFromScratchShader = Egg::Shader::LoadCso("Shaders/positionFromScratchCS.cso");
+		com_ptr<ID3DBlob> velocityCommitShader = Egg::Shader::LoadCso("Shaders/velocityCommitCS.cso");
 		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
 		com_ptr<ID3DBlob> confinementShader = Egg::Shader::LoadCso("Shaders/confinementCS.cso");
-		com_ptr<ID3DBlob> commitShader = Egg::Shader::LoadCso("Shaders/commitCS.cso");
+		com_ptr<ID3DBlob> viscosityShader = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
+		com_ptr<ID3DBlob> velocityFromScratchShader = Egg::Shader::LoadCso("Shaders/velocityFromScratchCS.cso");
+		com_ptr<ID3DBlob> positionCommitShader = Egg::Shader::LoadCso("Shaders/positionCommitCS.cso");
 
 		// all shaders embed the same root signature string, so we extract it once
 		// from predictCS and reuse it for all PSO descriptors
@@ -218,8 +222,8 @@ protected:
 		D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
 		psoDesc.pRootSignature = computeRootSig.Get();
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get()); // initialize descriptor with cd3dx12 helper
-		DX_API("Failed to create predict compute PSO") // create pso using the descriptor and store it in a com_ptr
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get());
+		DX_API("Failed to create predict compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(predictPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(lambdaShader.Get());
@@ -230,13 +234,13 @@ protected:
 		DX_API("Failed to create delta compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(deltaPso.GetAddressOf()));
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(finalizeShader.Get());
-		DX_API("Failed to create finalize compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(finalizePso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(positionFromScratchShader.Get());
+		DX_API("Failed to create positionFromScratch compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(positionFromScratchPso.GetAddressOf()));
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(viscosityShader.Get());
-		DX_API("Failed to create viscosity compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(viscosityPso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(velocityCommitShader.Get());
+		DX_API("Failed to create velocityCommit compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(velocityCommitPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(vorticityShader.Get());
 		DX_API("Failed to create vorticity compute PSO")
@@ -246,9 +250,17 @@ protected:
 		DX_API("Failed to create confinement compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(confinementPso.GetAddressOf()));
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(commitShader.Get());
-		DX_API("Failed to create commit compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(commitPso.GetAddressOf()));
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(viscosityShader.Get());
+		DX_API("Failed to create viscosity compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(viscosityPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(velocityFromScratchShader.Get());
+		DX_API("Failed to create velocityFromScratch compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(velocityFromScratchPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(positionCommitShader.Get());
+		DX_API("Failed to create positionCommit compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(positionCommitPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -354,7 +366,7 @@ protected:
 
 		// switch to the compute pipeline: root signature first, then PSO
 		// (setting the root sig before the PSO is required - the PSO references the root sig)
-		// all four shaders share the same root signature, so we set it once here.
+		// all compute shaders share the same root signature, so we set it once here.
 		// root parameter bindings (CBV + UAV) also persist across PSO swaps as long
 		// as we don't call SetComputeRootSignature again.
 		commandList->SetComputeRootSignature(computeRootSig.Get());
@@ -366,7 +378,7 @@ protected:
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
 
-		// apply gravity, store result in predictedPosition
+		// prediction: apply gravity, compute p* = x + v*dt
 		commandList->SetPipelineState(predictPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
@@ -378,38 +390,46 @@ protected:
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-			// compute delta_p from lambdas, write result to newPredictedPosition
+			// writes corrected position to scratch (avoids Gauss-Seidel race)
 			commandList->SetPipelineState(deltaPso.Get());
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-			// commit: copy newPredictedPosition -> predictedPosition for next iteration
-			commandList->SetPipelineState(commitPso.Get());
+			// commit scratch -> predictedPosition for next iteration
+			commandList->SetPipelineState(positionFromScratchPso.Get());
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 		}
 
-		// commit predictedPosition to position, derive velocity from displacement
-		commandList->SetPipelineState(finalizePso.Get());
+		// derive velocity from displacement (position stays old for vorticity/viscosity)
+		commandList->SetPipelineState(velocityCommitPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-		// vorticity estimation: compute curl of velocity field per particle,
-		// store result in predictedPosition (which is redundant after finalizeCS)
+		// vorticity estimation: compute curl(v) per particle, store in omega
 		commandList->SetPipelineState(vorticityPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-		// vorticity confinement: read stored omega values, apply corrective force to velocity
+		// vorticity confinement: apply corrective force to velocity
 		commandList->SetPipelineState(confinementPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
-		// XSPH viscosity: smooth velocity field toward neighborhood average
-		// position reads are race-free here (finalizeCS finished, barrier issued above)
+		// XSPH viscosity: writes corrected velocity to scratch (avoids Gauss-Seidel race)
 		commandList->SetPipelineState(viscosityPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get())); // finalize before graphics pass
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// commit scratch -> velocity
+		commandList->SetPipelineState(velocityFromScratchPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// commit predictedPosition -> position 
+		commandList->SetPipelineState(positionCommitPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 	}
 
 	void GraphicsPass() {

@@ -76,7 +76,7 @@
     <FxCompile Include="deltaCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="finalizeCS.hlsl">
+    <FxCompile Include="velocityCommitCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
     <FxCompile Include="viscosityCS.hlsl">
@@ -88,7 +88,13 @@
     <FxCompile Include="confinementCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="commitCS.hlsl">
+    <FxCompile Include="positionFromScratchCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="positionCommitCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="velocityFromScratchCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
   </ItemGroup>
