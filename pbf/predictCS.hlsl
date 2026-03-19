@@ -29,6 +29,7 @@ cbuffer ComputeCb : register(b0)
     float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
+    float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
 };
 
 // RWStructuredBuffer: read-write access to the particle array.
@@ -47,9 +48,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    // apply gravity: update velocity first, then use the updated velocity
-    // for the position prediction, I think this is called semi implicit euler
-    particles[i].velocity += float3(0.0, -9.8, 0.0) * dt;
+    // apply external forces (gravity + arrow-key acceleration): update velocity first,
+    // then use the updated velocity for the position prediction (semi-implicit Euler)
+    particles[i].velocity += (float3(0.0, -9.8, 0.0) + externalForce) * dt;
 
     // p* is our best guess of where the particle will end up if no constraints
     // are applied. The constraint solver will nudge p* to satisfy density better

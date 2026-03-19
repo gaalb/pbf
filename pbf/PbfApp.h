@@ -51,13 +51,13 @@ protected:
 	// non-tunable constants
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
-	const float boxMoveSpeed = 4.0f; // world units per second for arrow key box translation
+	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
+	const Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)ű
 
-	// non-constant members
-	Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
-	Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)
+	// non-constant members	
+	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
-
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame -> graphics data
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
 	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
@@ -532,16 +532,14 @@ protected:
 		CloseCommandList(); // transition back buffer to present state and close the command list
 	}
 
-	void UpdateBoundingBox(float dt) {
-		// translate the bounding box on the XZ plane based on held arrow keys
-		// left/right move along X, up/down move along Z (both corners shift by the same offset)
-		Float3 boxShift = Float3(0.0f, 0.0f, 0.0f);
-		if (arrowLeft) boxShift.x -= boxMoveSpeed * dt;
-		if (arrowRight) boxShift.x += boxMoveSpeed * dt;
-		if (arrowUp) boxShift.z += boxMoveSpeed * dt;
-		if (arrowDown) boxShift.z -= boxMoveSpeed * dt;
-		boxMin += boxShift;
-		boxMax += boxShift;
+	void UpdateExternalForce() {
+		// build a horizontal acceleration vector from held arrow keys
+		// left/right push along X, up/down push along Z
+		externalForce = Float3(0.0f, 0.0f, 0.0f);
+		if (arrowLeft) externalForce.x -= externalAcceleration;
+		if (arrowRight) externalForce.x += externalAcceleration;
+		if (arrowUp) externalForce.z += externalAcceleration;
+		if (arrowDown) externalForce.z -= externalAcceleration;
 	}
 
 	// recompute values that depend on the primary tunables (particleSpacing, hMultiplier)
@@ -577,6 +575,7 @@ protected:
 		computeCb->sCorrDeltaQ = sCorrDeltaQ;
 		computeCb->sCorrN = sCorrN;
 		computeCb->vorticityEpsilon = vorticityEpsilon;
+		computeCb->externalForce = externalForce;
 		computeCb.Upload();
 	}
 
@@ -584,7 +583,7 @@ protected:
 		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
 		camera->Animate(dt); // update camera position and orientation based on user input
 
-		UpdateBoundingBox(dt);
+		UpdateExternalForce();
 
 		RecomputeDerivedParams(); // recalculate h, rho0, sCorrDeltaQ from current slider values
 
