@@ -30,4 +30,9 @@ __declspec(align(16)) struct ComputeCb {
 	float sCorrN; // offset 56 (4 bytes): artificial pressure n
 	float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
 	Float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
+	// maxPerCell is a constant (derived from hMultiplierMax at startup) that never changes at runtime.
+	// Ideally it would be a #define in HLSL, but that would mean maintaining the same derived value
+	// in two places (C++ and HLSL). Passing it through the CB is the simplest way to keep a single
+	// source of truth on the C++ side.
+	UINT maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };

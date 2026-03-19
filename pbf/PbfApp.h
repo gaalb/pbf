@@ -23,7 +23,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 12, gridY = 20, gridZ = 12; // number of particles along each axis of the initial grid
+	const int gridX = 25, gridY = 75, gridZ = 25; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -52,10 +52,35 @@ protected:
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-	const Float3 boxMin = Float3(-2.0f, -2.0f, -2.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(2.0f, 100.0f, 2.0f); // simulation boundary maximum corner (world space)ű
+	const Float3 boxMin = Float3(-6.0f, -5.0f, -6.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(6.0f, 20.0f, 6.0f); // simulation boundary maximum corner (world space)
+	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
+	const float hMultiplierMin = 2.0f; 
+	const float hMultiplierMax = 4.0f; 
+	const float particleSpacingMin = 0.1f;
+	const float particleSpacingMax = 0.3f;
 
-	// non-constant members	
+	// Spatial grid constants, derived from the parameter bounds above and the simulation box.
+	// We reserve GPU buffers for the worst case scenario in terms of how many grid cells we're 
+	// going to need. In order to not miss any SPH neighbors, Cell size = h (the SPH kernel radius).
+	// since h = particleSpacing * hMultiplier, and both factors are clamped, h ranges from 
+	// particleSpacingMin * hMultiplierMin to particleSpacingMax * hMultiplierMax. 
+	// The number of grid cells is max when h is the smallests, particleSpacingMin * hMultiplierMin
+	// We rebuild the grid every physics run (not every jacobi iteration), this way, we can ensure
+	// that the grid is always the same size as h. Since the simulation aims to keep the particle
+	// density around rho0, which is derived from the desired particle spacing, we can estimate
+	// the number of particles per cell using the relation between particle spacing and h, which
+	// is given by hMultiplier. The larger hMultiplier is, the more particles can fit in a cell,
+	// with the worst case being hMultiplierMax^3. We add a generous 50% headroom to allow
+	// for transient fluctuations in denisty.
+	const float minCellSize = particleSpacingMin * hMultiplierMin; // smallest possible h = 0.1 * 2.0 = 0.2
+	const UINT maxGridDimX = (UINT)ceilf((boxMax.x - boxMin.x) / minCellSize); 
+	const UINT maxGridDimY = (UINT)ceilf((boxMax.y - boxMin.y) / minCellSize); 
+	const UINT maxGridDimZ = (UINT)ceilf((boxMax.z - boxMin.z) / minCellSize); 
+	const UINT maxNumCells = maxGridDimX * maxGridDimY * maxGridDimZ; 
+	const UINT maxPerCell = (UINT)ceilf(hMultiplierMax * hMultiplierMax * hMultiplierMax * 1.5f); 
+
+	// non-constant members
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
 	Egg::ConstantBuffer<PerFrameCb> perFrameCb; // constant buffer uploaded to GPU each frame -> graphics data
@@ -65,11 +90,20 @@ protected:
 	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible resources
 	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
+	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
+	com_ptr<ID3D12Resource> cellParticlesBuffer; // default heap: flat 2D array [maxNumCells * maxPerCell], stores particle indices per cell
 	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
-	// all compute shaders share the same root signature layout: CBV(b0) + DescriptorTable(UAV(u0))
-	// so we extract the root sig from one shader and reuse it for all PSOs
+	// all compute shaders share the same root signature layout:
+	//   CBV(b0) + DescriptorTable(UAV(u0, numDescriptors=3))
+	// so we extract the root sig from one shader and reuse it for all PSOs.
+	// The three UAVs are: u0 = particles, u1 = cellCount, u2 = cellParticles.
+	// u0 = particle data 
+	// u1 = grid cell counts, i.e. how many particles are in each cell 
+	// u2 = grid cell particle indices, i.e. which particles are in each cell (up to maxPerCell per cell)
 	com_ptr<ID3D12RootSignature> computeRootSig;
 	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
+	com_ptr<ID3D12PipelineState> clearGridPso; // zero cellCount array
+	com_ptr<ID3D12PipelineState> buildGridPso; // populate grid from predictedPositions
 	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
 	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
 	com_ptr<ID3D12PipelineState> positionFromScratchPso; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
@@ -203,6 +237,8 @@ protected:
 	void LoadCompute() {
 		// load all compiled compute shader blobs
 		com_ptr<ID3DBlob> predictShader = Egg::Shader::LoadCso("Shaders/predictCS.cso");
+		com_ptr<ID3DBlob> clearGridShader = Egg::Shader::LoadCso("Shaders/clearGridCS.cso");
+		com_ptr<ID3DBlob> buildGridShader = Egg::Shader::LoadCso("Shaders/buildGridCS.cso");
 		com_ptr<ID3DBlob> lambdaShader = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
 		com_ptr<ID3DBlob> deltaShader = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
 		com_ptr<ID3DBlob> positionFromScratchShader = Egg::Shader::LoadCso("Shaders/positionFromScratchCS.cso");
@@ -225,6 +261,14 @@ protected:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get());
 		DX_API("Failed to create predict compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(predictPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(clearGridShader.Get());
+		DX_API("Failed to create clearGrid compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(clearGridPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(buildGridShader.Get());
+		DX_API("Failed to create buildGrid compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(buildGridPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(lambdaShader.Get());
 		DX_API("Failed to create lambda compute PSO")
@@ -361,18 +405,20 @@ protected:
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
 			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			2, // slot index 2 = the particle UAV
+			2, // slot index 2 = start of the UAV descriptor table (u0, u1, u2)
 			descriptorSize);
 
 		// switch to the compute pipeline: root signature first, then PSO
 		// (setting the root sig before the PSO is required - the PSO references the root sig)
 		// all compute shaders share the same root signature, so we set it once here.
-		// root parameter bindings (CBV + UAV) also persist across PSO swaps as long
+		// root parameter bindings (CBV + UAV table) persist across PSO swaps as long
 		// as we don't call SetComputeRootSignature again.
 		commandList->SetComputeRootSignature(computeRootSig.Get());
 		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
 		// this is a root CBV - it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
 		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
+		// bind the descriptor table at root parameter 1: 3 consecutive UAVs starting at slot 2
+		// (u0 = particles, u1 = cellCount, u2 = cellParticles)
 		commandList->SetComputeRootDescriptorTable(1, uavHandle);
 
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
@@ -382,6 +428,20 @@ protected:
 		commandList->SetPipelineState(predictPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// build the spatial grid from predicted positions (used by all subsequent neighbor queries)
+		// step 1: zero the cell counts
+		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
+		UINT numCellGroups = (numCells + 255) / 256;
+		commandList->SetPipelineState(clearGridPso.Get());
+		commandList->Dispatch(numCellGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellCountBuffer.Get()));
+
+		// step 2: each particle inserts itself into its cell via InterlockedAdd
+		commandList->SetPipelineState(buildGridPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellCountBuffer.Get()));
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellParticlesBuffer.Get()));
 
 		// constraint solver loop
 		for (int iter = 0; iter < solverIterations; iter++) {
@@ -483,7 +543,9 @@ protected:
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
 		ImGui::InputFloat("Particle spacing [0.25]", &particleSpacing, 0.01f, 0.1f, "%.4f");
+		particleSpacing = std::clamp(particleSpacing, particleSpacingMin, particleSpacingMax);
 		ImGui::InputFloat("h multiplier [3.5]", &hMultiplier, 0.1f, 0.5f, "%.2f");
+		hMultiplier = std::clamp(hMultiplier, hMultiplierMin, hMultiplierMax);
 		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.005f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.01f, 0.05f, "%.4f");
@@ -557,7 +619,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Float4(particleColor.x, particleColor.y, particleColor.z, 0.5f * particleSpacing);
+		perFrameCb->particleParams = Float4(particleColor.x, particleColor.y, particleColor.z, 0.4f * particleSpacing);
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
@@ -576,6 +638,7 @@ protected:
 		computeCb->sCorrN = sCorrN;
 		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb->externalForce = externalForce;
+		computeCb->maxPerCell = maxPerCell;
 		computeCb.Upload();
 	}
 
@@ -672,6 +735,66 @@ protected:
 			uavHandle); // write the UAV descriptor into slot 2
 	}
 
+	void CreateGridBuffers() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+		// cellCount buffer: one uint per cell, indicating how many particles are in each
+		// cell, zeroed each frame by clearGridCS, then incremented atomically by buildGridCS
+		const UINT64 cellCountSize = maxNumCells * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC cellCountDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			cellCountSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create cell count buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &cellCountDesc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(cellCountBuffer.ReleaseAndGetAddressOf()));
+		cellCountBuffer->SetName(L"Cell Count Buffer");
+
+		// cellParticles buffer: flat 2D array of particle indices, indicating which particles are 
+		// in each cell. This is a flattened array, where the first maxPerCell entries belong to cell 0, 
+		// the next maxPerCell entries belong to cell 1, and so on. Therefore, the "slot"th slot in the
+		// "cellIndex"th cell is accessed as cellParticles[cellIndex * maxPerCell + slot]
+		// The number of cells at a given time is determined by h, which can change at runtime, so
+		// only the first cellCount[number_of_cells] entries per cell are valid; the rest are unused.
+		const UINT64 cellParticlesSize = (UINT64)maxNumCells * maxPerCell * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC cellParticlesDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			cellParticlesSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create cell particles buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &cellParticlesDesc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(cellParticlesBuffer.ReleaseAndGetAddressOf()));
+		cellParticlesBuffer->SetName(L"Cell Particles Buffer");
+	}
+
+	void CreateGridUavs() {
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// cellCount UAV (slot 3): one uint per cell
+		D3D12_UNORDERED_ACCESS_VIEW_DESC cellCountUavDesc = {};
+		cellCountUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		cellCountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		cellCountUavDesc.Buffer.FirstElement = 0;
+		cellCountUavDesc.Buffer.NumElements = maxNumCells;
+		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 3, descriptorSize);
+		device->CreateUnorderedAccessView(cellCountBuffer.Get(), nullptr, &cellCountUavDesc, cellCountHandle);
+
+		// cellParticles UAV (slot 4): flat array of maxNumCells * maxPerCell uints
+		D3D12_UNORDERED_ACCESS_VIEW_DESC cellParticlesUavDesc = {};
+		cellParticlesUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		cellParticlesUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		cellParticlesUavDesc.Buffer.FirstElement = 0;
+		cellParticlesUavDesc.Buffer.NumElements = maxNumCells * maxPerCell;
+		cellParticlesUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		cellParticlesUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE cellParticlesHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 4, descriptorSize);
+		device->CreateUnorderedAccessView(cellParticlesBuffer.Get(), nullptr, &cellParticlesUavDesc, cellParticlesHandle);
+	}
+
 	void CreateDescriptorHeap() {
 		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
 		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
@@ -680,11 +803,14 @@ protected:
 		// descriptor heap layout:
 		//   slot 0: cubemap SRV       - sampled by the background pixel shader
 		//   slot 1: particle SRV (t0) - read by the vertex shader to fetch particle positions
-		//   slot 2: particle UAV (u0) - written by the compute shader to update particle positions and velocities
+		//   slot 2: particle UAV (u0) - read/written by compute shaders (particle data)
+		//   slot 3: cellCount UAV (u1) - per-cell particle count for the spatial grid
+		//   slot 4: cellParticles UAV (u2) - particle indices per cell (flat 2D: cell * maxPerCell + slot)
+		// The compute root signature binds slots 2-4 as a single descriptor table with 3 UAVs.
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 3; // slot 0: cubemap SRV, slot 1: particle SRV, slot 2: particle UAV
+		dhd.NumDescriptors = 5;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -717,10 +843,14 @@ public:
 		CreateParticleBuffer();
 
 		CreateUploadBuffer();
-		
+
+		CreateGridBuffers();
+
 		CreateSrv();
 
-		CreateUav();		
+		CreateUav();
+
+		CreateGridUavs();
 	}
 
 	virtual void LoadAssets() override {

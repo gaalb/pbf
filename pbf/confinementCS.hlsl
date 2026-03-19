@@ -19,7 +19,7 @@
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + omega, write velocity)
 
 
-#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad
@@ -39,9 +39,14 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
+    uint maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };
 
+#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
+
 RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<uint> cellCount : register(u1);
+RWStructuredBuffer<uint> cellParticles : register(u2);
 
 [RootSignature(ConfinementRootSig)]
 [numthreads(256, 1, 1)]
@@ -56,10 +61,29 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float3 eta = float3(0, 0, 0); // accumulates the gradient of the vorticity magnitude field
 
-    for (uint j = 0; j < numParticles; j++)
+    // The grid was built from predictedPositions, but this pass uses old positions.
+    // See vorticityCS for the justification of this approximation.
+    int3 myCell = posToCell(pi);
+    int3 dims = gridDims();
+    for (int dz = -1; dz <= 1; dz++) // loop over neighboring cells in z
+    for (int dy = -1; dy <= 1; dy++) // loop over neighboring cells in y
+    for (int dx = -1; dx <= 1; dx++) // loop over neighboring cells in x
     {
-        if (j != i)
+        int3 nc = myCell + int3(dx, dy, dz); // neighbor cell
+        if (nc.x < 0 || nc.x >= dims.x ||
+            nc.y < 0 || nc.y >= dims.y ||
+            nc.z < 0 || nc.z >= dims.z)
+            continue; // skip out-of-bounds cells (can happen at the edges of the simulation box)
+
+        uint ci = cellIndex(nc); // cell index of this neighbor cell
+        uint count = min(cellCount[ci], maxPerCell); // number of particles in this cell, capped at maxPerCell to avoid overflow from bad parameter choices
+
+        for (uint s = 0; s < count; s++) // s indexes into the cellParticles array for this cell, which lists the particle indices of particles in this cell
         {
+            uint j = cellParticles[ci * maxPerCell + s];
+            if (j == i)
+                continue;
+
             // r points from neighbor j toward particle i
             float3 r = pi - particles[j].position;
 

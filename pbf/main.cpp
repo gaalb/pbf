@@ -120,7 +120,8 @@ void InitDX12(
     std::vector<com_ptr<IDXGIAdapter1>> adapters; // we'll store our enumerated GPUs here
     Egg::Utility::GetAdapters(dxgiFactory.Get(), adapters); // enumerate GPUs (e.g. integrated and dedicated graphics cards)
     com_ptr<IDXGIAdapter1> tempAdapter{ nullptr }; // we'll store our typed selected GPU here for some debug printing
-    tempAdapter = adapters.size() > 0 ? adapters[0].Get() : nullptr; // select the first adapter if there is at least one, or NULL->default
+    const int adapterIndex = 1;
+    tempAdapter = adapters.size() > adapterIndex ? adapters[adapterIndex].Get() : nullptr; // select the given adapter, or NULL->default
     DXGI_ADAPTER_DESC1 desc; // we'll put the typed GPU pointer's description here for printing
     tempAdapter->GetDesc1(&desc);
     Egg::Utility::WDebugf(L"Selected adapter: %s, VRAM: %llu MB\n", desc.Description, desc.DedicatedVideoMemory / (1024 * 1024));

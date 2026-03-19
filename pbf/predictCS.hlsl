@@ -11,7 +11,7 @@
 //   CBV(b0)               — ComputeCb: dt, numParticles, h, rho0, epsilon
 //   DescriptorTable(UAV(u0)) — particle buffer (read + write)
 
-#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "Particle.hlsli" // Particle struct: position, velocity, predictedPosition, lambda
 
@@ -30,6 +30,7 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
+    uint maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };
 
 // RWStructuredBuffer: read-write access to the particle array.

@@ -56,6 +56,7 @@
       <PreprocessorDefinitions>BOOST_BIND_NO_PLACEHOLDERS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>false</ConformanceMode>
       <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)Common\assimp\include\;$(SolutionDir)Common\DirectXTex\;$(SolutionDir)Common\LuaBind\;$(SolutionDir)Common\Lua\include\;$(SolutionDir)Common\boost\include\;$(SolutionDir)Common\PhysX\include\;$(SolutionDir)Common\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -101,6 +102,14 @@
     </FxCompile>
     <FxCompile Include="bgVS.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+    </FxCompile>
+    <FxCompile Include="buildGridCS.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
+    </FxCompile>
+    <FxCompile Include="clearGridCS.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.1</ShaderModel>
     </FxCompile>
     <FxCompile Include="updatePositionCS.hlsl">
@@ -157,6 +166,7 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="GridUtils.hlsli" />
     <None Include="Particle.hlsli" />
     <None Include="SphKernels.hlsli" />
   </ItemGroup>

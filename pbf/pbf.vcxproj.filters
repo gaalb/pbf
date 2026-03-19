@@ -97,12 +97,21 @@
     <FxCompile Include="velocityFromScratchCS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
+    <FxCompile Include="clearGridCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="buildGridCS.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Particle.hlsli">
       <Filter>Shaders</Filter>
     </None>
     <None Include="SphKernels.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="GridUtils.hlsli">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

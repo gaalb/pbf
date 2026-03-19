@@ -19,7 +19,7 @@
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write lambda)
 
-#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0))"
+#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "Particle.hlsli" // Particle struct
 #include "SphKernels.hlsli" // Poly6, SpikyGrad
@@ -39,9 +39,14 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
+    uint maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };
 
+#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
+
 RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<uint> cellCount : register(u1);
+RWStructuredBuffer<uint> cellParticles : register(u2);
 
 [RootSignature(LambdaRootSig)]
 [numthreads(256, 1, 1)]
@@ -64,23 +69,44 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 gradI = float3(0,0,0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
     float gradSqSum = 0.0; // accumulates sum_k(|grad_pk(C_i)|^2) for the k=j case
 
-    for (uint j = 0; j < numParticles; j++)
+    // Iterate over the 27 neighboring cells (own cell +/- 1 along each axis).
+    // Since cell size = h (the kernel support radius), all particles within
+    // distance h are guaranteed to be in one of these cells.
+    int3 myCell = posToCell(pi);
+    int3 dims = gridDims();
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
     {
-        // r points from neighbor j toward particle i (r_ij = p_i - p_j)
-        float3 r = pi - particles[j].predictedPosition;
+        int3 nc = myCell + int3(dx, dy, dz);
+        if (nc.x < 0 || nc.x >= dims.x ||
+            nc.y < 0 || nc.y >= dims.y ||
+            nc.z < 0 || nc.z >= dims.z)
+            continue;
 
-        // Density: every particle j including i itself contributes.
-        rho += Poly6(r, h);
+        uint ci = cellIndex(nc);
+        uint count = min(cellCount[ci], maxPerCell);
 
-        if (j != i)
+        for (uint s = 0; s < count; s++)
         {
-            // k=j case: grad_pj(C_i) = -(1/rho0) * grad_W_spiky(r_ij, h)
-            float3 gradW = SpikyGrad(r, h);
-            float3 gradJ = -(1.0 / rho0) * gradW;
-            gradSqSum += dot(gradJ, gradJ); // add |grad_pj(C_i)|^2 to denominator
+            uint j = cellParticles[ci * maxPerCell + s];
 
-            // Also accumulate gradW into gradI -- needed for the k=i term after the loop
-            gradI += gradW;
+            // r points from neighbor j toward particle i (r_ij = p_i - p_j)
+            float3 r = pi - particles[j].predictedPosition;
+
+            // Density: every particle j including i itself contributes.
+            rho += Poly6(r, h);
+
+            if (j != i)
+            {
+                // k=j case: grad_pj(C_i) = -(1/rho0) * grad_W_spiky(r_ij, h)
+                float3 gradW = SpikyGrad(r, h);
+                float3 gradJ = -(1.0 / rho0) * gradW;
+                gradSqSum += dot(gradJ, gradJ); // add |grad_pj(C_i)|^2 to denominator
+
+                // Also accumulate gradW into gradI -- needed for the k=i term after the loop
+                gradI += gradW;
+            }
         }
     }
 
