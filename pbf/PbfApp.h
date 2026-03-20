@@ -23,7 +23,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 25, gridY = 75, gridZ = 25; // number of particles along each axis of the initial grid
+	const int gridX = 25, gridY = 60, gridZ = 25; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
