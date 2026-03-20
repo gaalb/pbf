@@ -554,6 +554,7 @@ protected:
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
 		ImGui::Text("%d particles, h = %.4f, rho0 = %.2f",numParticles, h, rho0);
+		ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		ImGui::End();
 
 		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
