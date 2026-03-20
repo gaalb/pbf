@@ -18,6 +18,7 @@ struct Particle {
 	Float3 velocity; // current velocity, updated at end of each PBF step
 	Float3 predictedPosition; // predicted position used during constraint solving (p*)
 	float lambda; // Lagrange multiplier computed in lambdaCS, read in deltaCS
+	float density; // SPH density estimate written by lambdaCS, read by particle rendering shaders
 	Float3 omega; // vorticity vector written by vorticityCS, read by confinementCS
 	Float3 scratch; // scratch float3: used by deltaCS (position) and viscosityCS (velocity) to avoid Gauss-Seidel races
 };

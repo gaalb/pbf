@@ -5,6 +5,7 @@ struct GSOutput
     float3 centerWorld : CENTERW; // particle center in world space (same for all 4 verts)
     float3 right : RIGHT; // billboard right axis in world space
     float3 up : UP; // billboard up axis in world space
+    float density : DENSITY; // SPH density estimate for this particle
 };
 
 cbuffer PerFrameCb : register(b0)
@@ -33,7 +34,20 @@ float4 main(GSOutput input) : SV_Target
     float3 normal = normalize(input.uv.x * input.right + input.uv.y * input.up + nz * forward);
 
     // Shading is phong-blinn
-    float3 baseColor = particleParams.xyz; // base color of the particle
+    // Color by density: blue = sparse, green = rest density, red = compressed.
+    // The PBF solver drives density close to rho0, so deviations are small —
+    // we map the range [(1-range)*rho0, (1+range)*rho0] to the full color gradient
+    // so that even minor density variations are clearly visible.
+    float range = 0.15; // half-width of the visible density band around rho0: 0.1 means +-10%
+    float rho0 = particleParams.x; // rest density, passed from C++ for the density-to-color mapping
+    // normalize density into [0, 1]: 0 at (1-range)*rho0, 0.5 at rho0, 1 at (1+range)*rho0
+    // saturate clamps to [0, 1] so particles outside this range pin to blue or red
+    float t = saturate((input.density / rho0 - (1.0 - range)) / (2.0 * range));
+    float3 baseColor;
+    if (t < 0.5)
+        baseColor = lerp(float3(0.0, 0.0, 1.0), float3(0.0, 1.0, 0.0), t * 2.0); // lower half: blue (sparse) -> green (rest)
+    else
+        baseColor = lerp(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), (t - 0.5) * 2.0); // upper half: green (rest) -> red (compressed)
 
     // diffuse: how much the surface faces the light
     float3 L = normalize(lightDir.xyz);

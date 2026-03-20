@@ -3,6 +3,7 @@
 struct VSOutput
 {
     float3 worldPos : WORLDPOS; // the world position of the vertex, passed to GS for billboard generation
+    float density : DENSITY; // SPH density estimate, passed through for coloring in PS
 };
 
 struct GSOutput
@@ -12,6 +13,7 @@ struct GSOutput
     float3 centerWorld : CENTERW; // particle center in world space (same for all 4 verts)
     float3 right : RIGHT; // billboard right axis in world space
     float3 up : UP; // billboard up axis in world space
+    float density : DENSITY; // SPH density, same for all 4 verts of this billboard
 };
 
 cbuffer PerFrameCb : register(b0)
@@ -61,6 +63,7 @@ void main(point VSOutput input[1], inout TriangleStream<GSOutput> outputStream)
         output.centerWorld = center;
         output.right = right;
         output.up = up;
+        output.density = input[0].density;
 
         outputStream.Append(output);
     }

@@ -46,7 +46,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 25, gridY = 40, gridZ = 25; // number of particles along each axis of the initial grid
+	const int gridX = 25, gridY = 80, gridZ = 25; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -643,7 +643,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Float4(particleColor.x, particleColor.y, particleColor.z, 0.4f * particleSpacing);
+		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, 0.4f * particleSpacing); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
 
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}

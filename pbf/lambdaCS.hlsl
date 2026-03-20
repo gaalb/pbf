@@ -119,6 +119,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // Density constraint value
     float C = rho / rho0 - 1.0; // 0 at rest density, > 0 if compressed, < 0 if sparse
 
+    // Store density for visualization (read by rendering shaders)
+    particles[i].density = rho;
+
     // Newton step length lambdda
     particles[i].lambda = -C / (gradSqSum + epsilon);
 }
