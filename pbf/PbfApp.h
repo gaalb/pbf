@@ -1,5 +1,28 @@
 #pragma once
 
+// ============================================================================
+// PROGRESSION NOTES
+// ============================================================================
+//
+// Observed issue: steady FPS degradation over time
+//   GPU utilization climbs from ~60% to 95%+ over the course of the simulation
+//   causing FPS to drop from 70 to 36 (worse with sloshing: down to 24).
+//   The degradation is permanent per session — FPS never recovers.
+//   Memory usage is mostly flat, so this is not a memory leak.
+//   Disabling the D3D12 debug layer did not resolve it.
+//
+// Suspected cause: spatial cache coherence degradation
+//   Particles are allocated in grid order at startup, so buffer adjacency
+//   matches spatial adjacency. As the simulation runs, particles move but
+//   their buffer indices stay fixed. Over time, neighbor lookups (lambdaCS,
+//   deltaCS, vorticityCS, confinementCS, viscosityCS) read particles with
+//   scattered buffer indices, potentially thrashing the GPU L2 cache.
+//   This has not been confirmed. If it is the cause, the standard fix is to
+//   periodically sort the particle buffer by grid cell index (radix sort).
+//   See g-RadixSort sibling project for reference.
+//
+// ============================================================================
+
 #include <algorithm>
 #include <Egg/SimpleApp.h>
 #include "ConstantBufferTypes.h"
@@ -23,7 +46,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 25, gridY = 60, gridZ = 25; // number of particles along each axis of the initial grid
+	const int gridX = 25, gridY = 40, gridZ = 25; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -560,7 +583,7 @@ protected:
 		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
 		// (positions, sizes, clipping), and produces an ImDrawData structure : a list of vertex buffers, index
 		// buffers, and draw commands that describe exactly what triangles to draw and with what textures.No
-		// GPU calls happen here � it's pure CPU-side geometry generation.
+		// GPU calls happen here - it's pure CPU-side geometry generation.
 		ImGui::Render();
 		// ImGui needs its own SRV heap bound (for the font texture), so we switch heaps here.
 		// The scene's srvHeap was used during GraphicsPass; that's done, so this is safe.
@@ -897,11 +920,11 @@ public:
 
 	void ShutdownImGui() {
 		// Teardown in reverse order of initialization :
-		// 1. ImGui_ImplDX12_Shutdown() � releases all D3D12 objects the backend created(PSOs, root
+		// 1. ImGui_ImplDX12_Shutdown() - releases all D3D12 objects the backend created(PSOs, root
 		//	  signatures, vertex / index buffers, command allocator, command list, font texture + its SRV)
-		// 2. ImGui_ImplWin32_Shutdown() � unhooks from the window, clears input state
-		// 3. ImGui::DestroyContext() � frees the global context(GImGui), setting it to nullptr.This is why
-		//	  the GetCurrentContext() != nullptr guard in WindowProcess is necessary � messages arriving after
+		// 2. ImGui_ImplWin32_Shutdown() - unhooks from the window, clears input state
+		// 3. ImGui::DestroyContext() - frees the global context(GImGui), setting it to nullptr.This is why
+		//	  the GetCurrentContext() != nullptr guard in WindowProcess is necessary - messages arriving after
 		//    this point must not call into ImGui.
 		ImGui_ImplDX12_Shutdown();
 		ImGui_ImplWin32_Shutdown();

@@ -77,14 +77,14 @@ LRESULT CALLBACK WindowProcess(HWND windowHandle, UINT message, WPARAM wParam, L
 }
 
 HWND InitWindow(HINSTANCE hInstance) {
-    // this string identifies our window class � it's an arbitrary name we pick,
+    // this string identifies our window class - it's an arbitrary name we pick,
     // used to connect the window class registration with the window creation below
     const wchar_t* windowClassName = L"PBFWindowClass";
 
     WNDCLASSW windowClass;
     ZeroMemory(&windowClass, sizeof(WNDCLASSW)); // zero out any memory trash
     windowClass.lpfnWndProc = WindowProcess;      // assign our callback function to handle window messages
-    windowClass.lpszClassName = windowClassName;   // assign the class name � used later in CreateWindowExW
+    windowClass.lpszClassName = windowClassName;   // assign the class name - used later in CreateWindowExW
     windowClass.hInstance = hInstance;              // the OS uses this to identify which program owns the window
 
 	
@@ -95,8 +95,8 @@ HWND InitWindow(HINSTANCE hInstance) {
         windowClassName,      // must match the class name we registered above
         L"Position Based Fluids", // the text that appears in the title bar
         WS_OVERLAPPEDWINDOW,  // standard window style: title bar, border, minimize/maximize/close buttons
-        CW_USEDEFAULT,        // initial X position � let Windows decide
-        CW_USEDEFAULT,        // initial Y position � let Windows decide
+        CW_USEDEFAULT,        // initial X position - let Windows decide
+        CW_USEDEFAULT,        // initial Y position - let Windows decide
         1280, 720,            // window width and height in pixels (including title bar and borders)
         NULL,                 // no parent window
         NULL,                 // no menu
@@ -113,7 +113,7 @@ void InitDX12(
     com_ptr<ID3D12Device>& device) {
     DX_API("Failed to create debug layer")
         D3D12GetDebugInterface(IID_PPV_ARGS(debugController.GetAddressOf()));
-    debugController->EnableDebugLayer(); // turn on the debug layer � causes D3D12 to validate API calls
+    debugController->EnableDebugLayer(); // turn on the debug layer - causes D3D12 to validate API calls
     DX_API("Failed to create DXGI factory")
         CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory.GetAddressOf()));
 
@@ -226,7 +226,7 @@ void RunMessageLoop() {
             DispatchMessage(&winMessage);   // sends the message to our WindowProcess callback
         }
         else {
-            // No messages waiting � this is where we update and render each frame
+            // No messages waiting - this is where we update and render each frame
             app->Run();
         }
 
