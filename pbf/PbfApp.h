@@ -46,7 +46,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 25, gridY = 40, gridZ = 25; // number of particles along each axis of the initial grid
+	const int gridX = 25, gridY = 50, gridZ = 25; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -75,8 +75,8 @@ protected:
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-	const Float3 boxMin = Float3(-6.0f, -5.0f, -6.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(6.0f, 20.0f, 6.0f); // simulation boundary maximum corner (world space)
+	const Float3 boxMin = Float3(-5.0f, -5.0f, -5.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(5.0f, 20.0f, 5.0f); // simulation boundary maximum corner (world space)
 	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
 	const float hMultiplierMin = 2.0f; 
 	const float hMultiplierMax = 4.0f; 
@@ -128,7 +128,8 @@ protected:
 	com_ptr<ID3D12PipelineState> clearGridPso; // zero cellCount array
 	com_ptr<ID3D12PipelineState> buildGridPso; // populate grid from predictedPositions
 	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
-	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*, clamp to bounding box
+	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*
+	com_ptr<ID3D12PipelineState> collisionPso; // clamp predictedPosition to box, zero wall-normal velocity
 	com_ptr<ID3D12PipelineState> positionFromScratchPso; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
 	com_ptr<ID3D12PipelineState> updateVelocityPso; // update velocity from displacement: v = (p* - x) / dt
 	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in omega
@@ -264,6 +265,7 @@ protected:
 		com_ptr<ID3DBlob> buildGridShader = Egg::Shader::LoadCso("Shaders/buildGridCS.cso");
 		com_ptr<ID3DBlob> lambdaShader = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
 		com_ptr<ID3DBlob> deltaShader = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
+		com_ptr<ID3DBlob> collisionShader = Egg::Shader::LoadCso("Shaders/collisionCS.cso");
 		com_ptr<ID3DBlob> positionFromScratchShader = Egg::Shader::LoadCso("Shaders/positionFromScratchCS.cso");
 		com_ptr<ID3DBlob> updateVelocityShader = Egg::Shader::LoadCso("Shaders/updateVelocityCS.cso");
 		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
@@ -300,6 +302,10 @@ protected:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(deltaShader.Get());
 		DX_API("Failed to create delta compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(deltaPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(collisionShader.Get());
+		DX_API("Failed to create collision compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(collisionPso.GetAddressOf()));
 
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(positionFromScratchShader.Get());
 		DX_API("Failed to create positionFromScratch compute PSO")
@@ -452,6 +458,12 @@ protected:
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 
+		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
+		// simulation box and zero wall-normal velocity before building the grid.
+		commandList->SetPipelineState(collisionPso.Get());
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
 		// build the spatial grid from predicted positions (used by all subsequent neighbor queries)
 		// step 1: zero the cell counts
 		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
@@ -480,6 +492,12 @@ protected:
 
 			// commit scratch -> predictedPosition for next iteration
 			commandList->SetPipelineState(positionFromScratchPso.Get());
+			commandList->Dispatch(numGroups, 1, 1);
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+			// post-delta collision: clamp predictedPosition to the simulation box
+			// so the next solver iteration sees valid positions
+			commandList->SetPipelineState(collisionPso.Get());
 			commandList->Dispatch(numGroups, 1, 1);
 			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
 		}

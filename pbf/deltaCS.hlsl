@@ -6,8 +6,6 @@
 // Apply the correction to the predicted position:
 // p*_i += delta_p_i
 //
-// Then clamp p*_i to the simulation box so particles don't escape the domain.
-//
 // To avoid a Gauss-Seidel race (thread i reading predictedPosition[j] while thread j
 // overwrites it in the same dispatch), this shader writes its result to the scratch field
 // scratch. A separate positionFromScratchCS pass then copies the scratch field back to
@@ -122,12 +120,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     }
     deltaP /= rho0;
 
-    // Update the predicted position
-    float3 newPos = pi + deltaP;
-
-    // Perform collision check, for now this is just a simple clamp to keep particles inside the simulation box.
-    // clamp() applies component-wise: newPos.x is clamped to [boxMin.x, boxMax.x], etc.
-    newPos = clamp(newPos, boxMin, boxMax);
-
-    particles[i].scratch = newPos;
+    // Update the predicted position (collision response is handled by collisionCS)
+    particles[i].scratch = pi + deltaP;
 }
