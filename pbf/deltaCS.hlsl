@@ -89,6 +89,17 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // r_ij points from neighbor j toward particle i
             float3 r = pi - particles[j].predictedPosition;
 
+            // Overlapping particles (r ~ 0): SpikyGrad returns zero so they'd
+            // be stuck forever. Skip the normal sCorr + SpikyGrad computation
+            // (which would blow up due to Poly6(0)/Poly6(deltaQ) in sCorr) and
+            // instead add a small direct repulsive nudge in a pseudo-random
+            // direction. On subsequent solver iterations, even a tiny separation
+            // lets the normal gradient take over.
+             if (length(r) < EPSILON) {
+                deltaP += overlapJitter(i, j) * (h * 0.001);
+                continue;
+             }
+
             // Eq. 13: artificial pressure term s_corr to suppress tensile instability.
             // When lambda > 0 (sparse region), the standard Eq. 12 correction becomes attractive,
             // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
