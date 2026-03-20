@@ -50,18 +50,19 @@ float4 main(GSOutput input) : SV_Target
         baseColor = lerp(float3(0.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), (t - 0.5) * 2.0); // upper half: green (rest) -> red (compressed)
 
     // diffuse: how much the surface faces the light
+    // scaled down so the density color dominates over the lighting variation
     float3 L = normalize(lightDir.xyz);
-    float diffuse = max(dot(normal, L), 0.0);
+    float diffuse = max(dot(normal, L), 0.0) * 0.3; // 0.3 = diffuse strength (was 1.0)
 
-    // specular: bright highlight where the surface reflects light toward the camera
+    // specular: small subtle highlight so particles still read as 3D
     float3 V = normalize(cameraPos.xyz - input.centerWorld);
     float3 H = normalize(L + V); // halfway vector between light and view
-    float specular = pow(max(dot(normal, H), 0.0), 64.0); // shininess: 64
+    float specular = pow(max(dot(normal, H), 0.0), 40.0) * 0.15; // softer and dimmer (was 64.0 * 0.5)
 
-    // ambient: a small constant so shadowed areas aren't fully black
-    float ambient = 0.15;
+    // high ambient so the density color is visible from all angles
+    float ambient = 0.5; // was 0.15
 
-    float3 finalColor = baseColor * (ambient + diffuse) + float3(1, 1, 1) * specular * 0.5;
+    float3 finalColor = baseColor * (ambient + diffuse) + float3(1, 1, 1) * specular;
 
     return float4(finalColor, 1.0);
 }
