@@ -59,10 +59,10 @@ protected:
 	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
 	float epsilon = 5.0f;
 	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
-	float viscosity = 0.01f; // paper suggests 0.01
+	float viscosity = 0.0*0.01f; // paper suggests 0.01
 	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
-	float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
-	float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
+	float sCorrK = 0.0*0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
+	float vorticityEpsilon = 0.0*0.01f; // vorticity confinement strength (paper: 0.01)
 
 	// parameters derived from tunable parameters
 	float h = particleSpacing * hMultiplier; // SPH smoothing radius
