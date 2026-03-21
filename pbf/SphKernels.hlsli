@@ -5,7 +5,8 @@
 // As per Muller 2013, we use two kernels:
 //   Poly6  — scalar, used for density estimation
 //   SpikyGrad — vector, used for constraint gradient (position correction)
-//TODO: double check the calculations here
+//TODO: double check the calculations here regarding gradients
+// and their directions, in particular the "gradient with respect to smth"
 
 #ifndef SPH_KERNELS_HLSLI
 #define SPH_KERNELS_HLSLI
@@ -23,11 +24,18 @@ float3 overlapJitter(uint i, uint j)
 {
     float fi = float(i);
     float fj = float(j);
-    return normalize(float3(
+    float3 v = float3(
         sin(fi * 73.0 + fj * 157.0),
         sin(fi * 157.0 + fj * 73.0),
         sin(fi * 113.0 + fj * 211.0)
-    ));
+    );
+    float len2 = dot(v, v);
+    // Guard in case all three components can land near zero. 
+    // normalize(~0) = ~0 * rsqrt(0) = NaN
+    // Fall back to a fixed arbitrary direction if the vector is too small.
+    if (len2 < 1e-12)
+        return float3(0.5773502, 0.5773502, 0.5773502); // ~ normalize(1,1,1)
+    return v * rsqrt(len2);
 }
 
 // Poly6 kernel

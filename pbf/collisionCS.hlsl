@@ -45,19 +45,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float3 pp = particles[i].predictedPosition;
     float3 v  = particles[i].velocity;
-
-    // DIAGNOSTIC: if any component is NaN, send the particle to the box center
-    // instead of letting clamp() silently map it to boxMin. If you see particles
-    // appearing at the center instead of the -x -z corner, NaN is confirmed.
-    
-    if (any(isnan(pp)))
-    {
-        pp = (boxMin + boxMax) * 0.5;
-        v = float3(0, 0, 0);
-        particles[i].predictedPosition = pp;
-        particles[i].velocity = v;
-        return;
-    }
     
     // Zero velocity components pointing into walls
     if (pp.x < boxMin.x) v.x = max(v.x, 0.0);
