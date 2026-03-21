@@ -145,7 +145,9 @@
 //      Fix: guard normalize() with a length check in overlapJitter(),
 //      falling back to a fixed direction if the vector is too small.
 //
-// Investigation complete. Removing debug instrumentation is a future TODO.
+// Observed issue: boiling most everywhere (acceptable), but particularly
+// in the bottom left (-x -z) corner (not acceptable, asymmetric). TODO
+// 
 //
 // ============================================================================
 
@@ -172,7 +174,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 25, gridY = 50, gridZ = 25; // number of particles along each axis of the initial grid
+	const int gridX = 30, gridY = 70, gridZ = 30; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -201,8 +203,8 @@ protected:
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-	const Float3 boxMin = Float3(-5.0f, -5.0f, -5.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(5.0f, 20.0f, 5.0f); // simulation boundary maximum corner (world space)
+	const Float3 boxMin = Float3(-6.0f, -5.0f, -6.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(6.0f, 20.0f, 6.0f); // simulation boundary maximum corner (world space)
 	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
 	const float hMultiplierMin = 2.0f; 
 	const float hMultiplierMax = 4.0f; 
