@@ -643,7 +643,7 @@ protected:
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
-		ImGui::InputInt("Reorder interval [2]", &reorderInterval, 1); // how often to sort particles by cell
+		ImGui::InputInt("Sort interval [2]", &reorderInterval, 1); // how often to sort particles by cell
 		reorderInterval = std::max(reorderInterval, 1); // must be at least 1
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
@@ -1028,7 +1028,7 @@ public:
 		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
 		camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f)); // start further back to see the full box
-		camera->SetSpeed(5.0f); // movement speed of the camera
+		camera->SetSpeed(10.0f); // movement speed of the camera
 
 		CreateImGuiDescriptorHeap();
 

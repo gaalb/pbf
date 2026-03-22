@@ -51,7 +51,17 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // apply external forces (gravity + arrow-key acceleration): update velocity first,
     // then use the updated velocity for the position prediction (semi-implicit Euler)
-    particles[i].velocity += (float3(0.0, -9.8, 0.0) + externalForce) * dt;
+    float3 force = float3(0.0, -9.8, 0.0) + externalForce;
+
+    // fountain: upward jet in a corner of the box 
+    float3 extent = boxMax - boxMin;
+    float3 pos = particles[i].position;
+    if (pos.x > boxMax.x - extent.x * 0.05 &&
+        pos.z > boxMax.z - extent.z * 0.05 &&
+        pos.y < boxMin.y + extent.y * 0.3)
+        force.y += 400.0;
+
+    particles[i].velocity += force * dt;
 
     // p* is our best guess of where the particle will end up if no constraints
     // are applied. The constraint solver will nudge p* to satisfy density better
