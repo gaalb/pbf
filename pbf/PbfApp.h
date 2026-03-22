@@ -1,156 +1,5 @@
 #pragma once
 
-// ============================================================================
-// PROGRESSION NOTES
-// ============================================================================
-// 
-// Observed issue: steady FPS degradation over time
-//   GPU utilization climbs from ~60% to 95%+ over the course of the simulation
-//   causing FPS to drop from 70 to 36 (worse with sloshing: down to 24).
-//   The degradation is permanent per session — FPS never recovers.
-//   Memory usage is mostly flat, so this is not a memory leak.
-//   Disabling the D3D12 debug layer did not resolve it.
-//
-// Suspected cause: spatial cache coherence degradation
-//   Particles are allocated in grid order at startup, so buffer adjacency
-//   matches spatial adjacency. As the simulation runs, particles move but
-//   their buffer indices stay fixed. Over time, neighbor lookups (lambdaCS,
-//   deltaCS, vorticityCS, confinementCS, viscosityCS) read particles with
-//   scattered buffer indices, potentially thrashing the GPU L2 cache.
-//   This has not been confirmed. If it is the cause, the standard fix is to
-//   periodically sort the particle buffer by grid cell index (radix sort).
-//   See g-RadixSort sibling project for reference.
-//
-// Observed issue: particles teleporting to bottom-left corner (NaN bug)
-//   Some particles spontaneously jump to the -x, -z corner of the bounding
-//   box and "boil" there. The symptom worsens when particles are compressed
-//   into a corner (e.g. +x +z) for an extended period. The root cause is
-//   NaN appearing in particle positions; HLSL clamp(NaN, boxMin, boxMax)
-//   returns boxMin per IEEE 754, which explains the bottom-left teleport.
-//
-// Investigation method: NaN bisection via debug counter buffer
-//   A 16-slot RWStructuredBuffer<uint> (debugCounts, bound at u3) is attached
-//   to every compute shader. Each shader checks its outputs for NaN/INF via
-//   isnan()/isinf() and increments its assigned slot with InterlockedAdd.
-//   The buffer is cleared at the start of each ComputePass and read back to
-//   the CPU at the end for ImGui display.
-//
-// Findings so far:
-//   1. Per-stage counters showed NaN in three stages: collision_in (slot 1),
-//      delta (slot 3), positionFromScratch (slot 4). All others read 0.
-//      Conclusion: deltaCS is the origin; the other two are downstream
-//      cascade (delta writes scratch -> posFromScratch copies to
-//      predictedPosition -> collision reads it).
-//
-//   2. Sub-stage instrumentation inside deltaCS initially used bool flags
-//      flushed at the end via InterlockedAdd. ALL sub-stages showed 0 despite
-//      the overall delta counter being nonzero. Replacing bools with direct
-//      InterlockedAdd after each step revealed: deltaP is finite before
-//      "deltaP /= rho0" but NaN/INF after it.
-//
-//   3. Captured rho0's bit pattern via asuint(rho0) -> debugCounts slot:
-//      0x42800000 = 64.0, confirming the cbuffer layout is correct.
-//      Dividing a finite float by 64.0 cannot produce NaN in IEEE 754.
-//
-//   4. Captured pre-division deltaP bits via asuint(deltaP.xyz) written to
-//      debug slots, triggered only when the post-division result is NaN.
-//      Result: all components were 0x7FFFFFFF (NaN). deltaP was ALREADY NaN
-//      before the division — the pre-division isnan() check (slot 11 = 0)
-//      was a false negative. The HLSL compiler optimized away the isnan()
-//      call, likely via data-flow analysis concluding deltaP "can't" be NaN
-//      from the loop arithmetic. This is a critical lesson: isnan() checks
-//      in HLSL are unreliable when the compiler can reason about the value;
-//      bit-level checks via asuint() are more trustworthy.
-//
-//   5. Input capture when deltaP is NaN (bit-level check, not isnan):
-//        - nanNeighborCount: 0  — no neighbor had NaN in pj.x or lambdaJ
-//        - lambdaI: finite, ~0.083 (varies per frame, as expected)
-//        - pi.x: 0xC0A00000 = -5.0 (stable, likely boxMin.x — boundary particle)
-//        - poly6AtDeltaQ: 0x4006B3E ≈ 2.07 (stable, nonzero — not a div-by-zero)
-//        - deltaP.x: 0x7FFFFFFF = NaN
-//      All self-inputs are finite, no NaN neighbors, yet deltaP is NaN.
-//      HOWEVER: the neighbor check only tested pj.x — if the initial NaN
-//      corruption only affected y or z of a neighbor's position, the check
-//      would miss it entirely. r = pi - pj would still get NaN in that
-//      component, propagating through length(), Poly6(), and SpikyGrad().
-//      The check also didn't test for INF (only NaN), and INF * 0 = NaN
-//      in cases like (lambdaI + INF_lambdaJ) * zero-component-of-SpikyGrad.
-//
-//   6. Extended neighbor check to all 3 components of pj AND lambdaJ,
-//      testing for both NaN AND INF (exponent == 0x7F800000).
-//      Result: nanNeighborCount still 0. All neighbor data is finite.
-//      The NaN is genuinely created from finite inputs inside the loop.
-//      pi.x remains -5.0 (boxMin boundary), poly6AtDeltaQ ≈ 2.07.
-//
-//   7. Per-iteration tracking: captured intermediates from the first neighbor
-//      interaction that makes deltaP go NaN/INF.
-//        - caught in-loop: YES — the NaN appears at a specific iteration
-//        - sCorr: 0 (zero! not INF, not large — harmless)
-//        - wRatio: 0.187 (small, well-behaved — not an overflow source)
-//        - lambdaJ: 0.047 (small, finite)
-//        - rLen: 0.588 (well within (EPSILON, h) — normal distance)
-//      All intermediates are completely normal. A term like
-//      (0.083 + 0.047 + 0) * SpikyGrad(r, 0.588) cannot produce NaN.
-//      This means the NaN was already in deltaP BEFORE this interaction
-//      and the in-loop bit check only noticed it now. The actual culprit
-//      is an earlier iteration whose contribution was NaN, but the bit
-//      check saw deltaP as finite at that point — the compiler likely
-//      deferred the NaN-producing computation (fused/reordered FMA) so
-//      the intermediate register didn't hold the NaN yet when we checked.
-//
-//   8. Checked each individual contribution (coeff * SpikyGrad) for NaN/INF
-//      BEFORE adding to deltaP. Result: bad contrib found = NO.
-//      No single neighbor interaction produces a NaN/INF contribution.
-//      Yet the accumulated deltaP is NaN after the loop.
-//      This means the NaN comes from ACCUMULATION: many finite terms that
-//      sum past ±FLT_MAX to ±INF, then INF + (-INF) = NaN. Or the compiler
-//      is still defeating our checks by deferring the computation.
-//
-//   9. Binary elimination round 1: disabled sCorr entirely (forced to 0).
-//      NaN persists. sCorr / pow() is NOT the culprit.
-//      The base term (lambdaI + lambdaJ) * SpikyGrad(r, h) alone causes
-//      the NaN. Since no single contribution is NaN/INF (finding 8), but
-//      the sum is, the accumulation must overflow: many large finite terms
-//      sum past FLT_MAX → INF, then opposing directions give INF+(-INF)=NaN.
-//
-//  10. Loop statistics with full simulation intact (no code removed):
-//        - neighbors: 23 (normal)
-//        - max|contrib|: 0.345 (tiny — nowhere near FLT_MAX)
-//        - max|lambdaJ|: 0.004 (tiny)
-//        - lambdaI: 0.0017 (tiny)
-//        - deltaP.x: NaN
-//      This RULES OUT accumulation overflow. 23 terms of max 0.345 sum to
-//      at most ~8 — not remotely close to FLT_MAX. Yet deltaP is NaN.
-//      Combined with finding 8 (no single contribution is NaN/INF), this
-//      is paradoxical: each term is small and finite, and there aren't
-//      enough of them to overflow, yet the sum is NaN.
-//      The only remaining explanation: the compiler is STILL defeating
-//      the loop statistics tracking, just as it defeated isnan() checks.
-//      The captured max|contrib| of 0.345 may be from a thread that did
-//      NOT produce NaN (multiple threads write to the same debug slots;
-//      the last writer wins, and the last writer may be a healthy thread
-//      that happened to write after the NaN thread).
-//
-//  11. ROOT CAUSE FOUND: overlapJitter() in SphKernels.hlsli.
-//      Disabling the jitter contribution eliminates all NaN.
-//      overlapJitter calls normalize(float3(sin(...), sin(...), sin(...))).
-//      For large particle indices (i, j in the thousands), the sin inputs
-//      (fi*73 + fj*157, etc.) reach tens of thousands. GPU sin() loses
-//      precision for large arguments, and for specific (i,j) pairs all
-//      three components land near zero. normalize(~zero) computes
-//      v * rsqrt(dot(v,v)) = ~0 * rsqrt(~0) = ~0 * INF = NaN.
-//      The overlap path also had `continue`, which skipped all stats
-//      tracking — this is why every diagnostic showed normal values.
-//
-//      Fix: guard normalize() with a length check in overlapJitter(),
-//      falling back to a fixed direction if the vector is too small.
-//
-// Observed issue: boiling most everywhere (acceptable), but particularly
-// in the bottom left (-x -z) corner (not acceptable, asymmetric). TODO
-// 
-//
-// ============================================================================
-
 #include <algorithm>
 #include <Egg/SimpleApp.h>
 #include "ConstantBufferTypes.h"
@@ -680,7 +529,27 @@ protected:
 
 	void GraphicsPass() {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
+
+		// The particle buffer's home state is UNORDERED_ACCESS, because that's what the compute
+		// shaders need (they bind it as RWStructuredBuffer). The vertex shader, however, reads it
+		// as a StructuredBuffer (SRV), which requires the resource to be in a shader-resource state.
+		// DX12 enforces this so the GPU knows whether to expect writes (requiring cache flushes and
+		// coherence) or only reads (allowing aggressive caching). We transition in before the draw
+		// and back out to UAV afterward, so the rest of the pipeline always sees the home state.
+		// Both NON_PIXEL_SHADER_RESOURCE and PIXEL_SHADER_RESOURCE bits are required because the
+		// root signature's default DATA_STATIC_WHILE_SET_AT_EXECUTE descriptor volatility demands
+		// the full SRV mask regardless of which shader stage actually reads the resource.
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+			particleBuffer.Get(),
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
 		particleMesh->Draw(commandList.Get()); // draw particles on top
+
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+			particleBuffer.Get(),
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 	}
 
 	// uploads textures from CPU to GPU. Must be called after importing textures.

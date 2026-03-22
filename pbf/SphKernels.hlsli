@@ -17,25 +17,22 @@ static const float EPSILON = 1e-6;
 // When two particles overlap (r ~ 0), the spiky gradient is zero and they
 // can never separate. This function returns a pseudo-random unit vector
 // derived from the particle indices, giving overlapping particles a
-// consistent but unique direction to push apart. The specific prime
-// numbers (73, 157, 113, 211) are arbitrary — any unrelated primes
-// produce a good spread of directions across (i,j) pairs.
+// consistent but unique direction to push apart. Uses integer hashing
+// instead of sin() to avoid GPU precision loss for large indices.
+// The 127.5 offset guarantees no component is ever exactly zero
+// (byte values are integers), so normalize() is always safe.
 float3 overlapJitter(uint i, uint j)
 {
-    float fi = float(i);
-    float fj = float(j);
-    float3 v = float3(
-        sin(fi * 73.0 + fj * 157.0),
-        sin(fi * 157.0 + fj * 73.0),
-        sin(fi * 113.0 + fj * 211.0)
-    );
-    float len2 = dot(v, v);
-    // Guard in case all three components can land near zero. 
-    // normalize(~0) = ~0 * rsqrt(0) = NaN
-    // Fall back to a fixed arbitrary direction if the vector is too small.
-    if (len2 < 1e-12)
-        return float3(0.5773502, 0.5773502, 0.5773502); // ~ normalize(1,1,1)
-    return v * rsqrt(len2);
+    uint h = i * 0x1f1f1f1fu ^ j * 0x9e3779b9u;
+    h ^= h >> 16;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+
+    return normalize(float3(
+        float(h & 0xFF) - 127.5,
+        float((h >> 8) & 0xFF) - 127.5,
+        float((h >> 16) & 0xFF) - 127.5
+    ));
 }
 
 // Poly6 kernel
