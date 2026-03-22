@@ -131,7 +131,7 @@ protected:
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
-	int reorderInterval = 5; // how often to spatially reorder the particle buffer (every N physics frames)
+	int reorderInterval = 2; // how often to spatially reorder the particle buffer (every N physics frames)
 	int framesSinceReorder = 0; // counts up to reorderInterval, then resets after a reorder
 
 
@@ -432,6 +432,14 @@ protected:
 			commandList->Close();
 	}
 
+	// Shorthand: set PSO, dispatch, then place a UAV barrier on the given resource.
+	// Most compute passes in the pipeline follow this exact pattern.
+	void DispatchAndBarrier(ID3D12PipelineState* pso, UINT numGroups, ID3D12Resource* barrierResource) {
+		commandList->SetPipelineState(pso);
+		commandList->Dispatch(numGroups, 1, 1);
+		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(barrierResource));
+	}
+
 	void ComputePass() {
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
@@ -456,25 +464,20 @@ protected:
 		UINT numGroups = (numParticles + 255) / 256;
 
 		// prediction: apply gravity, compute p* = x + v*dt
-		commandList->SetPipelineState(predictPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+		DispatchAndBarrier(predictPso.Get(), numGroups, particleBuffer.Get());
 
 		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
 		// simulation box and zero wall-normal velocity before building the grid.
-		commandList->SetPipelineState(collisionPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+		DispatchAndBarrier(collisionPso.Get(), numGroups, particleBuffer.Get());
 
 		// build the spatial grid from predicted positions (used by all subsequent neighbor queries)
 		// step 1: zero the cell counts
 		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
 		UINT numCellGroups = (numCells + 255) / 256;
-		commandList->SetPipelineState(clearGridPso.Get());
-		commandList->Dispatch(numCellGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellCountBuffer.Get()));
+		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, cellCountBuffer.Get());
 
 		// step 2: each particle inserts itself into its cell via InterlockedAdd
+		// needs barriers on both cellCount and cellParticles
 		commandList->SetPipelineState(buildGridPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellCountBuffer.Get()));
@@ -482,57 +485,18 @@ protected:
 
 		// constraint solver loop
 		for (int iter = 0; iter < solverIterations; iter++) {
-			// compute lambda for each particle from predictedPositions
-			commandList->SetPipelineState(lambdaPso.Get());
-			commandList->Dispatch(numGroups, 1, 1);
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-			// writes corrected position to scratch (avoids Gauss-Seidel race)
-			commandList->SetPipelineState(deltaPso.Get());
-			commandList->Dispatch(numGroups, 1, 1);
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-			// commit scratch -> predictedPosition for next iteration
-			commandList->SetPipelineState(positionFromScratchPso.Get());
-			commandList->Dispatch(numGroups, 1, 1);
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-			// post-delta collision: clamp predictedPosition to the simulation box
-			// so the next solver iteration sees valid positions
-			commandList->SetPipelineState(collisionPso.Get());
-			commandList->Dispatch(numGroups, 1, 1);
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+			DispatchAndBarrier(lambdaPso.Get(), numGroups, particleBuffer.Get()); // compute lambda
+			DispatchAndBarrier(deltaPso.Get(), numGroups, particleBuffer.Get()); // delta_p -> scratch
+			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups, particleBuffer.Get()); // scratch -> predictedPosition
+			DispatchAndBarrier(collisionPso.Get(), numGroups, particleBuffer.Get()); // clamp to box
 		}
 
-		// update velocity from displacement (position stays old for vorticity/viscosity)
-		commandList->SetPipelineState(updateVelocityPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// vorticity estimation: compute curl(v) per particle, store in omega
-		commandList->SetPipelineState(vorticityPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// vorticity confinement: apply corrective force to velocity
-		commandList->SetPipelineState(confinementPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// XSPH viscosity: writes corrected velocity to scratch (avoids Gauss-Seidel race)
-		commandList->SetPipelineState(viscosityPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// commit scratch -> velocity
-		commandList->SetPipelineState(velocityFromScratchPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
-
-		// update position from predictedPosition
-		commandList->SetPipelineState(updatePositionPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+		DispatchAndBarrier(updateVelocityPso.Get(), numGroups, particleBuffer.Get()); // v = (p* - x) / dt
+		DispatchAndBarrier(vorticityPso.Get(), numGroups, particleBuffer.Get()); // estimate curl(v) -> omega
+		DispatchAndBarrier(confinementPso.Get(), numGroups, particleBuffer.Get()); // vorticity confinement -> velocity
+		DispatchAndBarrier(viscosityPso.Get(), numGroups, particleBuffer.Get()); // XSPH viscosity -> scratch
+		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups, particleBuffer.Get()); // scratch -> velocity
+		DispatchAndBarrier(updatePositionPso.Get(), numGroups, particleBuffer.Get()); // position = predictedPosition
 
 		// spatial sort (reorder): rearrange the particle buffer so that particles
 		// in the same grid cell are contiguous in memory, restoring cache coherence
@@ -542,6 +506,12 @@ protected:
 		// but by now position has been updated by the solver. This is fine, because if
 		// the solver converges, the predicted and actual positions are close spatially,
 		// meaning that the grouping of particles into cells is still mostly valid.
+		//
+		// This runs after the full physics pipeline rather than right after buildGridCS
+		// because the reorder invalidates the grid: it changes particle buffer indices,
+		// making the particle indices stored in cellParticles stale. The solver, vorticity,
+		// confinement, and viscosity passes all read from cellParticles, so the reorder
+		// must wait until they're done. (Moving it earlier would require rebuilding the grid.)
 		//
 		// The heart and soul of this sorting is that when we walk the grid cell-by-cell,
 		// we put the particles we find in them into the next open slot in the sorted buffer, 
@@ -555,19 +525,15 @@ protected:
 			// Step 1: prefix sum of cellCount -> cellPrefixSum
 			// Tells us where each cell's particles start in the sorted buffer.
 			// cellCount is still populated from the grid build earlier this frame.
-			commandList->SetPipelineState(prefixSumPso.Get());
-			commandList->Dispatch(1, 1, 1); // single thread
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellPrefixSumBuffer.Get()));
+			DispatchAndBarrier(prefixSumPso.Get(), 1, cellPrefixSumBuffer.Get());
 
 			// Step 2: scatter particles into sortedParticleBuffer in cell order.
 			// Dispatched over (cell, slot) pairs: numCells * maxPerCell threads total.
-			// Each thread copies one particle from particles[] to its sorted position, 
+			// Each thread copies one particle from particles[] to its sorted position,
 			// if there is a particle in the given cell's given spot
 			UINT reorderThreads = numCells * maxPerCell;
 			UINT reorderGroups = (reorderThreads + 255) / 256;
-			commandList->SetPipelineState(reorderPso.Get());
-			commandList->Dispatch(reorderGroups, 1, 1);
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(sortedParticleBuffer.Get()));
+			DispatchAndBarrier(reorderPso.Get(), reorderGroups, sortedParticleBuffer.Get());
 
 			// Step 4: copy sorted data back into the main particle buffer
 			// sortedParticleBuffer becomes COPY_SOURCE, particleBuffer becomes COPY_DEST for the copy call
@@ -674,10 +640,10 @@ protected:
 		ImGui::InputFloat("h multiplier [3.5]", &hMultiplier, 0.1f, 0.5f, "%.2f");
 		hMultiplier = std::clamp(hMultiplier, hMultiplierMin, hMultiplierMax);
 		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
-		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.005f, 0.01f, "%.4f");
-		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.01f, 0.05f, "%.4f");
-		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.005f, 0.01f, "%.4f");
-		ImGui::InputInt("Reorder interval [5]", &reorderInterval, 10); // how often to sort particles by cell
+		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
+		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
+		ImGui::InputInt("Reorder interval [2]", &reorderInterval, 1); // how often to sort particles by cell
 		reorderInterval = std::max(reorderInterval, 1); // must be at least 1
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
@@ -1061,6 +1027,7 @@ public:
 		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
 		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+		camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f)); // start further back to see the full box
 		camera->SetSpeed(5.0f); // movement speed of the camera
 
 		CreateImGuiDescriptorHeap();
