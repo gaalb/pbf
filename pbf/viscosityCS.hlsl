@@ -16,7 +16,7 @@
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write scratch)
 
-#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // Poly6

@@ -11,7 +11,7 @@
 //   CBV(b0)               — ComputeCb: dt, numParticles, h, rho0, epsilon
 //   DescriptorTable(UAV(u0)) — particle buffer (read + write)
 
-#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli" // Particle struct: position, velocity, predictedPosition, lambda
 

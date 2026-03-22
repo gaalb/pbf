@@ -10,7 +10,7 @@
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + position, write velocity)
 
-#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli" // Particle struct
 

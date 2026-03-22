@@ -11,15 +11,17 @@ Memory usage is mostly flat, so this is not a memory leak, as can be checked lik
 nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv -l 1
 Disabling the D3D12 debug layer did not resolve it.
 
-Suspected cause: spatial cache coherence degradation
-Particles are allocated in grid order at startup, so buffer adjacency
-matches spatial adjacency. As the simulation runs, particles move but
-their buffer indices stay fixed. Over time, neighbor lookups (lambdaCS,
-deltaCS, vorticityCS, confinementCS, viscosityCS) read particles with
-scattered buffer indices, potentially thrashing the GPU L2 cache.
-This has not been confirmed. If it is the cause, the standard fix is to
-periodically sort the particle buffer by grid cell index (radix sort).
-See g-RadixSort sibling project for reference.
+This was caused by spatial cache coherence loss. At startup, particles are laid out
+in a regular grid in memory so spatial neihgbors have nearby buffer indices. When 
+the shaders iterate over the 27 neighboring grid cells and read particle[j] for
+each neighbor, those j values are often contiguous, and so there are many cache hits.
+As the simulation runs, however, particles drift in space, and move physically but
+their buffer indices stay fixed, so the buffer indices of spatial neighbors start becoming
+random across the particle buffer. Each particle[j] read is a cache miss essentially,
+so the GPU stalls while the particle's data is fetched from the VRAM. The fix is to
+periodically rearrange the particle buffer so that particles in the same grid cell
+are contiguous in memory again. This is effectively a counting sort keyed by grid cell index.
+
 ============================================================================
 Observed issue: particles teleporting to bottom-left corner (NaN bug)
 
@@ -89,4 +91,3 @@ SRV -> UAV after, so the buffer is in the correct state when the vertex shader r
 target state has to be NON_PIXEL_SHADER_RESOURCE | PIXEL_SHADER_RESOURCE (both bits), because
 the root signature's default DATA_STATIC_WHILE_SET_AT_EXECUTE descriptor volatility makes the
 debug layer require the full 0xC0 mask regardless of which shader stage actually reads it.
-

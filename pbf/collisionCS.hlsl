@@ -9,9 +9,9 @@
 //
 // Root signature:
 //   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=3)) -- u0: particles, u1/u2: grid (unused)
+//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles, u1-u4: grid + sort buffers (unused here)
 
-#define CollisionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define CollisionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli" // Particle struct
 

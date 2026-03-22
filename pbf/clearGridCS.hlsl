@@ -6,9 +6,9 @@
 //
 // Root signature:
 //   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=3)) -- u0: particles (unused), u1: cellCount, u2: cellParticles (unused)
+//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles (unused), u1: cellCount, u2-u4: unused
 
-#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 cbuffer ComputeCb : register(b0)
 {

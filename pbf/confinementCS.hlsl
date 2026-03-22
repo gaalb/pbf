@@ -19,7 +19,7 @@
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + omega, write velocity)
 
 
-#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad

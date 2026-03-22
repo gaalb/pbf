@@ -8,7 +8,7 @@
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read scratch, write predictedPosition)
 
-#define PositionFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define PositionFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli" // Particle struct
 

@@ -12,7 +12,7 @@
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write omega)
 
 
-#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad

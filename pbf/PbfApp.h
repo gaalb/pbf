@@ -23,7 +23,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 30, gridY = 70, gridZ = 30; // number of particles along each axis of the initial grid
+	const int gridX = 50, gridY = 100, gridZ = 50; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -52,8 +52,8 @@ protected:
 	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-	const Float3 boxMin = Float3(-6.0f, -5.0f, -6.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(6.0f, 20.0f, 6.0f); // simulation boundary maximum corner (world space)
+	const Float3 boxMin = Float3(-10.0f, -5.0f, -10.0f); // simulation boundary minimum corner (world space)
+	const Float3 boxMax = Float3(10.0f, 20.0f, 10.0f); // simulation boundary maximum corner (world space)
 	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
 	const float hMultiplierMin = 2.0f; 
 	const float hMultiplierMax = 4.0f; 
@@ -92,14 +92,18 @@ protected:
 	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
 	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
 	com_ptr<ID3D12Resource> cellParticlesBuffer; // default heap: flat 2D array [maxNumCells * maxPerCell], stores particle indices per cell
+	com_ptr<ID3D12Resource> sortedParticleBuffer; // default heap: reorder target buffer, same size as particleBuffer
+	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by reorderCS
 	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
 	// all compute shaders share the same root signature layout:
-	//   CBV(b0) + DescriptorTable(UAV(u0, numDescriptors=3))
+	//   CBV(b0) + DescriptorTable(UAV(u0, numDescriptors=5))
 	// so we extract the root sig from one shader and reuse it for all PSOs.
-	// The three UAVs are: u0 = particles, u1 = cellCount, u2 = cellParticles.
-	// u0 = particle data 
+	// The five UAVs are: u0 = particles, u1 = cellCount, u2 = cellParticles, u3 = sortedParticles, u4 = cellPrefixSum.
+	// u0 = particle data
 	// u1 = grid cell counts, i.e. how many particles are in each cell 
 	// u2 = grid cell particle indices, i.e. which particles are in each cell (up to maxPerCell per cell)
+	// u3 = sorted particle data, i.e. the same particles but scattered into grid order for better memory coherence during constraint solving
+	// u4 = grid cell prefix sum, i.e. the exclusive prefix sum of cellCount, used to compute scatter offsets during reorder
 	com_ptr<ID3D12RootSignature> computeRootSig;
 	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
 	com_ptr<ID3D12PipelineState> clearGridPso; // zero cellCount array
@@ -114,6 +118,8 @@ protected:
 	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing, writes to scratch
 	com_ptr<ID3D12PipelineState> velocityFromScratchPso; // copy scratch -> velocity (Jacobi commit after viscosity)
 	com_ptr<ID3D12PipelineState> updatePositionPso; // update position from predictedPosition (final step per paper)
+	com_ptr<ID3D12PipelineState> prefixSumPso; // exclusive prefix sum of cellCount -> cellPrefixSum (for spatial reorder)
+	com_ptr<ID3D12PipelineState> reorderPso; // scatter particles into sorted order by grid cell
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
 	// Readback buffer for copying particle data to CPU (e.g. for diagnostics or export).
@@ -125,6 +131,8 @@ protected:
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
+	int reorderInterval = 5; // how often to spatially reorder the particle buffer (every N physics frames)
+	int framesSinceReorder = 0; // counts up to reorderInterval, then resets after a reorder
 
 
 	void LoadBackground() {
@@ -257,6 +265,8 @@ protected:
 		com_ptr<ID3DBlob> viscosityShader = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
 		com_ptr<ID3DBlob> velocityFromScratchShader = Egg::Shader::LoadCso("Shaders/velocityFromScratchCS.cso");
 		com_ptr<ID3DBlob> updatePositionShader = Egg::Shader::LoadCso("Shaders/updatePositionCS.cso");
+		com_ptr<ID3DBlob> prefixSumShader = Egg::Shader::LoadCso("Shaders/prefixSumCS.cso");
+		com_ptr<ID3DBlob> reorderShader = Egg::Shader::LoadCso("Shaders/reorderCS.cso");
 
 		// all shaders embed the same root signature string, so we extract it once
 		// from predictCS and reuse it for all PSO descriptors
@@ -318,6 +328,14 @@ protected:
 		psoDesc.CS = CD3DX12_SHADER_BYTECODE(updatePositionShader.Get());
 		DX_API("Failed to create updatePosition compute PSO")
 			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(updatePositionPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(prefixSumShader.Get());
+		DX_API("Failed to create prefixSum compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(prefixSumPso.GetAddressOf()));
+
+		psoDesc.CS = CD3DX12_SHADER_BYTECODE(reorderShader.Get());
+		DX_API("Failed to create reorder compute PSO")
+			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(reorderPso.GetAddressOf()));
 	}
 
 	void LoadParticles() {
@@ -418,7 +436,7 @@ protected:
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
 			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			2, // slot index 2 = start of the UAV descriptor table (u0, u1, u2)
+			2, // slot index 2 = start of the UAV descriptor table (u0..u4)
 			descriptorSize);
 
 		// switch to the compute pipeline: root signature first, then PSO
@@ -430,8 +448,8 @@ protected:
 		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
 		// this is a root CBV - it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
 		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
-		// bind the descriptor table at root parameter 1: 3 consecutive UAVs starting at slot 2
-		// (u0 = particles, u1 = cellCount, u2 = cellParticles)
+		// bind the descriptor table at root parameter 1: 5 consecutive UAVs starting at slot 2
+		// (u0 = particles, u1 = cellCount, u2 = cellParticles, u3 = sortedParticles, u4 = cellPrefixSum)
 		commandList->SetComputeRootDescriptorTable(1, uavHandle);
 
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
@@ -515,6 +533,60 @@ protected:
 		commandList->SetPipelineState(updatePositionPso.Get());
 		commandList->Dispatch(numGroups, 1, 1);
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(particleBuffer.Get()));
+
+		// spatial sort (reorder): rearrange the particle buffer so that particles
+		// in the same grid cell are contiguous in memory, restoring cache coherence
+		// for neighbor lookups. Uses the grid (cellCount + cellParticles) built earlier
+		// this frame to drive the reorder, avoiding any mismatch between grid-time
+		// and current positions. The grid was built from pre-solver predictedPositions,
+		// but by now position has been updated by the solver. This is fine, because if
+		// the solver converges, the predicted and actual positions are close spatially,
+		// meaning that the grouping of particles into cells is still mostly valid.
+		//
+		// The heart and soul of this sorting is that when we walk the grid cell-by-cell,
+		// we put the particles we find in them into the next open slot in the sorted buffer, 
+		// (which we track with a prefix sum of the cell counts), where they are contigous in memory,
+		// meaning that particles belonging to the same cell are contigous in memory, and are 
+		// also more likely to be contiguous with particles that are in adjacent cells.
+		framesSinceReorder++;
+		if (framesSinceReorder >= reorderInterval) {
+			framesSinceReorder = 0;
+
+			// Step 1: prefix sum of cellCount -> cellPrefixSum
+			// Tells us where each cell's particles start in the sorted buffer.
+			// cellCount is still populated from the grid build earlier this frame.
+			commandList->SetPipelineState(prefixSumPso.Get());
+			commandList->Dispatch(1, 1, 1); // single thread
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellPrefixSumBuffer.Get()));
+
+			// Step 2: scatter particles into sortedParticleBuffer in cell order.
+			// Dispatched over (cell, slot) pairs: numCells * maxPerCell threads total.
+			// Each thread copies one particle from particles[] to its sorted position, 
+			// if there is a particle in the given cell's given spot
+			UINT reorderThreads = numCells * maxPerCell;
+			UINT reorderGroups = (reorderThreads + 255) / 256;
+			commandList->SetPipelineState(reorderPso.Get());
+			commandList->Dispatch(reorderGroups, 1, 1);
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(sortedParticleBuffer.Get()));
+
+			// Step 4: copy sorted data back into the main particle buffer
+			// sortedParticleBuffer becomes COPY_SOURCE, particleBuffer becomes COPY_DEST for the copy call
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition( 
+				sortedParticleBuffer.Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+				particleBuffer.Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST));
+			commandList->CopyBufferRegion(particleBuffer.Get(), 0,
+				sortedParticleBuffer.Get(), 0, numParticles * sizeof(Particle));
+			// then transition both back to UAV so the compute shaders can use it next frame
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+				sortedParticleBuffer.Get(),
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+				particleBuffer.Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		}
 
 		// Copy particle data to readback buffer for CPU access next frame
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -605,6 +677,8 @@ protected:
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.005f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.01f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.005f, 0.01f, "%.4f");
+		ImGui::InputInt("Reorder interval [5]", &reorderInterval, 10); // how often to sort particles by cell
+		reorderInterval = std::max(reorderInterval, 1); // must be at least 1
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
@@ -717,6 +791,7 @@ protected:
 	}
 
 	void CalculateAvgDensity() {
+		// map the readback buffer to CPU memory and copy the particle data into a vector
 		const UINT64 bufferSize = numParticles * sizeof(Particle);
 		void* pData;
 		CD3DX12_RANGE readRange(0, bufferSize);
@@ -768,7 +843,7 @@ protected:
 		particleUploadBuffer->SetName(L"Particle Upload Buffer"); // debug name for D3D12 validation layer
 	}
 
-	void CreateSrv() {
+	void CreateParticleSrv() {
 		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -789,7 +864,7 @@ protected:
 		device->CreateShaderResourceView(particleBuffer.Get(), &srvDesc, srvHandle); // write the SRV descriptor into slot 1
 	}
 
-	void CreateUav() {
+	void CreateParticleUav() {
 		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		// particle UAV (slot 2): read-write view for the compute shader
@@ -873,7 +948,65 @@ protected:
 		device->CreateUnorderedAccessView(cellParticlesBuffer.Get(), nullptr, &cellParticlesUavDesc, cellParticlesHandle);
 	}
 
+	void CreateSortBuffers() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+		// sortedParticleBuffer: same size and flags as particleBuffer, used as
+		// the scatter destination during spatial reordering
+		const UINT64 particleSize = numParticles * sizeof(Particle);
+		const CD3DX12_RESOURCE_DESC sortedParticleDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			particleSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create sorted particle buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &sortedParticleDesc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(sortedParticleBuffer.ReleaseAndGetAddressOf()));
+		sortedParticleBuffer->SetName(L"Sorted Particle Buffer");
+
+		// cellPrefixSumBuffer: one uint per cell, stores the exclusive prefix sum
+		// of cellCount — i.e. where each cell's particles start in the sorted buffer
+		const UINT64 prefixSumSize = maxNumCells * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC prefixSumDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			prefixSumSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create cell prefix sum buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &prefixSumDesc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(cellPrefixSumBuffer.ReleaseAndGetAddressOf()));
+		cellPrefixSumBuffer->SetName(L"Cell Prefix Sum Buffer");
+	}
+
+	void CreateSortUavs() {
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// sortedParticles UAV (slot 5): same element layout as the main particle UAV
+		D3D12_UNORDERED_ACCESS_VIEW_DESC sortedUavDesc = {};
+		sortedUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		sortedUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		sortedUavDesc.Buffer.FirstElement = 0;
+		sortedUavDesc.Buffer.NumElements = numParticles;
+		sortedUavDesc.Buffer.StructureByteStride = sizeof(Particle);
+		sortedUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE sortedHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 5, descriptorSize);
+		device->CreateUnorderedAccessView(sortedParticleBuffer.Get(), nullptr, &sortedUavDesc, sortedHandle);
+
+		// cellPrefixSum UAV (slot 6): one uint per cell
+		D3D12_UNORDERED_ACCESS_VIEW_DESC prefixSumUavDesc = {};
+		prefixSumUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		prefixSumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		prefixSumUavDesc.Buffer.FirstElement = 0;
+		prefixSumUavDesc.Buffer.NumElements = maxNumCells;
+		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 6, descriptorSize);
+		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumHandle);
+	}
+
 	void CreateParticleReadbackBuffer() {
+		// create the readback buffer: same size as the particle buffer, but on the 
+		// readback heap so we can copy GPU data back to the CPU
 		const UINT64 bufferSize = numParticles * sizeof(Particle);
 		const CD3DX12_HEAP_PROPERTIES readbackHeapProps(D3D12_HEAP_TYPE_READBACK);
 		const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
@@ -897,11 +1030,13 @@ protected:
 		//   slot 2: particle UAV (u0) - read/written by compute shaders (particle data)
 		//   slot 3: cellCount UAV (u1) - per-cell particle count for the spatial grid
 		//   slot 4: cellParticles UAV (u2) - particle indices per cell (flat 2D: cell * maxPerCell + slot)
-		// The compute root signature binds slots 2-4 as a single descriptor table with 3 UAVs.
+		//   slot 5: sortedParticles UAV (u3) - reorder target for spatial sorting
+		//   slot 6: cellPrefixSum UAV (u4) - exclusive prefix sum of cellCount (for reorder offsets)
+		// The compute root signature binds slots 2-6 as a single descriptor table with 5 UAVs.
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 5;
+		dhd.NumDescriptors = 7;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -926,6 +1061,7 @@ public:
 		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
 		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
+		camera->SetSpeed(5.0f); // movement speed of the camera
 
 		CreateImGuiDescriptorHeap();
 
@@ -937,11 +1073,15 @@ public:
 
 		CreateGridBuffers();
 
-		CreateSrv();
+		CreateParticleSrv();
 
-		CreateUav();
+		CreateParticleUav();
 
 		CreateGridUavs();
+
+		CreateSortBuffers();
+
+		CreateSortUavs();
 
 		CreateParticleReadbackBuffer();
 	}

@@ -11,9 +11,9 @@
 //
 // Root signature:
 //   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=3)) -- u0: particles, u1: cellCount, u2: cellParticles
+//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles, u1: cellCount, u2: cellParticles, u3-u4: unused
 
-#define BuildGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
+#define BuildGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "Particle.hlsli"
 
