@@ -7,7 +7,8 @@ Observed issue: steady FPS degradation over time
 GPU utilization climbs from ~60% to 95%+ over the course of the simulation
 causing FPS to drop from 70 to 36 (worse with sloshing: down to 24).
 The degradation is permanent per session — FPS never recovers.
-Memory usage is mostly flat, so this is not a memory leak.
+Memory usage is mostly flat, so this is not a memory leak, as can be checked like so:
+nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv -l 1
 Disabling the D3D12 debug layer did not resolve it.
 
 Suspected cause: spatial cache coherence degradation
@@ -50,10 +51,14 @@ of trying to normalize a near-zero vector.
 since then we've moved on to a different jitter implementation that doesn't use sin() at all
 ============================================================================
 Observed issue: boiling most everywhere (acceptable), but particularly
-in the bottom left (-x -z) corner (not acceptable, asymmetric). TODO
+in the bottom left (-x -z) corner (not acceptable, asymmetric). 
+
+The cause for this was an asymmetry in the grid: it wasn't centered at the bounding box's middle,
+but started at the bottom left.
+The *boiling* itself is still present though, remains to be fixed: TODO
 ============================================================================
 
- Resource state validation error after adding the readback buffer
+Resource state validation error after adding the readback buffer
 
 After adding the particle readback buffer (for reading back density data to the CPU), the D3D12
 debug layer started reporting an INVALID_SUBRESOURCE_STATE error every frame. The error fired
