@@ -9,12 +9,18 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{2d57bef2-65a8-4ab0-bb94-0b0eecd0a2bb}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Resource Files">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="Shaders">
-      <UniqueIdentifier>{2d57bef2-65a8-4ab0-bb94-0b0eecd0a2bb}</UniqueIdentifier>
+    <Filter Include="Shaders\Compute">
+      <UniqueIdentifier>{43a78bfa-c698-4fa4-a0a6-195a10bfb03e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Include">
+      <UniqueIdentifier>{cf41e256-e587-4377-ae31-a60d993b5f0a}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -67,65 +73,65 @@
     <FxCompile Include="particlePS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="predictCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="lambdaCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="deltaCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="updateVelocityCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="viscosityCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="vorticityCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="confinementCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="positionFromScratchCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="updatePositionCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="velocityFromScratchCS.hlsl">
-      <Filter>Shaders</Filter>
+    <FxCompile Include="buildGridCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="clearGridCS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="buildGridCS.hlsl">
-      <Filter>Shaders</Filter>
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="collisionCS.hlsl">
-      <Filter>Shaders</Filter>
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="confinementCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="deltaCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="lambdaCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="positionFromScratchCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="predictCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumCS.hlsl">
-      <Filter>Shaders</Filter>
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="reorderCS.hlsl">
-      <Filter>Shaders</Filter>
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="updatePositionCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="updateVelocityCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="velocityFromScratchCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="viscosityCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="vorticityCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Particle.hlsli">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="SphKernels.hlsli">
-      <Filter>Shaders</Filter>
-    </None>
     <None Include="GridUtils.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Particle.hlsli">
+      <Filter>Shaders\Include</Filter>
+    </None>
+    <None Include="SphKernels.hlsli">
+      <Filter>Shaders\Include</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="progress_notes.txt">
+    <Text Include="notes.txt">
       <Filter>Resource Files</Filter>
     </Text>
   </ItemGroup>

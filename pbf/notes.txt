@@ -1,0 +1,76 @@
+﻿NOTES: NO SOURCE, JUST NOTES FOR ME
+---------------------------------------------------------------------------------------
+Issue: FPS degradation over time. 
+Checked memory and GPU usaage like so:
+nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv -l 1
+memory seemed flat, so no leak, but usage climbed to almost 100%.
+There seemed no reason for extra arithmetic usage, so the lead suspect
+was an increased amount of GPU stalls waiting for memory fetches, 
+as particles drift in space and index neighbors become actual
+neighbors less often.
+
+Fixed when implementing a counting sort that sorts particles based on their
+grid cell index, so that particles in the same cell are contiguous in memory.
+---------------------------------------------------------------------------------------
+Bug: Bubbles formed with a particle in the middle
+Fix: Coloring by density revealed that in the middle was actually not 1 particle
+but several. Somehow they ended up in the exact same spot at float precision, so
+they stuck together. Introduced a psuedorandom jitter to separate particles that
+are this close together.
+---------------------------------------------------------------------------------------
+Bug: particles teleporting to bottom-left corner (NaN bug)
+Some particles spontaneously jumped to the -x, -z corner of the bounding box. 
+The cause turned out to be NaN appearing in particle positions - HLSL's
+clamp(NaN, boxMin, boxMax) returns boxMin on NaN.
+
+Finding the source of the NaN was difficult because the HLSL compiler aggressively optimizes
+away isnan() checks, so I had to check for NaNs bit-level via asuint().
+
+The root cause was the the overLapJitter() introduced to make particles not stick
+together and form bubbles around them sometimes returned a 0 length vector, which
+we normalized. Changed the pseudo random number generation.
+---------------------------------------------------------------------------------------
+Observed issue: boiling most everywhere (acceptable), but particularly
+in the bottom left (-x -z) corner (not acceptable, asymmetric). 
+
+The cause for this was an asymmetry in the grid: it wasn't centered at the bounding box's middle,
+but started at the bottom left.
+The *boiling* itself is still present though, remains to be fixed: TODO
+---------------------------------------------------------------------------------------
+
+Resource state validation error after adding the readback buffer
+
+After adding the particle readback buffer (for reading back density data to the CPU), the D3D12
+debug layer started reporting an INVALID_SUBRESOURCE_STATE error every frame. 
+
+The particle buffer has two roles in the pipeline: the compute shaders write to it as a
+RWStructuredBuffer (UAV), and the vertex shader reads from it as a StructuredBuffer (SRV). In
+DX12, you have to explicitly transition resources between these roles using barriers, because
+the GPU needs to handle caching differently for writes vs reads. This was not done in previous
+commits, and was wrong even then: the buffer was in UAV state when GraphicsPass ran, and the
+vertex shader was reading it as an SRV without a transition. It's just that the debug layer
+didn't catch it then, because there were only UAV barriers on it, so debug layer was lenient.
+The readback copy introduced two explicit Transition barriers (UAV -> COPY_SOURCE -> UAV) on the
+particle buffer. This made the debug layer start strict tracking, discovering the already present
+incorrect handling (when the particle mesh tried to bind the SRV while the buffer was in UAV state, 
+it got caught.)
+
+---------------------------------------------------------------------------------------
+IMPROVEMENTS:
+-fix D3D12 WARNING: ID3D12Device::CreateCommittedResource: Ignoring InitialState D3D12_RESOURCE_STATE_UNORDERED_ACCESS. Buffers are effectively created in state D3D12_RESOURCE_STATE_COMMON. [ STATE_CREATION WARNING #1328: CREATERESOURCE_STATE_IGNORED]
+-investigate brownian motion
+-morton codes
+-make the current spatial grid more memory friendly
+	-hand in hand with a proper hash, as well as fixed particle spacing/h
+-proper collision checking with things that aren't a bounding box
+-a better scene, with some flow, and objects to flow around
+-liquid surface rendering
+-more particles, which will mean better optimization
+-merge fields in the particle struct that never live together
+-adaptive pbf article imrovements
+-fix particle spacing and h at compile time eventually, and accompanying code changes
+-fixed dt
+-asynchronosus render and compute
+-separete the fields in the particle structured buffer, make it separate buffers and adjust barriers
+-better spatial hash, multi level memory article
+-better sorting, eventually radix sort

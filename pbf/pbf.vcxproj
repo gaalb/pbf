@@ -183,7 +183,7 @@
     <None Include="SphKernels.hlsli" />
   </ItemGroup>
   <ItemGroup>
-    <Text Include="progress_notes.txt" />
+    <Text Include="notes.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

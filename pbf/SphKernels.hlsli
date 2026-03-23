@@ -17,8 +17,7 @@ static const float EPSILON = 1e-6;
 // When two particles overlap (r ~ 0), the spiky gradient is zero and they
 // can never separate. This function returns a pseudo-random unit vector
 // derived from the particle indices, giving overlapping particles a
-// consistent but unique direction to push apart. Uses integer hashing
-// instead of sin() to avoid GPU precision loss for large indices.
+// consistent but unique direction to push apart. 
 // The 127.5 offset guarantees no component is ever exactly zero
 // (byte values are integers), so normalize() is always safe.
 float3 overlapJitter(uint i, uint j)
