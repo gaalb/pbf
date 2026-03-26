@@ -151,4 +151,6 @@ IMPROVEMENTS:
 -think about separating the constant buffers
 -clean up PbfApp.h so that methods are easier to contemplate, also add header comments to them
 -move the code relating to the sort to a separate method, and detail its usage intuitively there
+	-make it clear that gridCount has two uses now!
 -compare the new sorting to the old "cellParticles" solution visually and FPS-wise
+-better header comments for shaders, make it input-output style
