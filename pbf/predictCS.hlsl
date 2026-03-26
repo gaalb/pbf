@@ -30,6 +30,7 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
+    uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
 // RWStructuredBuffer: read-write access to the particle array.
@@ -52,13 +53,15 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // then use the updated velocity for the position prediction (semi-implicit Euler)
     float3 force = float3(0.0, -9.8, 0.0) + externalForce;
 
-    // fountain: upward jet in a corner of the box 
-    float3 extent = boxMax - boxMin;
-    float3 pos = particles[i].position;
-    if (pos.x > boxMax.x - extent.x * 0.05 &&
-        pos.z > boxMax.z - extent.z * 0.05 &&
-        pos.y < boxMin.y + extent.y * 0.3)
-        force.y += 400.0;
+    // fountain: upward jet in a corner of the box
+    if (fountainEnabled) {
+        float3 extent = boxMax - boxMin;
+        float3 pos = particles[i].position;
+        if (pos.x > boxMax.x - extent.x * 0.05 &&
+            pos.z > boxMax.z - extent.z * 0.05 &&
+            pos.y < boxMin.y + extent.y * 0.3)
+            force.y += 400.0;
+    }
 
     particles[i].velocity += force * dt;
 

@@ -73,9 +73,6 @@
     <FxCompile Include="particlePS.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="buildGridCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="clearGridCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -98,9 +95,6 @@
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
-    <FxCompile Include="reorderCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="updatePositionCS.hlsl">

@@ -40,6 +40,7 @@ protected:
 	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
 	float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
+	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box
 
 	// parameters derived from tunable parameters
 	float h = particleSpacing * hMultiplier; // SPH smoothing radius
@@ -604,6 +605,7 @@ protected:
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
+		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
@@ -694,6 +696,7 @@ protected:
 		computeCb->sCorrN = sCorrN;
 		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb->externalForce = externalForce;
+		computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
 		computeCb.Upload();
 	}
 

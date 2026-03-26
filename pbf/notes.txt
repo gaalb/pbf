@@ -148,3 +148,7 @@ IMPROVEMENTS:
 -separete the fields in the particle structured buffer, make it separate buffers and adjust barriers
 -better spatial hash, multi level memory article
 -better sorting, eventually radix sort
+-think about separating the constant buffers
+-clean up PbfApp.h so that methods are easier to contemplate, also add header comments to them
+-move the code relating to the sort to a separate method, and detail its usage intuitively there
+-compare the new sorting to the old "cellParticles" solution visually and FPS-wise

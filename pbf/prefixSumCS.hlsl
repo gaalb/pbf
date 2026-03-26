@@ -30,6 +30,7 @@ cbuffer ComputeCb : register(b0)
     float sCorrN;
     float vorticityEpsilon;
     float3 externalForce;
+    uint fountainEnabled;
 };
 
 #include "GridUtils.hlsli" // gridDims()
