@@ -54,7 +54,73 @@ The readback copy introduced two explicit Transition barriers (UAV -> COPY_SOURC
 particle buffer. This made the debug layer start strict tracking, discovering the already present
 incorrect handling (when the particle mesh tried to bind the SRV while the buffer was in UAV state, 
 it got caught.)
-
+---------------------------------------------------------------------------------------
+currently the neighboring particle lookup x spatial sort looks like so:
+-the grid consists of:
+	-cell count buffer: cellCount[i] shows how many particles are in the ith cell
+	-cell particle bufffer: cellparticles[i+j] shows the index of the particle in the jth "slot" of the ith particle 
+	-slots in cell i that are above cellCount[i] are assumed to contain memory junk
+-before we run physics, we build the grid, meaning:
+	-we clear the grid by setting each cellCount to 0 
+	-we rebuild the grid based on predictedPosition, that is to say, particles whose pedicted position falls into that 
+	 cell's physical position based on posToCell and cellIndex
+-after physics is done, we sort, i.e. reassign the indices of the particles -> this means that after this operation is done, the 
+ indices in cellParticles become deprecated
+-the sorting introduces two more buffers: 
+	-cellPrefixSum[i] is the sum of number of particles in the [0...i-1] cells, 
+	 which is calculated using a running total on cellCount, which was built based on predictedPosition!
+	-sortedParticles, which is the same dimension and purpose as particles, and is where we write the particles in the new
+	 order, before copying the data to particles
+-the sort writes the partciles' data into sortedParticles in such a way that the data of particles in the same cell is
+ contiguous memory:
+	-builds a prefix sum of cellCount, which is based on predictedPosition
+	-for each particle slot in each cell (some of which are empty, since the cellParticles was allocated based on worst case):
+		-the slot is identified by the particle index "ci", and the slot "slot"
+		-if there's no particle there, because cellCount[ci] <= slot, no-op because there's nothing to copy
+		-if there IS a particle there, copy its data to sortedParticles
+			-the data is found under the old index: particles[ci*maxPerCell+slot]
+			-the magic sauce hides in where we write this particle's data in sortedParticles, we achieve contiguity in the following way:
+				-in sortedParticles, each cell's region is determined by the prefix sum and the slot number:
+					-cellPrefixSum[ci] says where the cell's region begins
+					-slot says the size of the region
+				-the "slot" of the particle in the grid cell stays the same, so if cellParticles[i] had indices 0, 100, 5, then in 
+				 sortedParticles the data of the particle that previously had the index 0 comes first, then the data of the particle
+				 that previously had the index 100, then the data of the particle that previously had the index 5
+			-in this manner, since we dispatched one thread per cell slot, and each cell slot had exactly 0 or 1 particle's
+			 index in it, and we respected that slot numbering when writing to sortedParticles, each thread wrote exactly
+			 0 or 1 particle data slot in sortedParticles, and the data of the particles in slots in the same cell got written 
+			 contiguously next to each other
+				-additionally, since we're currently going row-by-row-by-column-by-column-by-layer-by-layer, data of cells
+				 that are adjacent in a row is also contiguous: this gets even better once we start using morton codes, which
+				 have better space locality
+	-all that's left now is to copy the data in sortedParticles to particles. The indices in cellParticles still refer to
+	 the indices in particles before they are overwritten, so this is the point where they become invalid
+-notice how the input of the sort was only two things: cellCount and cellParticles. The sort makes particles contiguous
+ based on which cell claimed them in cellParticles, and currently this means that they are contiguous in memory if
+ they belong to the same cell based on their predicted position. 
+-where is the memory coherence actually used? In operations which have pseudocode along the lines of "for each particle i,
+ do some calculations", where "calculations" involve checking neighboring particles' data, because in our case, spatial
+ locality equals temporal/logical locality, and the sorting makes that coincide with memory locality more
+	-specifially, we're making lookups along the line of particles[j] quicker
+-these sort of particles[j] lookups happen when we want to check the neighbors of particles, based on their predicted
+ position in the constraint projection loop and then the vorticity/viscosity/etc. calculations
+-there is an issue here: the grid (based on which we identify potential neighbors) gets built based on the predicted positions
+ before the constraint projection. Then the constraint projection and vort/visc/etc happens, then the particles get re-indexed 
+ to be memory contiguous based on their predicted position BEFORE the constraint projetion and vort/visc/etc! This means that
+ there is almost a whole physics loop's worth of movement between when the re-indexing happens and when the grid gets rebuilt.
+ This is because we use the grid's data (cellCount and cellParticles) in the sort, so the grid must be build BEFORE the sort.
+ However, we can't sort immediately after the grid is built, before the constraint projection, because the constraint projection
+ uses the grid to handle particle data lookups like so:
+	-uint j = cellParticles[ci * maxPerCell + s]; 
+	-the line above is how we iterate over neighboring particles: for each 27 adjacent cells in the grid, we check which
+	 particle indices are in them, and then look up particle data based on that j index
+-However, we could solve this problem and also provide a speedup if we calculated j based on the current particle index,
+ and some arithmetic. We could build the grid, then sort the particles, thereby invalidating the cellParticles buffer's
+ data. Then, since in particles the data of particles in the same cell is now contiguous, and the data of cells is
+ row-by-column-by-layer-etc, using cellCount and/or cellPrefixSum, we can look into specific index regions of the particles
+ buffer, instead of looking in cellParticles for indices: the info of what particles belong to a given cell is now carried
+ by cellCount, cellPrefixSum and the guarantee of the same cells' particles' contiguity. This also leads to us being able
+ to have one fewer level of indirection (not looking in cellParticles)
 ---------------------------------------------------------------------------------------
 IMPROVEMENTS:
 -fix D3D12 WARNING: ID3D12Device::CreateCommittedResource: Ignoring InitialState D3D12_RESOURCE_STATE_UNORDERED_ACCESS. Buffers are effectively created in state D3D12_RESOURCE_STATE_COMMON. [ STATE_CREATION WARNING #1328: CREATERESOURCE_STATE_IGNORED]

@@ -23,7 +23,7 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 50, gridY = 100, gridZ = 50; // number of particles along each axis of the initial grid
+	const int gridX = 50, gridY = 75, gridZ = 50; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -432,12 +432,13 @@ protected:
 			commandList->Close();
 	}
 
-	// Shorthand: set PSO, dispatch, then place a UAV barrier on the given resource.
+	// Shorthand: set PSO, dispatch, then place UAV barriers on the given resources.
 	// Most compute passes in the pipeline follow this exact pattern.
-	void DispatchAndBarrier(ID3D12PipelineState* pso, UINT numGroups, ID3D12Resource* barrierResource) {
+	void DispatchAndBarrier(ID3D12PipelineState* pso, UINT numGroups, std::initializer_list<ID3D12Resource*> barrierResources) {
 		commandList->SetPipelineState(pso);
 		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(barrierResource));
+		for (auto* resource : barrierResources)
+			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(resource));
 	}
 
 	void ComputePass() {
@@ -464,39 +465,36 @@ protected:
 		UINT numGroups = (numParticles + 255) / 256;
 
 		// prediction: apply gravity, compute p* = x + v*dt
-		DispatchAndBarrier(predictPso.Get(), numGroups, particleBuffer.Get());
+		DispatchAndBarrier(predictPso.Get(), numGroups, { particleBuffer.Get() });
 
 		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
 		// simulation box and zero wall-normal velocity before building the grid.
-		DispatchAndBarrier(collisionPso.Get(), numGroups, particleBuffer.Get());
+		DispatchAndBarrier(collisionPso.Get(), numGroups, { particleBuffer.Get() });
 
 		// build the spatial grid from predicted positions (used by all subsequent neighbor queries)
 		// step 1: zero the cell counts
 		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
 		UINT numCellGroups = (numCells + 255) / 256;
-		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, cellCountBuffer.Get());
+		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, { cellCountBuffer.Get() });
 
 		// step 2: each particle inserts itself into its cell via InterlockedAdd
 		// needs barriers on both cellCount and cellParticles
-		commandList->SetPipelineState(buildGridPso.Get());
-		commandList->Dispatch(numGroups, 1, 1);
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellCountBuffer.Get()));
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(cellParticlesBuffer.Get()));
+		DispatchAndBarrier(buildGridPso.Get(), numGroups, { cellCountBuffer.Get(), cellParticlesBuffer.Get() });
 
 		// constraint solver loop
 		for (int iter = 0; iter < solverIterations; iter++) {
-			DispatchAndBarrier(lambdaPso.Get(), numGroups, particleBuffer.Get()); // compute lambda
-			DispatchAndBarrier(deltaPso.Get(), numGroups, particleBuffer.Get()); // delta_p -> scratch
-			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups, particleBuffer.Get()); // scratch -> predictedPosition
-			DispatchAndBarrier(collisionPso.Get(), numGroups, particleBuffer.Get()); // clamp to box
+			DispatchAndBarrier(lambdaPso.Get(), numGroups, { particleBuffer.Get() }); // compute lambda
+			DispatchAndBarrier(deltaPso.Get(), numGroups, { particleBuffer.Get() }); // delta_p -> scratch
+			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups, { particleBuffer.Get() }); // scratch -> predictedPosition
+			DispatchAndBarrier(collisionPso.Get(), numGroups, { particleBuffer.Get() }); // clamp to box
 		}
 
-		DispatchAndBarrier(updateVelocityPso.Get(), numGroups, particleBuffer.Get()); // v = (p* - x) / dt
-		DispatchAndBarrier(vorticityPso.Get(), numGroups, particleBuffer.Get()); // estimate curl(v) -> omega
-		DispatchAndBarrier(confinementPso.Get(), numGroups, particleBuffer.Get()); // vorticity confinement -> velocity
-		DispatchAndBarrier(viscosityPso.Get(), numGroups, particleBuffer.Get()); // XSPH viscosity -> scratch
-		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups, particleBuffer.Get()); // scratch -> velocity
-		DispatchAndBarrier(updatePositionPso.Get(), numGroups, particleBuffer.Get()); // position = predictedPosition
+		DispatchAndBarrier(updateVelocityPso.Get(), numGroups, { particleBuffer.Get() }); // v = (p* - x) / dt
+		DispatchAndBarrier(vorticityPso.Get(), numGroups, { particleBuffer.Get() }); // estimate curl(v) -> omega
+		DispatchAndBarrier(confinementPso.Get(), numGroups, { particleBuffer.Get() }); // vorticity confinement -> velocity
+		DispatchAndBarrier(viscosityPso.Get(), numGroups, { particleBuffer.Get() }); // XSPH viscosity -> scratch
+		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups, { particleBuffer.Get() }); // scratch -> velocity
+		DispatchAndBarrier(updatePositionPso.Get(), numGroups, { particleBuffer.Get() }); // position = predictedPosition
 
 		// spatial sort (reorder): rearrange the particle buffer so that particles
 		// in the same grid cell are contiguous in memory, restoring cache coherence
@@ -525,7 +523,7 @@ protected:
 			// Step 1: prefix sum of cellCount -> cellPrefixSum
 			// Tells us where each cell's particles start in the sorted buffer.
 			// cellCount is still populated from the grid build earlier this frame.
-			DispatchAndBarrier(prefixSumPso.Get(), 1, cellPrefixSumBuffer.Get());
+			DispatchAndBarrier(prefixSumPso.Get(), 1, { cellPrefixSumBuffer.Get() });
 
 			// Step 2: scatter particles into sortedParticleBuffer in cell order.
 			// Dispatched over (cell, slot) pairs: numCells * maxPerCell threads total.
@@ -533,7 +531,7 @@ protected:
 			// if there is a particle in the given cell's given spot
 			UINT reorderThreads = numCells * maxPerCell;
 			UINT reorderGroups = (reorderThreads + 255) / 256;
-			DispatchAndBarrier(reorderPso.Get(), reorderGroups, sortedParticleBuffer.Get());
+			DispatchAndBarrier(reorderPso.Get(), reorderGroups, { sortedParticleBuffer.Get() });
 
 			// Step 4: copy sorted data back into the main particle buffer
 			// sortedParticleBuffer becomes COPY_SOURCE, particleBuffer becomes COPY_DEST for the copy call
