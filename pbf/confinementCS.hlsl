@@ -19,7 +19,7 @@
 //   DescriptorTable(UAV(u0)) -- particle buffer (read position + omega, write velocity)
 
 
-#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
+#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
 
 #include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad
@@ -39,14 +39,13 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
-    uint maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
 RWStructuredBuffer<Particle> particles : register(u0);
 RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellParticles : register(u2);
+RWStructuredBuffer<uint> cellPrefixSum : register(u3);
 
 [RootSignature(ConfinementRootSig)]
 [numthreads(256, 1, 1)]
@@ -75,12 +74,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             nc.z < 0 || nc.z >= dims.z)
             continue; // skip out-of-bounds cells (can happen at the edges of the simulation box)
 
-        uint ci = cellIndex(nc); // cell index of this neighbor cell
-        uint count = min(cellCount[ci], maxPerCell); // number of particles in this cell, capped at maxPerCell to avoid overflow from bad parameter choices
+        uint ci = cellIndex(nc);
+        uint count = cellCount[ci];
 
-        for (uint s = 0; s < count; s++) // s indexes into the cellParticles array for this cell, which lists the particle indices of particles in this cell
+        for (uint s = 0; s < count; s++)
         {
-            uint j = cellParticles[ci * maxPerCell + s];
+            uint j = cellPrefixSum[ci] + s;
             if (j == i)
                 continue;
 

@@ -16,7 +16,7 @@
 // symmetric at all walls and corners.
 //
 // Must be included after the cbuffer declaration, as these functions reference
-// boxMin, boxMax, h, and maxPerCell from ComputeCb.
+// boxMin, boxMax, and h from ComputeCb.
 
 #ifndef GRID_UTILS_HLSLI
 #define GRID_UTILS_HLSLI

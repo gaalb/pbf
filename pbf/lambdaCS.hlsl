@@ -19,7 +19,7 @@
 //   CBV(b0)                  -- ComputeCb
 //   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write lambda)
 
-#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
+#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
 
 #include "Particle.hlsli" // Particle struct
 #include "SphKernels.hlsli" // Poly6, SpikyGrad
@@ -39,14 +39,13 @@ cbuffer ComputeCb : register(b0)
     float sCorrN; // offset 56 (4 bytes): artificial pressure n
     float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
     float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
-    uint maxPerCell; // offset 76 (4 bytes): max particle indices stored per grid cell
 };
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
 RWStructuredBuffer<Particle> particles : register(u0);
 RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellParticles : register(u2);
+RWStructuredBuffer<uint> cellPrefixSum : register(u3);
 
 [RootSignature(LambdaRootSig)]
 [numthreads(256, 1, 1)]
@@ -85,11 +84,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             continue;
 
         uint ci = cellIndex(nc);
-        uint count = min(cellCount[ci], maxPerCell);
+        uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)
         {
-            uint j = cellParticles[ci * maxPerCell + s];
+            uint j = cellPrefixSum[ci] + s;
 
             // r points from neighbor j toward particle i (r_ij = p_i - p_j)
             float3 r = pi - particles[j].predictedPosition;

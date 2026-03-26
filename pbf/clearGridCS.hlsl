@@ -8,7 +8,7 @@
 //   CBV(b0)                                    -- ComputeCb
 //   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles (unused), u1: cellCount, u2-u4: unused
 
-#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
+#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -25,7 +25,6 @@ cbuffer ComputeCb : register(b0)
     float sCorrN;
     float vorticityEpsilon;
     float3 externalForce;
-    uint maxPerCell;
 };
 
 #include "GridUtils.hlsli" // gridDims()

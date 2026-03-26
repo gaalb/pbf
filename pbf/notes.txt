@@ -78,7 +78,7 @@ currently the neighboring particle lookup x spatial sort looks like so:
 		-the slot is identified by the particle index "ci", and the slot "slot"
 		-if there's no particle there, because cellCount[ci] <= slot, no-op because there's nothing to copy
 		-if there IS a particle there, copy its data to sortedParticles
-			-the data is found under the old index: particles[ci*maxPerCell+slot]
+			-the data is found under the old index: particles[cellParticles[ci*maxPerCell+slot]]
 			-the magic sauce hides in where we write this particle's data in sortedParticles, we achieve contiguity in the following way:
 				-in sortedParticles, each cell's region is determined by the prefix sum and the slot number:
 					-cellPrefixSum[ci] says where the cell's region begins
@@ -121,6 +121,14 @@ currently the neighboring particle lookup x spatial sort looks like so:
  buffer, instead of looking in cellParticles for indices: the info of what particles belong to a given cell is now carried
  by cellCount, cellPrefixSum and the guarantee of the same cells' particles' contiguity. This also leads to us being able
  to have one fewer level of indirection (not looking in cellParticles)
+ -This does cascade into a few other neccessary and/or logical changes:
+	-The reorder can no longer be optional or periodic — it must run every frame, because the solver now
+	 depends on the sorted particle order matching the grid. 
+	-With the physics shader no longer reading cellparticles, only buildGridCS and reodrerCS would use it.
+	 It can actually be completely removed, and we can use a shader that calculates the next free slot in
+	 the cell using a counter (for example repurposing cellCount after the prefix has been calculated),
+	 claiming it with an interlocked add, and writing the particle's data directly to the sorted buffer.
+TODO: Write a similar summary about the outcome.
 ---------------------------------------------------------------------------------------
 IMPROVEMENTS:
 -fix D3D12 WARNING: ID3D12Device::CreateCommittedResource: Ignoring InitialState D3D12_RESOURCE_STATE_UNORDERED_ACCESS. Buffers are effectively created in state D3D12_RESOURCE_STATE_COMMON. [ STATE_CREATION WARNING #1328: CREATERESOURCE_STATE_IGNORED]

@@ -13,7 +13,7 @@
 //   CBV(b0)                                    -- ComputeCb (for boxMin, boxMax, h -> gridDims)
 //   DescriptorTable(UAV(u0, numDescriptors=5)) -- u1: cellCount (read), u4: cellPrefixSum (write)
 
-#define PrefixSumRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
+#define PrefixSumRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -30,13 +30,12 @@ cbuffer ComputeCb : register(b0)
     float sCorrN;
     float vorticityEpsilon;
     float3 externalForce;
-    uint maxPerCell;
 };
 
 #include "GridUtils.hlsli" // gridDims()
 
 RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u4);
+RWStructuredBuffer<uint> cellPrefixSum : register(u3);
 
 [RootSignature(PrefixSumRootSig)]
 [numthreads(1, 1, 1)]
