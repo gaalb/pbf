@@ -10,10 +10,12 @@
 // this takes microseconds.
 //
 // Root signature:
-//   CBV(b0)                                    -- ComputeCb (for boxMin, boxMax, h -> gridDims)
-//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u1: cellCount (read), u4: cellPrefixSum (write)
+//   CBV(b0)                        -- ComputeCb (for boxMin, boxMax, h -> gridDims)
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers (unused here)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount (read), u8 = cellPrefixSum (write)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define PrefixSumRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
+#define PrefixSumRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -35,8 +37,8 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // gridDims()
 
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(PrefixSumRootSig)]
 [numthreads(1, 1, 1)]

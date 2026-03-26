@@ -17,13 +17,13 @@ using namespace Egg::Math;
 
 // SimpleApp gives us:
 // command allocator and command list for recording GPU commands
-// depth stencil buffer 
+// depth stencil buffer
 // PSO manager
 // frame synchronization (WaitForPreviousFrame)
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 50, gridY = 75, gridZ = 50; // number of particles along each axis of the initial grid
+	const int gridX = 50, gridY = 100, gridZ = 50; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
 
@@ -56,8 +56,8 @@ protected:
 	const Float3 boxMin = Float3(-10.0f, -5.0f, -10.0f); // simulation boundary minimum corner (world space)
 	const Float3 boxMax = Float3(10.0f, 20.0f, 10.0f); // simulation boundary maximum corner (world space)
 	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
-	const float hMultiplierMin = 2.0f; 
-	const float hMultiplierMax = 4.0f; 
+	const float hMultiplierMin = 2.0f;
+	const float hMultiplierMax = 4.0f;
 	const float particleSpacingMin = 0.1f;
 	const float particleSpacingMax = 0.3f;
 
@@ -82,20 +82,31 @@ protected:
 	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
 	Egg::TextureCube envTexture; // the cubemap texture for the skybox background
 	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible resources
-	com_ptr<ID3D12Resource> particleBuffer; // default heap: GPU-local, UAV-accessible
-	com_ptr<ID3D12Resource> particleUploadBuffer; // upload heap: used once to transfer initial particle data to the GPU
+
+	// particle field buffers (default heap, UAV-accessible by compute shaders): one per attribute
+	// Index with ParticleField enum (PF_POSITION..PF_SCRATCH).
+	com_ptr<ID3D12Resource> particleFields[PF_COUNT];
+
+	// Upload buffers for initial particle data (upload heap, CPU-writable).
+	// Only position and velocity have meaningful initial values; other fields are
+	// overwritten by the simulation before they're first read.
+	com_ptr<ID3D12Resource> positionUploadBuffer;
+	com_ptr<ID3D12Resource> velocityUploadBuffer;
+
+	// Sorted particle field buffers (default heap, UAV). Same layout as particleFields, only
+	// used as scatter target / scratch pad during sorting
+	com_ptr<ID3D12Resource> sortedFields[PF_COUNT];
+
 	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
-	com_ptr<ID3D12Resource> sortedParticleBuffer; // default heap: reorder target buffer, same size as particleBuffer
 	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
 	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
-	// all compute shaders share the same root signature layout:
-	//   CBV(b0) + DescriptorTable(UAV(u0, numDescriptors=4))
-	// so we extract the root sig from one shader and reuse it for all PSOs.
-	// The four UAVs are: u0 = particles, u1 = cellCount, u2 = sortedParticles, u3 = cellPrefixSum.
-	// u0 = particle data
-	// u1 = grid cell counts, i.e. how many particles are in each cell
-	// u2 = sorted particle data, i.e. the same particles but scattered into grid order for better memory coherence during constraint solving
-	// u3 = grid cell prefix sum, i.e. the exclusive prefix sum of cellCount, used to compute scatter offsets during sorting and neighbor lookups
+
+	// All compute shaders share the same root signature layout:
+	// Root param 0: CBV(b0) — ComputeCb
+	// Root param 1: DescriptorTable(UAV(u0..u6)) — particle field buffers
+	// Root param 2: DescriptorTable(UAV(u7..u8)) — grid buffers (cellCount, cellPrefixSum)
+	// Root param 3: DescriptorTable(UAV(u9..u15)) — sorted particle field buffers
+	// We extract the root sig from one shader and reuse it for all PSOs.
 	com_ptr<ID3D12RootSignature> computeRootSig;
 	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
 	com_ptr<ID3D12PipelineState> clearGridPso; // zero cellCount array
@@ -114,11 +125,10 @@ protected:
 	com_ptr<ID3D12PipelineState> sortPso; // each particle writes itself to its sorted position by grid cell
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 
-	// Readback buffer for copying particle data to CPU (e.g. for diagnostics or export).
-	// Usage: transition particleBuffer to COPY_SOURCE, CopyBufferRegion into this, transition back,
-	// then Map/Unmap after the GPU finishes to read the data on CPU.
-	com_ptr<ID3D12Resource> particleReadbackBuffer;
-	std::vector<Particle> particleReadbackData;
+	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
+	// Serves as an example for reading particle data back from the GPU
+	com_ptr<ID3D12Resource> densityReadbackBuffer;
+	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
@@ -144,7 +154,7 @@ protected:
 		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
 		com_ptr<ID3D12RootSignature> bgRootSig = Egg::Shader::LoadRootSignature(device.Get(), bgVertexShader.Get());
 
-		// the material of a mesh is what handles shader configuration, which includes root signature, 
+		// the material of a mesh is what handles shader configuration, which includes root signature,
 		// shader bytecode, pipeline state settings, and resource bindings (SRV/UAV/CBV)
 		Egg::Mesh::Material::P bgMaterial = Egg::Mesh::Material::Create();
 		bgMaterial->SetRootSignature(bgRootSig);
@@ -166,78 +176,86 @@ protected:
 		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
 	}
 
-	std::vector<Particle> GenerateParticles() {
+	// CPU-side staging struct for particle initialization.
+	// Only used by GenerateParticles/UploadParticles; the GPU never sees this layout.
+	struct ParticleInitData {
+		std::vector<Float3> positions;
+		std::vector<Float3> velocities;
+	};
+
+	ParticleInitData GenerateParticles() {
 		// create and return an evenly spaced grid of particles so we can see something on screen
-		std::vector<Particle> particles; 
+		ParticleInitData data;
 		Float3 grid = Float3(gridX, gridY, gridZ);
 		Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
 		offset += Float3(offsetX, offsetY, offsetZ); // apply user-defined world space offset
 		for (int x = 0; x < grid.x; x++) {
 			for (int y = 0; y < grid.y; y++) {
 				for (int z = 0; z < grid.z; z++) {
-					Particle p;
-					p.position = offset + Float3(x, y, z) * particleSpacing;
-					p.velocity = Float3(0.0f, 0.0f, 0.0f); // start at rest
-					particles.push_back(p);
+					data.positions.push_back(offset + Float3(x, y, z) * particleSpacing);
+					data.velocities.push_back(Float3(0.0f, 0.0f, 0.0f)); // start at rest
 				}
 			}
 		}
-		return particles;
+		return data;
 	}
 
-	void UploadParticles(const std::vector<Particle>& particles) {
-		// CPU side
-		void* pData; // will point to the upload buffer's CPU-accessible memory after mapping
-		CD3DX12_RANGE readRange(0, 0); // 0,0 tells DX12 we will not read from this mapping, only write
-		DX_API("Failed to map particle upload buffer") // grab a CPU pointer to the memory of the upload buffer resource
-			particleUploadBuffer->Map(
-				0, // subresource index: 0 for buffers (only textures have multiple subresources)
-				&readRange,// read range hint: (0,0) means we won't read any data back
-				&pData); // output: CPU pointer to the upload buffer memory
+	void UploadParticles(const ParticleInitData& initData) {
+		// Map and fill the position upload buffer
+		{
+			void* pData;
+			CD3DX12_RANGE readRange(0, 0);
+			DX_API("Failed to map position upload buffer")
+				positionUploadBuffer->Map(0, &readRange, &pData);
+			memcpy(pData, initData.positions.data(), initData.positions.size() * sizeof(Float3));
+			positionUploadBuffer->Unmap(0, nullptr);
+		}
+		// Map and fill the velocity upload buffer
+		{
+			void* pData;
+			CD3DX12_RANGE readRange(0, 0);
+			DX_API("Failed to map velocity upload buffer")
+				velocityUploadBuffer->Map(0, &readRange, &pData);
+			memcpy(pData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
+			velocityUploadBuffer->Unmap(0, nullptr);
+		}
 
-		memcpy(pData, particles.data(), particles.size() * sizeof(Particle)); // copy all particle data from CPU vector into upload buffer
-
-		particleUploadBuffer->Unmap( // we only use this buffer to upload data to the GPU, so we can unmap right after the copy
-			0, // subresource index
-			nullptr); // written range: nullptr means we wrote the entire buffer
-		// after the unmap, pData is no longer valid
-
-		// GPU side
+		// GPU side: copy from upload buffers to default heap field buffers
 		DX_API("Failed to reset command allocator (UploadParticles)")
-			commandAllocator->Reset(); // free memory from previous command list recording
+			commandAllocator->Reset();
 		DX_API("Failed to reset command list (UploadParticles)")
-			commandList->Reset(commandAllocator.Get(), nullptr); // begin recording; nullptr = no initial pipeline state needed for copy commands
+			commandList->Reset(commandAllocator.Get(), nullptr);
 
-		// transition particleBuffer from UAV to COPY_DEST:
-		// the GPU enforces that a resource's state matches how it's being used.
-		// it starts in UNORDERED_ACCESS (UAV), but CopyBufferRegion requires COPY_DEST.
-		commandList->ResourceBarrier(1,
-			&CD3DX12_RESOURCE_BARRIER::Transition(
-				particleBuffer.Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // state before: UAV (how we created it)
-				D3D12_RESOURCE_STATE_COPY_DEST)); // state after: ready to receive a copy
+		// transition position and velocity buffers to COPY_DEST
+		D3D12_RESOURCE_BARRIER toCopyDest[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_VELOCITY].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
+		};
+		commandList->ResourceBarrier(2, toCopyDest);
 
-		commandList->CopyBufferRegion(
-			particleBuffer.Get(), // destination: the default heap buffer
-			0,  // destination offset in bytes: start from the beginning
-			particleUploadBuffer.Get(), // source: the upload heap buffer we just filled
-			0, // source offset in bytes: start from the beginning
-			numParticles * sizeof(Particle)); // number of bytes to copy
+		commandList->CopyBufferRegion(particleFields[PF_POSITION].Get(), 0,
+			positionUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
+		commandList->CopyBufferRegion(particleFields[PF_VELOCITY].Get(), 0,
+			velocityUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
 
-		// transition particleBuffer back to UNORDERED_ACCESS so compute shaders can use it
-		commandList->ResourceBarrier(1,
-			&CD3DX12_RESOURCE_BARRIER::Transition(
-				particleBuffer.Get(),
-				D3D12_RESOURCE_STATE_COPY_DEST, // state before: we just copied into it
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS)); // state after: ready for compute shader read/write
+		// transition back to UAV
+		D3D12_RESOURCE_BARRIER toUav[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_VELOCITY].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+		};
+		commandList->ResourceBarrier(2, toUav);
 
 		DX_API("Failed to close command list (UploadParticles)")
-			commandList->Close(); // finalize the command list, no more commands can be added
+			commandList->Close();
 
 		ID3D12CommandList* commandLists[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists); // submit the copy commands to the GPU
+		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
 
-		WaitForPreviousFrame(); // block CPU until GPU has finished the copy before we proceed
+		WaitForPreviousFrame();
 	}
 
 	void LoadCompute() {
@@ -329,8 +347,9 @@ protected:
 	}
 
 	void LoadParticles() {
-		std::vector<Particle> particles = GenerateParticles(); // generate initial particle positions and zero velocities
-		UploadParticles(particles); // copy particle data from CPU to the GPU default heap buffer
+		ParticleInitData initData = GenerateParticles(); // generate initial particle positions and zero velocities
+		UploadParticles(initData); // copy particle data from CPU to the GPU default heap buffers
+
 		// loadCso reads the pre-compiled .cso binary into a blob
 		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
 		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
@@ -350,12 +369,12 @@ protected:
 		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// bind the per-frame constant buffer so the shader can access camera matrices
 		material->SetConstantBuffer(perFrameCb);
-		// bind the particle SRV (slot 1 in srvHeap) to root parameter 1 so the VS can read particle positions
-		// root parameter 1 = DescriptorTable(SRV(t0)) as declared in the ParticleRootSig in particleVS.hlsl
-		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index
+		// bind the particle SRV table (slots 1-2 in srvHeap) to root parameter 1 so the VS
+		// can read position (t0) and density (t1).
+		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index,
 		// so we must multiply the slot index by the descriptor increment size to get the correct byte offset
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		material->SetSrvHeap(1, srvHeap, 1 * descriptorSize); // slot 1 * bytes-per-slot = byte offset to the particle SRV
+		material->SetSrvHeap(1, srvHeap, 1 * descriptorSize); // slot 1 = start of position+density SRV table
 
 		// NullGeometry: no vertex buffer - the VS fetches positions from the structured buffer using SV_VertexID
 		// numParticles tells DrawInstanced how many vertices (and therefore SV_VertexID values) to generate
@@ -368,7 +387,7 @@ protected:
 
 	void PrepareCommandList() {
 		// reset the command allocator, freeing the memory used by the previous frame's commands
-		// this can only be done after the GPU finished executing those commands 
+		// this can only be done after the GPU finished executing those commands
 		commandAllocator->Reset();
 
 		// command list must be reset before we start recording commands into it
@@ -406,7 +425,7 @@ protected:
 		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
 		// make the SRV heap visible to the GPU for this command list, so shaders can access textures in it
-		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf()); 
+		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
 	}
 
 	void CloseCommandList() {
@@ -433,33 +452,46 @@ protected:
 
 	void ComputePass() {
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(
+
+		// GPU handles for the three compute descriptor tables
+		CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle(
 			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			2, // slot index 2 = start of the UAV descriptor table (u0..u3)
+			3, // slot 3 = start of particle field UAVs (u0..u6)
+			descriptorSize);
+		CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle(
+			srvHeap->GetGPUDescriptorHandleForHeapStart(),
+			10, // slot 10 = start of grid UAVs (u7..u8)
+			descriptorSize);
+		CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle(
+			srvHeap->GetGPUDescriptorHandleForHeapStart(),
+			12, // slot 12 = start of sorted field UAVs (u9..u15)
 			descriptorSize);
 
 		// switch to the compute pipeline: root signature first, then PSO
 		// (setting the root sig before the PSO is required - the PSO references the root sig)
 		// all compute shaders share the same root signature, so we set it once here.
-		// root parameter bindings (CBV + UAV table) persist across PSO swaps as long
+		// root parameter bindings persist across PSO swaps as long
 		// as we don't call SetComputeRootSignature again.
 		commandList->SetComputeRootSignature(computeRootSig.Get());
 		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
 		// this is a root CBV - it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
 		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
-		// bind the descriptor table at root parameter 1: 4 consecutive UAVs starting at slot 2
-		// (u0 = particles, u1 = cellCount, u2 = sortedParticles, u3 = cellPrefixSum)
-		commandList->SetComputeRootDescriptorTable(1, uavHandle);
+		// bind the three descriptor tables
+		commandList->SetComputeRootDescriptorTable(1, particleFieldsHandle);
+		commandList->SetComputeRootDescriptorTable(2, gridHandle);
+		commandList->SetComputeRootDescriptorTable(3, sortedFieldsHandle);
 
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
 
 		// prediction: apply gravity, compute p* = x + v*dt
-		DispatchAndBarrier(predictPso.Get(), numGroups, { particleBuffer.Get() });
+		DispatchAndBarrier(predictPso.Get(), numGroups,
+			{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
 
 		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
 		// simulation box and zero wall-normal velocity before building the grid.
-		DispatchAndBarrier(collisionPso.Get(), numGroups, { particleBuffer.Get() });
+		DispatchAndBarrier(collisionPso.Get(), numGroups,
+			{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
 
 		// build the spatial grid from predicted positions, then sort particles into grid order
 		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
@@ -478,78 +510,109 @@ protected:
 		// step 4: zero cell counts again so sortCS can use them as per-cell atomic counters
 		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, { cellCountBuffer.Get() });
 
-		// step 5: each particle writes itself into its sorted position in sortedParticleBuffer
-		// using cellPrefixSum[cell] + InterlockedAdd(cellCount[cell], 1)
-		DispatchAndBarrier(sortPso.Get(), numGroups, { sortedParticleBuffer.Get(), cellCountBuffer.Get() });
+		// step 5: each particle scatters all its field data into sorted order
+		DispatchAndBarrier(sortPso.Get(), numGroups, {
+			sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
+			sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
+			sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
+			sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get()
+		});
 
-		// step 6: copy sorted data back into the main particle buffer
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			sortedParticleBuffer.Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST));
-		commandList->CopyBufferRegion(particleBuffer.Get(), 0,
-			sortedParticleBuffer.Get(), 0, numParticles * sizeof(Particle));
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			sortedParticleBuffer.Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		// step 6: copy sorted data back into the main particle field buffers
+		{
+			D3D12_RESOURCE_BARRIER barriers[PF_COUNT * 2];
+			for (UINT f = 0; f < PF_COUNT; f++) {
+				barriers[f * 2] = CD3DX12_RESOURCE_BARRIER::Transition(
+					sortedFields[f].Get(),
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+				barriers[f * 2 + 1] = CD3DX12_RESOURCE_BARRIER::Transition(
+					particleFields[f].Get(),
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+			}
+			commandList->ResourceBarrier(PF_COUNT * 2, barriers);
+
+			for (UINT f = 0; f < PF_COUNT; f++)
+				commandList->CopyBufferRegion(particleFields[f].Get(), 0,
+					sortedFields[f].Get(), 0, (UINT64)numParticles * fieldStrides[f]);
+
+			for (UINT f = 0; f < PF_COUNT; f++) {
+				barriers[f * 2] = CD3DX12_RESOURCE_BARRIER::Transition(
+					sortedFields[f].Get(),
+					D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+				barriers[f * 2 + 1] = CD3DX12_RESOURCE_BARRIER::Transition(
+					particleFields[f].Get(),
+					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			}
+			commandList->ResourceBarrier(PF_COUNT * 2, barriers);
+		}
 
 		// constraint solver loop
 		// particles are now in grid-sorted order, and cellCount + cellPrefixSum describe
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
-			DispatchAndBarrier(lambdaPso.Get(), numGroups, { particleBuffer.Get() }); // compute lambda
-			DispatchAndBarrier(deltaPso.Get(), numGroups, { particleBuffer.Get() }); // delta_p -> scratch
-			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups, { particleBuffer.Get() }); // scratch -> predictedPosition
-			DispatchAndBarrier(collisionPso.Get(), numGroups, { particleBuffer.Get() }); // clamp to box
+			DispatchAndBarrier(lambdaPso.Get(), numGroups,
+				{ particleFields[PF_LAMBDA].Get(), particleFields[PF_DENSITY].Get() }); // compute lambda and density
+			DispatchAndBarrier(deltaPso.Get(), numGroups,
+				{ particleFields[PF_SCRATCH].Get() }); // delta_p -> scratch
+			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups,
+				{ particleFields[PF_PREDICTED_POSITION].Get() }); // scratch -> predictedPosition
+			DispatchAndBarrier(collisionPso.Get(), numGroups,
+				{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() }); // clamp to box
 		}
 
-		DispatchAndBarrier(updateVelocityPso.Get(), numGroups, { particleBuffer.Get() }); // v = (p* - x) / dt
-		DispatchAndBarrier(vorticityPso.Get(), numGroups, { particleBuffer.Get() }); // estimate curl(v) -> omega
-		DispatchAndBarrier(confinementPso.Get(), numGroups, { particleBuffer.Get() }); // vorticity confinement -> velocity
-		DispatchAndBarrier(viscosityPso.Get(), numGroups, { particleBuffer.Get() }); // XSPH viscosity -> scratch
-		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups, { particleBuffer.Get() }); // scratch -> velocity
-		DispatchAndBarrier(updatePositionPso.Get(), numGroups, { particleBuffer.Get() }); // position = predictedPosition
+		DispatchAndBarrier(updateVelocityPso.Get(), numGroups,
+			{ particleFields[PF_VELOCITY].Get() }); // v = (p* - x) / dt
+		DispatchAndBarrier(vorticityPso.Get(), numGroups,
+			{ particleFields[PF_OMEGA].Get() }); // estimate curl(v) -> omega
+		DispatchAndBarrier(confinementPso.Get(), numGroups,
+			{ particleFields[PF_VELOCITY].Get() }); // vorticity confinement -> velocity
+		DispatchAndBarrier(viscosityPso.Get(), numGroups,
+			{ particleFields[PF_SCRATCH].Get() }); // XSPH viscosity -> scratch
+		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups,
+			{ particleFields[PF_VELOCITY].Get() }); // scratch -> velocity
+		DispatchAndBarrier(updatePositionPso.Get(), numGroups,
+			{ particleFields[PF_POSITION].Get() }); // position = predictedPosition
 
-		// Copy particle data to readback buffer for CPU access next frame
+		// Copy density data to readback buffer for CPU access next frame
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
+			particleFields[PF_DENSITY].Get(),
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
-		commandList->CopyBufferRegion(particleReadbackBuffer.Get(), 0,
-			particleBuffer.Get(), 0, numParticles * sizeof(Particle));
+		commandList->CopyBufferRegion(densityReadbackBuffer.Get(), 0,
+			particleFields[PF_DENSITY].Get(), 0, (UINT64)numParticles * sizeof(float));
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
+			particleFields[PF_DENSITY].Get(),
 			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 	}
 
 	void GraphicsPass() {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 
-		// The particle buffer's home state is UNORDERED_ACCESS, because that's what the compute
-		// shaders need (they bind it as RWStructuredBuffer). The vertex shader, however, reads it
-		// as a StructuredBuffer (SRV), which requires the resource to be in a shader-resource state.
-		// DX12 enforces this so the GPU knows whether to expect writes (requiring cache flushes and
-		// coherence) or only reads (allowing aggressive caching). We transition in before the draw
-		// and back out to UAV afterward, so the rest of the pipeline always sees the home state.
-		// Both NON_PIXEL_SHADER_RESOURCE and PIXEL_SHADER_RESOURCE bits are required because the
-		// root signature's default DATA_STATIC_WHILE_SET_AT_EXECUTE descriptor volatility demands
-		// the full SRV mask regardless of which shader stage actually reads the resource.
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+		// The particle field buffers' home state is UNORDERED_ACCESS, because that's what the compute
+		// shaders need. The vertex shader reads position and density as SRVs, which requires the
+		// resources to be in a shader-resource state. We transition in before the draw and back out
+		// to UAV afterward, so the rest of the pipeline always sees the home state.
+		D3D12_RESOURCE_BARRIER toSrv[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+		};
+		commandList->ResourceBarrier(2, toSrv);
 
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleBuffer.Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+		D3D12_RESOURCE_BARRIER toUav[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+		};
+		commandList->ResourceBarrier(2, toUav);
 	}
 
 	// uploads textures from CPU to GPU. Must be called after importing textures.
@@ -557,11 +620,11 @@ protected:
 	void UploadBackground() {
 		// free the memory used by the previous frame's commands, must be done after GPU finished executing those commands
 		DX_API("Failed to reset command allocator (UploadBackground)")
-			commandAllocator->Reset(); 
-		
+			commandAllocator->Reset();
+
 		// reset command list to start recording copy commands, no initial pipeline state needed for copy commands
 		DX_API("Failed to reset command list (UploadBackground)")
-			commandList->Reset(commandAllocator.Get(), nullptr); 
+			commandList->Reset(commandAllocator.Get(), nullptr);
 
 		// record the copy commands that transfer texture data from upload heap to default heap
 		envTexture.UploadResource(commandList.Get());
@@ -647,7 +710,7 @@ protected:
 		GraphicsPass(); // draw the background and particles using the updated positions
 
 		// draw the parameter tuning UI *after* the main scene so it appears on top
-		ImGuiPass(); 
+		ImGuiPass();
 
 		CloseCommandList(); // transition back buffer to present state and close the command list
 	}
@@ -712,107 +775,116 @@ protected:
 
 		UpdateComputeCb(dt);
 
-		
+
 		// Read back previous frame's particle data (GPU is done after WaitForPreviousFrame)
 		if (physicsRunning) { CalculateAvgDensity(); }
 	}
 
 	void CalculateAvgDensity() {
-		// map the readback buffer to CPU memory and copy the particle data into a vector
-		const UINT64 bufferSize = numParticles * sizeof(Particle);
+		// map the readback buffer to CPU memory and copy the density data into a vector
+		const UINT64 bufferSize = numParticles * sizeof(float);
 		void* pData;
 		CD3DX12_RANGE readRange(0, bufferSize);
-		if (SUCCEEDED(particleReadbackBuffer->Map(0, &readRange, &pData))) {
-			memcpy(particleReadbackData.data(), pData, bufferSize);
+		if (SUCCEEDED(densityReadbackBuffer->Map(0, &readRange, &pData))) {
+			memcpy(densityReadbackData.data(), pData, bufferSize);
 			CD3DX12_RANGE writeRange(0, 0);
-			particleReadbackBuffer->Unmap(0, &writeRange);
+			densityReadbackBuffer->Unmap(0, &writeRange);
 		}
 
 		// Compute average density from readback data
 		double densitySum = 0.0;
 		for (int i = 0; i < numParticles; i++)
-			densitySum += particleReadbackData[i].density;
+			densitySum += densityReadbackData[i];
 		avgDensity = static_cast<float>(densitySum / numParticles);
 	}
 
-	void CreateParticleBuffer() {
-		// create the particle buffer on the default heap (GPU-local, writable by compute shaders via UAV)
-		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes
-		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT); // DEFAULT heap: GPU-local fast memory, not CPU-accessible
-		const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
-			bufferSize,  // size of the buffer in bytes
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // UAV flag: required for compute shaders to write to this buffer
-		DX_API("Failed to create particle buffer")
-			device->CreateCommittedResource( // allocation call
-				&defaultHeapProps, // allocate on the DEFAULT (GPU-local) heap
-				D3D12_HEAP_FLAG_NONE, // no special heap flags
-				&bufferDesc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, // initial state: UAV, matching how compute shaders will access it
-				nullptr, // optimized clear value: only used for render targets / depth buffers, not buffers
-				IID_PPV_ARGS(particleBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
-		particleBuffer->SetName(L"Particle Buffer"); // debug name for D3D12 validation layer
+	void CreateParticleBuffers() {
+		// create one buffer per particle field on the default heap (GPU-local, writable by compute shaders via UAV)
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		for (UINT f = 0; f < PF_COUNT; f++) {
+			const UINT64 bufferSize = (UINT64)numParticles * fieldStrides[f];
+			const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+				bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+			DX_API("Failed to create particle field buffer")
+				device->CreateCommittedResource(
+					&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+					IID_PPV_ARGS(particleFields[f].ReleaseAndGetAddressOf()));
+			std::wstring name = std::wstring(fieldNames[f]) + L" Buffer";
+			particleFields[f]->SetName(name.c_str());
+		}
 	}
 
-	void CreateUploadBuffer() {
-		const UINT64 bufferSize = numParticles * sizeof(Particle); // total size in bytes
-		// create the upload buffer: same size, upload heap so the CPU can write initial particle data into it
-		// once the data is copied to the default heap, this buffer is no longer needed
-		const CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD); // UPLOAD heap: CPU-writable, GPU-readable, slower than default heap
-		const CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize); // same size, no UAV flag (CPU staging only)
-		DX_API("Failed to create particle upload buffer")
+	void CreateUploadBuffers() {
+		const CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+
+		// position upload buffer
+		const UINT64 posSize = (UINT64)numParticles * sizeof(Float3);
+		const CD3DX12_RESOURCE_DESC posDesc = CD3DX12_RESOURCE_DESC::Buffer(posSize);
+		DX_API("Failed to create position upload buffer")
 			device->CreateCommittedResource(
-				&uploadHeapProps, // allocate on the UPLOAD heap
-				D3D12_HEAP_FLAG_NONE, // no special heap flags
-				&uploadBufferDesc,  // buffer shape: size, no special flags
-				D3D12_RESOURCE_STATE_GENERIC_READ, // upload heap resources must start in GENERIC_READ - the only valid state for upload heaps, means GPU can read from it
-				nullptr, // no optimized clear value
-				IID_PPV_ARGS(particleUploadBuffer.ReleaseAndGetAddressOf())); // ReleaseAndGetAddressOf releases any existing object first
-		particleUploadBuffer->SetName(L"Particle Upload Buffer"); // debug name for D3D12 validation layer
+				&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &posDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+				IID_PPV_ARGS(positionUploadBuffer.ReleaseAndGetAddressOf()));
+		positionUploadBuffer->SetName(L"Position Upload Buffer");
+
+		// velocity upload buffer
+		const UINT64 velSize = (UINT64)numParticles * sizeof(Float3);
+		const CD3DX12_RESOURCE_DESC velDesc = CD3DX12_RESOURCE_DESC::Buffer(velSize);
+		DX_API("Failed to create velocity upload buffer")
+			device->CreateCommittedResource(
+				&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &velDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+				IID_PPV_ARGS(velocityUploadBuffer.ReleaseAndGetAddressOf()));
+		velocityUploadBuffer->SetName(L"Velocity Upload Buffer");
 	}
 
-	void CreateParticleSrv() {
-		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
+	void CreateParticleSrvs() {
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// particle SRV (slot 1): read-only view for the vertex shader
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers always use UNKNOWN format (the stride defines the layout)
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; // this is a buffer, not a texture
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; // mandatory field for structured buffers; standard identity swizzle
-		srvDesc.Buffer.FirstElement = 0; // start from the first element in the buffer
-		srvDesc.Buffer.NumElements = numParticles; // total number of Particle elements accessible through this view
-		srvDesc.Buffer.StructureByteStride = sizeof(Particle); // size of each element in bytes: tells the GPU how to step through the buffer
-		srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; // no special flags (RAW flag would be set here for byte-address buffers)
+		// position SRV (slot 1, t0): read-only view for the vertex shader
+		D3D12_SHADER_RESOURCE_VIEW_DESC posSrvDesc = {};
+		posSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		posSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		posSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		posSrvDesc.Buffer.FirstElement = 0;
+		posSrvDesc.Buffer.NumElements = numParticles;
+		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3);
+		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE posSrvHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 1, descriptorSize);
+		device->CreateShaderResourceView(particleFields[PF_POSITION].Get(), &posSrvDesc, posSrvHandle);
 
-		CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), // base address of the descriptor heap
-			1, // slot index 1
-			descriptorSize); // stride between slots in bytes
-		device->CreateShaderResourceView(particleBuffer.Get(), &srvDesc, srvHandle); // write the SRV descriptor into slot 1
+		// density SRV (slot 2, t1): read-only view for the vertex shader
+		D3D12_SHADER_RESOURCE_VIEW_DESC denSrvDesc = {};
+		denSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		denSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		denSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		denSrvDesc.Buffer.FirstElement = 0;
+		denSrvDesc.Buffer.NumElements = numParticles;
+		denSrvDesc.Buffer.StructureByteStride = sizeof(float);
+		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE denSrvHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 2, descriptorSize);
+		device->CreateShaderResourceView(particleFields[PF_DENSITY].Get(), &denSrvDesc, denSrvHandle);
 	}
 
-	void CreateParticleUav() {
-		// query how many bytes apart descriptor slots are in this heap type - varies by GPU
+	void CreateParticleUavs() {
+		// create one UAV per particle field at slots 3..9 (u0..u6)
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		// particle UAV (slot 2): read-write view for the compute shader
-		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-		uavDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers always use UNKNOWN format
-		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER; // this is a buffer, not a texture
-		uavDesc.Buffer.FirstElement = 0; // start from the first element
-		uavDesc.Buffer.NumElements = numParticles; // total number of Particle elements accessible through this view
-		uavDesc.Buffer.StructureByteStride = sizeof(Particle); // size of each element in bytes
-		uavDesc.Buffer.CounterOffsetInBytes = 0; // counter is used for append/consume buffers only - we don't use it
-		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE; // no special flags
-
-		CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), // base address of the descriptor heap
-			2, // slot index 2
-			descriptorSize); // stride between slots in bytes
-		device->CreateUnorderedAccessView(
-			particleBuffer.Get(), // the resource this view points to
-			nullptr, // no counter resource (only needed for append/consume buffers)
-			&uavDesc,
-			uavHandle); // write the UAV descriptor into slot 2
+		for (UINT f = 0; f < PF_COUNT; f++) {
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+			uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+			uavDesc.Buffer.FirstElement = 0;
+			uavDesc.Buffer.NumElements = numParticles;
+			uavDesc.Buffer.StructureByteStride = fieldStrides[f];
+			uavDesc.Buffer.CounterOffsetInBytes = 0;
+			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+				srvHeap->GetCPUDescriptorHandleForHeapStart(), 3 + f, descriptorSize);
+			device->CreateUnorderedAccessView(particleFields[f].Get(), nullptr, &uavDesc, handle);
+		}
 	}
 
 	void CreateGridBuffers() {
@@ -830,39 +902,6 @@ protected:
 				IID_PPV_ARGS(cellCountBuffer.ReleaseAndGetAddressOf()));
 		cellCountBuffer->SetName(L"Cell Count Buffer");
 
-	}
-
-	void CreateGridUavs() {
-		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-		// cellCount UAV (slot 3): one uint per cell
-		D3D12_UNORDERED_ACCESS_VIEW_DESC cellCountUavDesc = {};
-		cellCountUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-		cellCountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-		cellCountUavDesc.Buffer.FirstElement = 0;
-		cellCountUavDesc.Buffer.NumElements = maxNumCells;
-		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
-		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 3, descriptorSize);
-		device->CreateUnorderedAccessView(cellCountBuffer.Get(), nullptr, &cellCountUavDesc, cellCountHandle);
-	}
-
-	void CreateSortBuffers() {
-		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-		// sortedParticleBuffer: same size and flags as particleBuffer, used as
-		// the scatter destination during spatial reordering
-		const UINT64 particleSize = numParticles * sizeof(Particle);
-		const CD3DX12_RESOURCE_DESC sortedParticleDesc = CD3DX12_RESOURCE_DESC::Buffer(
-			particleSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-		DX_API("Failed to create sorted particle buffer")
-			device->CreateCommittedResource(
-				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &sortedParticleDesc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-				IID_PPV_ARGS(sortedParticleBuffer.ReleaseAndGetAddressOf()));
-		sortedParticleBuffer->SetName(L"Sorted Particle Buffer");
-
 		// cellPrefixSumBuffer: one uint per cell, stores the exclusive prefix sum
 		// of cellCount — i.e. where each cell's particles start in the sorted buffer
 		const UINT64 prefixSumSize = maxNumCells * sizeof(UINT);
@@ -876,22 +915,22 @@ protected:
 		cellPrefixSumBuffer->SetName(L"Cell Prefix Sum Buffer");
 	}
 
-	void CreateSortUavs() {
+	void CreateGridUavs() {
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// sortedParticles UAV (slot 4): same element layout as the main particle UAV
-		D3D12_UNORDERED_ACCESS_VIEW_DESC sortedUavDesc = {};
-		sortedUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-		sortedUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-		sortedUavDesc.Buffer.FirstElement = 0;
-		sortedUavDesc.Buffer.NumElements = numParticles;
-		sortedUavDesc.Buffer.StructureByteStride = sizeof(Particle);
-		sortedUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-		CD3DX12_CPU_DESCRIPTOR_HANDLE sortedHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 4, descriptorSize);
-		device->CreateUnorderedAccessView(sortedParticleBuffer.Get(), nullptr, &sortedUavDesc, sortedHandle);
+		// cellCount UAV (slot 10, u7)
+		D3D12_UNORDERED_ACCESS_VIEW_DESC cellCountUavDesc = {};
+		cellCountUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		cellCountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		cellCountUavDesc.Buffer.FirstElement = 0;
+		cellCountUavDesc.Buffer.NumElements = maxNumCells;
+		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 10, descriptorSize);
+		device->CreateUnorderedAccessView(cellCountBuffer.Get(), nullptr, &cellCountUavDesc, cellCountHandle);
 
-		// cellPrefixSum UAV (slot 5): one uint per cell
+		// cellPrefixSum UAV (slot 11, u8)
 		D3D12_UNORDERED_ACCESS_VIEW_DESC prefixSumUavDesc = {};
 		prefixSumUavDesc.Format = DXGI_FORMAT_UNKNOWN;
 		prefixSumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -900,42 +939,72 @@ protected:
 		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 5, descriptorSize);
+			srvHeap->GetCPUDescriptorHandleForHeapStart(), 11, descriptorSize);
 		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumHandle);
 	}
 
-	void CreateParticleReadbackBuffer() {
-		// create the readback buffer: same size as the particle buffer, but on the 
-		// readback heap so we can copy GPU data back to the CPU
-		const UINT64 bufferSize = numParticles * sizeof(Particle);
+	void CreateSortBuffers() {
+		// create one sorted buffer per particle field, same size and flags as the main field buffers
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		for (UINT f = 0; f < PF_COUNT; f++) {
+			const UINT64 bufferSize = (UINT64)numParticles * fieldStrides[f];
+			const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(
+				bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+			DX_API("Failed to create sorted field buffer")
+				device->CreateCommittedResource(
+					&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+					IID_PPV_ARGS(sortedFields[f].ReleaseAndGetAddressOf()));
+			std::wstring name = std::wstring(L"Sorted ") + fieldNames[f] + L" Buffer";
+			sortedFields[f]->SetName(name.c_str());
+		}
+	}
+
+	void CreateSortUavs() {
+		// create one UAV per sorted field at slots 12..18 (u9..u15)
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		for (UINT f = 0; f < PF_COUNT; f++) {
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+			uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+			uavDesc.Buffer.FirstElement = 0;
+			uavDesc.Buffer.NumElements = numParticles;
+			uavDesc.Buffer.StructureByteStride = fieldStrides[f];
+			uavDesc.Buffer.CounterOffsetInBytes = 0;
+			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+				srvHeap->GetCPUDescriptorHandleForHeapStart(), 12 + f, descriptorSize);
+			device->CreateUnorderedAccessView(sortedFields[f].Get(), nullptr, &uavDesc, handle);
+		}
+	}
+
+	void CreateDensityReadbackBuffer() {
+		// create a readback buffer for density only (4 bytes per particle instead of 68)
+		const UINT64 bufferSize = (UINT64)numParticles * sizeof(float);
 		const CD3DX12_HEAP_PROPERTIES readbackHeapProps(D3D12_HEAP_TYPE_READBACK);
 		const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
-		DX_API("Failed to create particle readback buffer")
+		DX_API("Failed to create density readback buffer")
 			device->CreateCommittedResource(
 				&readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc,
 				D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-				IID_PPV_ARGS(particleReadbackBuffer.ReleaseAndGetAddressOf()));
-		particleReadbackBuffer->SetName(L"Particle Readback Buffer");
-		particleReadbackData.resize(numParticles);
+				IID_PPV_ARGS(densityReadbackBuffer.ReleaseAndGetAddressOf()));
+		densityReadbackBuffer->SetName(L"Density Readback Buffer");
+		densityReadbackData.resize(numParticles);
 	}
 
 	void CreateDescriptorHeap() {
-		// The texture cube lives in gpu memory, and will be created by ImportTextureCube as a committed resource
-		// on the DEFAULT heap. We access it via a Shader Resource View (SRV), which is a type of descriptor. Descriptors
-		// live in a descriptor heap, which has to be big enough to hold a descriptor for each of our resources, one of
-		// which is the cube map texture.
-		// descriptor heap layout:
-		//   slot 0: cubemap SRV       - sampled by the background pixel shader
-		//   slot 1: particle SRV (t0) - read by the vertex shader to fetch particle positions
-		//   slot 2: particle UAV (u0) - read/written by compute shaders (particle data)
-		//   slot 3: cellCount UAV (u1) - per-cell particle count for the spatial grid
-		//   slot 4: sortedParticles UAV (u2) - reorder target for spatial sorting
-		//   slot 5: cellPrefixSum UAV (u3) - exclusive prefix sum of cellCount (for sort offsets and neighbor lookups)
-		// The compute root signature binds slots 2-5 as a single descriptor table with 4 UAVs.
+		// descriptor heap layout (SoA):
+		//   slot 0:     cubemap SRV (t0)           — sampled by the background pixel shader
+		//   slot 1:     position SRV (t0)          — read by the particle vertex shader
+		//   slot 2:     density SRV (t1)           — read by the particle vertex shader
+		//   slots 3-9:  particle field UAVs (u0..u6) — compute shader read/write
+		//   slot 10:    cellCount UAV (u7)          — per-cell particle count for the spatial grid
+		//   slot 11:    cellPrefixSum UAV (u8)      — exclusive prefix sum for sort offsets and neighbor lookups
+		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 6;
+		dhd.NumDescriptors = 19;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -952,7 +1021,7 @@ protected:
 		DX_API("Failed to create ImGui SRV descriptor heap")
 			device->CreateDescriptorHeap(&imguiHeapDesc, IID_PPV_ARGS(imguiSrvHeap.GetAddressOf()));
 	}
-	
+
 public:
 
 	virtual void CreateResources() override {
@@ -967,15 +1036,15 @@ public:
 
 		CreateDescriptorHeap();
 
-		CreateParticleBuffer();
+		CreateParticleBuffers();
 
-		CreateUploadBuffer();
+		CreateUploadBuffers();
 
 		CreateGridBuffers();
 
-		CreateParticleSrv();
+		CreateParticleSrvs();
 
-		CreateParticleUav();
+		CreateParticleUavs();
 
 		CreateGridUavs();
 
@@ -983,7 +1052,7 @@ public:
 
 		CreateSortUavs();
 
-		CreateParticleReadbackBuffer();
+		CreateDensityReadbackBuffer();
 	}
 
 	virtual void LoadAssets() override {
@@ -1006,14 +1075,14 @@ public:
 	void InitImGui(HWND hwnd) {
 		IMGUI_CHECKVERSION(); // checks that the headers and compiled .lib are from the same version of ImGui
 		// create the ImGui context, which stores ImGui's internal state and is needed before calling any ImGui functions
-		ImGui::CreateContext(); 
+		ImGui::CreateContext();
 		ImGui::StyleColorsDark();
-		
+
 		ImGui_ImplWin32_Init(hwnd); // Win32 backend: handles mouse position, keyboard input, cursor shape
 
 		// D3D12 backend: renders ImGui's vertex/index buffers using our device and command queue.
 		// We use the legacy single-descriptor path: one SRV for the font texture atlas.
-		// Internally ImGui_ImplDX12_Init creates a root signature and PSO, allocates 
+		// Internally ImGui_ImplDX12_Init creates a root signature and PSO, allocates
 		// a two vertex/index buffers for swapping, creatres its own command allocator and command list,
 		// writes the font texture srv into LegacySingleSrvCpuDescriptor and LegacySingleSrvGpuDescriptor
 		ImGui_ImplDX12_InitInfo initInfo;

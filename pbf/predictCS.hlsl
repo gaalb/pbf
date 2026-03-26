@@ -8,12 +8,12 @@
 // which computes the new velocity as (p* - position) / dt and commits p*.
 //
 // Root signature:
-//   CBV(b0)               — ComputeCb: dt, numParticles, h, rho0, epsilon
-//   DescriptorTable(UAV(u0)) — particle buffer (read + write)
+//   CBV(b0)                        — ComputeCb: dt, numParticles, h, rho0, epsilon
+//   DescriptorTable(UAV(u0..u6))   — particle field buffers
+//   DescriptorTable(UAV(u7..u8))   — grid buffers (unused here)
+//   DescriptorTable(UAV(u9..u15))  — sorted particle field buffers (unused here)
 
-#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli" // Particle struct: position, velocity, predictedPosition, lambda
+#define PredictRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -33,10 +33,9 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-// RWStructuredBuffer: read-write access to the particle array.
-// The VS reads this same resource as an SRV; the compute pipeline can
-// write it because it was created with D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS.
-RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(PredictRootSig)]
 [numthreads(256, 1, 1)] // 256 threads per group; each thread = one particle
@@ -56,16 +55,16 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // fountain: upward jet in a corner of the box
     if (fountainEnabled) {
         float3 extent = boxMax - boxMin;
-        float3 pos = particles[i].position;
+        float3 pos = position[i];
         if (pos.x > boxMax.x - extent.x * 0.05 &&
             pos.z > boxMax.z - extent.z * 0.05 &&
             pos.y < boxMin.y + extent.y * 0.3)
             force.y += 400.0;
     }
 
-    particles[i].velocity += force * dt;
+    velocity[i] += force * dt;
 
     // p* is our best guess of where the particle will end up if no constraints
     // are applied. The constraint solver will nudge p* to satisfy density better
-    particles[i].predictedPosition = particles[i].position + particles[i].velocity * dt;
+    predictedPosition[i] = position[i] + velocity[i] * dt;
 }

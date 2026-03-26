@@ -8,12 +8,12 @@
 // all velocity post-processing.
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write position)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u0 = position, u2 = predictedPosition
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers (unused here)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define UpdatePositionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli" // Particle struct
+#define UpdatePositionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -33,7 +33,8 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(UpdatePositionRootSig)]
 [numthreads(256, 1, 1)]
@@ -43,5 +44,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    particles[i].position = particles[i].predictedPosition;
+    position[i] = predictedPosition[i];
 }

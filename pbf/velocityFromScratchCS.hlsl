@@ -4,12 +4,12 @@
 // race. This shader copies scratch back to velocity.
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read scratch, write velocity)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u1 = velocity, u6 = scratch
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers (unused here)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define VelocityFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli" // Particle struct
+#define VelocityFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -29,7 +29,8 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> scratch : register(u6);
 
 [RootSignature(VelocityFromScratchRootSig)]
 [numthreads(256, 1, 1)]
@@ -39,5 +40,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    particles[i].velocity = particles[i].scratch;
+    velocity[i] = scratch[i];
 }

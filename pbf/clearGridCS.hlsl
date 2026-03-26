@@ -5,10 +5,12 @@
 // Cells beyond the current grid dimensions (which depend on the current h) are skipped.
 //
 // Root signature:
-//   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles (unused), u1: cellCount, u2-u4: unused
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers (unused here)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
+#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -30,7 +32,7 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // gridDims()
 
-RWStructuredBuffer<uint> cellCount : register(u1);
+RWStructuredBuffer<uint> cellCount : register(u7);
 
 [RootSignature(ClearGridRootSig)]
 [numthreads(256, 1, 1)]

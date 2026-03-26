@@ -13,12 +13,13 @@
 // yet — updatePositionCS runs after this).
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write scratch)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u0 = position (read), u1 = velocity (read), u6 = scratch (write)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount, u8 = cellPrefixSum
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
+#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-#include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // Poly6
 
 cbuffer ComputeCb : register(b0)
@@ -41,9 +42,11 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> scratch : register(u6);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(ViscosityRootSig)]
 [numthreads(256, 1, 1)]
@@ -53,8 +56,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pi = particles[i].position; // committed position after finalizeCS
-    float3 vi = particles[i].velocity; // velocity after finalizeCS: (p* - p_old) / dt
+    float3 pi = position[i]; // committed position after finalizeCS
+    float3 vi = velocity[i]; // velocity after finalizeCS: (p* - p_old) / dt
 
     float3 xsphSum = float3(0, 0, 0);
 
@@ -81,8 +84,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             if (j == i)
                 continue;
 
-            float3 r = pi - particles[j].position;
-            float3 vj = particles[j].velocity;
+            float3 r = pi - position[j];
+            float3 vj = velocity[j];
 
             // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity.
             // The full XSPH formula (Schechter & Bridson 2012) is:
@@ -98,5 +101,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         }
     }
 
-    particles[i].scratch = vi + viscosity * xsphSum;
+    scratch[i] = vi + viscosity * xsphSum;
 }

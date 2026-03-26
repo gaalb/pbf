@@ -13,12 +13,13 @@
 // iteration see a consistent snapshot.
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + lambda, write scratch)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u2 = predictedPosition (read), u3 = lambda (read), u6 = scratch (write)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount, u8 = cellPrefixSum
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
+#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-#include "Particle.hlsli" // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad, Poly6
 
 cbuffer ComputeCb : register(b0)
@@ -41,9 +42,11 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<float> lambda : register(u3);
+RWStructuredBuffer<float3> scratch : register(u6);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(DeltaRootSig)]
 [numthreads(256, 1, 1)]
@@ -54,8 +57,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         return;
 
     // cache to avoid repeated UAV reads
-    float3 pi = particles[i].predictedPosition; 
-    float lambdaI = particles[i].lambda;
+    float3 pi = predictedPosition[i];
+    float lambdaI = lambda[i];
 
     // Precompute the s_corr denominator, same for every (i,j) pair.
     // Poly6 only uses the squared magnitude so the direction does not matter.
@@ -85,7 +88,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
 
             // r_ij points from neighbor j toward particle i
-            float3 r = pi - particles[j].predictedPosition;
+            float3 r = pi - predictedPosition[j];
 
             // Overlapping particles (r ~ 0): SpikyGrad returns zero so they'd
             // be stuck forever. Skip the normal sCorr + SpikyGrad computation
@@ -115,11 +118,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // particle counts are low and density is even lower, this mild attraction
             // creates a coherent surface instead of the violent clumping (tensile instability)
             // that occurs without s_corr. Raising sCorrK increases this surface cohesion.
-            deltaP += (lambdaI + particles[j].lambda + sCorr) * SpikyGrad(r, h);
+            deltaP += (lambdaI + lambda[j] + sCorr) * SpikyGrad(r, h);
         }
     }
     deltaP /= rho0;
 
     // Update the predicted position (collision response is handled by collisionCS)
-    particles[i].scratch = pi + deltaP;
+    scratch[i] = pi + deltaP;
 }

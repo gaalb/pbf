@@ -7,12 +7,12 @@
 // cellCount is cleared and reused as a per-cell atomic slot counter by sortCS.
 //
 // Root signature:
-//   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=4)) -- u0: particles (read), u1: cellCount (write), u2-u3: unused
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u2 = predictedPosition (read)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount (write)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli"
+#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -34,8 +34,8 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<uint> cellCount : register(u7);
 
 [RootSignature(CountGridRootSig)]
 [numthreads(256, 1, 1)]
@@ -45,7 +45,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    int3 cell = posToCell(particles[i].predictedPosition);
+    int3 cell = posToCell(predictedPosition[i]);
     uint ci = cellIndex(cell);
 
     InterlockedAdd(cellCount[ci], 1);

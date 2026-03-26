@@ -120,9 +120,6 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Particle.hlsli">
-      <Filter>Shaders\Include</Filter>
-    </None>
     <None Include="SphKernels.hlsli">
       <Filter>Shaders\Include</Filter>
     </None>

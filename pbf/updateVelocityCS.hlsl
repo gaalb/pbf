@@ -7,12 +7,12 @@
 // run next and need the old positions. updatePositionCS updates position at the very end.
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition + position, write velocity)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u0 = position, u1 = velocity, u2 = predictedPosition
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers (unused here)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli" // Particle struct
+#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -32,7 +32,9 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(UpdateVelocityRootSig)]
 [numthreads(256, 1, 1)]
@@ -43,5 +45,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         return;
 
     // velocity = displacement / dt (implicit velocity update from PBD)
-    particles[i].velocity = (particles[i].predictedPosition - particles[i].position) / dt;
+    velocity[i] = (predictedPosition[i] - position[i]) / dt;
 }

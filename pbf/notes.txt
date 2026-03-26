@@ -149,8 +149,11 @@ IMPROVEMENTS:
 -better spatial hash, multi level memory article
 -better sorting, eventually radix sort
 -think about separating the constant buffers
--clean up PbfApp.h so that methods are easier to contemplate, also add header comments to them
+-clean up PbfApp.h so that methods are easier to contemplate, also add header comments to them (!)
 -move the code relating to the sort to a separate method, and detail its usage intuitively there
 	-make it clear that gridCount has two uses now!
 -compare the new sorting to the old "cellParticles" solution visually and FPS-wise
 -better header comments for shaders, make it input-output style
+-check if the barriers in the compute pass are correct, and maybe move to wait-calculate rather than calculate-wait (!)
+-rather than the current sort copying all particle data, make sort calculate a permuation and then have a separate copy pass (as per the comment in sortCS)
+	-maybe move all this to a separate class? maybe check g-RadixSort for the compute shader class

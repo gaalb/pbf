@@ -16,12 +16,13 @@
 // eps prevents division by zero when a particle has no neighbors.
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read predictedPosition, write lambda)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u2 = predictedPosition (read), u3 = lambda (write), u4 = density (write)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount, u8 = cellPrefixSum
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
+#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-#include "Particle.hlsli" // Particle struct
 #include "SphKernels.hlsli" // Poly6, SpikyGrad
 
 cbuffer ComputeCb : register(b0)
@@ -44,9 +45,11 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<float> lambda : register(u3);
+RWStructuredBuffer<float> density : register(u4);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(LambdaRootSig)]
 [numthreads(256, 1, 1)]
@@ -62,8 +65,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // j is the index of a neighbor particle that contributes to i's density and constraint gradient
     // k is the index over a set of particles that includes the self particle and all the neighbors,
     // therefore it has two cases: k=i and k=j
-    
-    float3 pi = particles[i].predictedPosition; // cache to avoid repeated UAV reads
+
+    float3 pi = predictedPosition[i]; // cache to avoid repeated UAV reads
 
     float rho = 0.0; // density estimate rho_i
     float3 gradI = float3(0,0,0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
@@ -92,7 +95,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             uint j = cellPrefixSum[ci] + s;
 
             // r points from neighbor j toward particle i (r_ij = p_i - p_j)
-            float3 r = pi - particles[j].predictedPosition;
+            float3 r = pi - predictedPosition[j];
 
             // Density: every particle j including i itself contributes.
             rho += Poly6(r, h);
@@ -120,8 +123,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float C = rho / rho0 - 1.0; // 0 at rest density, > 0 if compressed, < 0 if sparse
 
     // Store density for visualization (read by rendering shaders)
-    particles[i].density = rho;
+    density[i] = rho;
 
     // Newton step length lambdda
-    particles[i].lambda = -C / (gradSqSum + epsilon);
+    lambda[i] = -C / (gradSqSum + epsilon);
 }

@@ -8,12 +8,12 @@
 // 2. Post-delta (after positionFromScratchCS, inside the solver loop)
 //
 // Root signature:
-//   CBV(b0)                                    -- ComputeCb
-//   DescriptorTable(UAV(u0, numDescriptors=5)) -- u0: particles, u1-u4: grid + sort buffers (unused here)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers (unused here)
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
-#define CollisionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli" // Particle struct
+#define CollisionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
 cbuffer ComputeCb : register(b0)
 {
@@ -33,7 +33,8 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-RWStructuredBuffer<Particle> particles : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(CollisionRootSig)]
 [numthreads(256, 1, 1)]
@@ -43,9 +44,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pp = particles[i].predictedPosition;
-    float3 v  = particles[i].velocity;
-    
+    float3 pp = predictedPosition[i];
+    float3 v  = velocity[i];
+
     // Zero velocity components pointing into walls
     if (pp.x < boxMin.x) v.x = max(v.x, 0.0);
     if (pp.y < boxMin.y) v.y = max(v.y, 0.0);
@@ -57,6 +58,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // Clamp position to simulation box.
     pp = clamp(pp, boxMin, boxMax);
 
-    particles[i].predictedPosition = pp;
-    particles[i].velocity = v;
+    predictedPosition[i] = pp;
+    velocity[i] = v;
 }

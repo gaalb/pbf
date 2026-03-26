@@ -3,18 +3,18 @@
 // For each particle i, estimates the local velocity field curl / vorticity via SPH.
 //   omega_i = sum_j (v_j - v_i) x grad_W_spiky( p_i - p_j, h)
 //
-// Result is stored in particles[i].omega, and consumed by confinementCS in the next pass.
+// Result is stored in omega, and consumed by confinementCS in the next pass.
 // Per the paper's ordering, this pass uses updated velocity (from updateVelocityCS) but
 // the OLD positions (updatePositionCS has not run yet).
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read position + velocity, write omega)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u0 = position (read), u1 = velocity (read), u5 = omega (write)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount, u8 = cellPrefixSum
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
+#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad
 
 cbuffer ComputeCb : register(b0)
@@ -37,9 +37,11 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> omega : register(u5);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(VorticityRootSig)]
 [numthreads(256, 1, 1)]
@@ -49,10 +51,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pi = particles[i].position; // committed position from finalizeCS
-    float3 vi = particles[i].velocity; // post-constraint velocity from finalizeCS
+    float3 pi = position[i]; // committed position from finalizeCS
+    float3 vi = velocity[i]; // post-constraint velocity from finalizeCS
 
-    float3 omega = float3(0, 0, 0); // accumulates the vorticity vector for particle i
+    float3 omegaAccum = float3(0, 0, 0); // accumulates the vorticity vector for particle i
 
     // The grid was built from predictedPositions, but this pass uses old positions.
     // The displacement between old and predicted is small relative to h, so the
@@ -78,15 +80,15 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             if (j == i)
                 continue;
 
-            float3 r = pi - particles[j].position;
+            float3 r = pi - position[j];
 
             // The curl estimator uses the gradient of W with respect to p_j, not p_i.
             // grad_{p_j} W(p_i - p_j, h) = -grad_{p_i} W(p_i - p_j, h) = -SpikyGrad(r, h)
             // so the sign is negated compared to using SpikyGrad directly.
-            omega += cross(particles[j].velocity - vi, -SpikyGrad(r, h));
+            omegaAccum += cross(velocity[j] - vi, -SpikyGrad(r, h));
         }
     }
 
     // store omega, confinementCS will read it from there
-    particles[i].omega = omega;
+    omega[i] = omegaAccum;
 }

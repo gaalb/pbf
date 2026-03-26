@@ -15,13 +15,13 @@
 // Per the paper's ordering, this pass uses the OLD positions (updatePositionCS has not run yet).
 //
 // Root signature:
-//   CBV(b0)                  -- ComputeCb
-//   DescriptorTable(UAV(u0)) -- particle buffer (read position + omega, write velocity)
+//   CBV(b0)                        -- ComputeCb
+//   DescriptorTable(UAV(u0..u6))   -- particle field buffers: u0 = position (read), u1 = velocity (r/w), u5 = omega (read)
+//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount, u8 = cellPrefixSum
+//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
 
+#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
-
-#include "Particle.hlsli"   // Particle struct
 #include "SphKernels.hlsli" // SpikyGrad
 
 cbuffer ComputeCb : register(b0)
@@ -44,9 +44,11 @@ cbuffer ComputeCb : register(b0)
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
 
-RWStructuredBuffer<Particle> particles : register(u0);
-RWStructuredBuffer<uint> cellCount : register(u1);
-RWStructuredBuffer<uint> cellPrefixSum : register(u3);
+RWStructuredBuffer<float3> position : register(u0);
+RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> omega : register(u5);
+RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(ConfinementRootSig)]
 [numthreads(256, 1, 1)]
@@ -56,8 +58,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pi = particles[i].position; // committed position from finalizeCS
-    float3 omegaI = particles[i].omega; // vorticity vector written by vorticityCS
+    float3 pi = position[i]; // committed position from finalizeCS
+    float3 omegaI = omega[i]; // vorticity vector written by vorticityCS
 
     float3 eta = float3(0, 0, 0); // accumulates the gradient of the vorticity magnitude field
 
@@ -85,10 +87,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
 
             // r points from neighbor j toward particle i
-            float3 r = pi - particles[j].position;
+            float3 r = pi - position[j];
 
             // |omega_j|: scalar vorticity magnitude of neighbor j, written by vorticityCS
-            float omegaJLen = length(particles[j].omega);
+            float omegaJLen = length(omega[j]);
 
             // gradient of the spiky kernel at r_ij, with respect to p_i
             float3 gradW = SpikyGrad(r, h);
@@ -123,5 +125,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 f = vorticityEpsilon * cross(N, omegaI);
 
     // apply as an impulse: v_i += dt * f_i
-    particles[i].velocity += dt * f;
+    velocity[i] += dt * f;
 }
