@@ -23,16 +23,12 @@ using namespace Egg::Math;
 // basic render that populates command list, executes it, presents and syncs
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int gridX = 50, gridY = 100, gridZ = 50; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 8, offsetZ = 0; // world space offset of the center of the initial particle grid
-	const int numParticles = gridX * gridY * gridZ; // total number of particles in the simulation
+	const int particlesX = 60, particlesY = 100, particlesZ = 60; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 4; // how many newton steps to take per frame
-	// starting particle distance, which we also treat as the desired particle distance, to compute rest
-	// density and particle display size
-	float particleSpacing = 0.25f;
-	float hMultiplier = 3.5f; // h = particleSpacing * hMultiplier, the larger the more neighbors each particle has
 	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
 	float epsilon = 5.0f;
 	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
@@ -42,37 +38,36 @@ protected:
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box
 
-	// parameters derived from tunable parameters
-	float h = particleSpacing * hMultiplier; // SPH smoothing radius
+	// Fixed particle and grid constants.
+	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
+	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
+	// Morton codes to index the cells, which works best with a cubic simulation space that
+	// has a power of two number of cells along each axis. Fixing h (= particleSpacing * hMultiplier) 
+	// lets us define the box as exactly gridDim * h on each axis, giving a perfectly aligned 
+	// cubic grid with a dense Morton code space.
+	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
+	const float hMultiplier = 3.0f; // h = particleSpacing * hMultiplier
+	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
-	float rho0 = 1.0f / powf(particleSpacing, 3.0f);
-	float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
+	const float rho0 = 1.0f / powf(particleSpacing, 3.0f);
+	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
 
 	// non-tunable constants
-	const float sCorrN = 4.0f; // exponent for artificial pressure (paper: 4)
+	const float sCorrN = 3.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-	const Float3 boxMin = Float3(-10.0f, -5.0f, -10.0f); // simulation boundary minimum corner (world space)
-	const Float3 boxMax = Float3(10.0f, 20.0f, 10.0f); // simulation boundary maximum corner (world space)
-	// h is related to the grid size, so we must clampt it by clamping its components to sensible values
-	const float hMultiplierMin = 2.0f;
-	const float hMultiplierMax = 4.0f;
-	const float particleSpacingMin = 0.1f;
-	const float particleSpacingMax = 0.3f;
 
-	// Spatial grid constants, derived from the parameter bounds above and the simulation box.
-	// We reserve GPU buffers for the worst case scenario in terms of how many grid cells we're
-	// going to need. In order to not miss any SPH neighbors, Cell size = h (the SPH kernel radius).
-	// since h = particleSpacing * hMultiplier, and both factors are clamped, h ranges from
-	// particleSpacingMin * hMultiplierMin to particleSpacingMax * hMultiplierMax.
-	// The number of grid cells is max when h is the smallest, particleSpacingMin * hMultiplierMin.
-	// We rebuild the grid every physics step (not every Jacobi iteration), ensuring grid size matches h.
-	const float minCellSize = particleSpacingMin * hMultiplierMin; // smallest possible h = 0.1 * 2.0 = 0.2
-	const UINT maxGridDimX = (UINT)ceilf((boxMax.x - boxMin.x) / minCellSize);
-	const UINT maxGridDimY = (UINT)ceilf((boxMax.y - boxMin.y) / minCellSize);
-	const UINT maxGridDimZ = (UINT)ceilf((boxMax.z - boxMin.z) / minCellSize);
-	const UINT maxNumCells = maxGridDimX * maxGridDimY * maxGridDimZ;
+	// Spatial grid: cubic, power-of-two cells per axis, box derived from grid.
+	// The grid can use Morton code (Z-order curve) indexing, which requires power-of-two
+	// dimensions for a dense index space (no wasted codes). We choose a single gridDim
+	// for all three axes (cubic grid), such that the box has gridDim * h cells per axis.
+	// With gridDim = 32 and h = 0.875, the box is 28 units per side, centered at the origin.
+	const UINT gridDim = 32; // cells per axis (must be power of two)
+	const UINT numCells = gridDim * gridDim * gridDim; // total cells in the grid
+	const float boxExtent = gridDim * h; // box side length = 28.0
+	const Float3 boxMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f);
+	const Float3 boxMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f);
 
 	// non-constant members
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
@@ -186,7 +181,7 @@ protected:
 	ParticleInitData GenerateParticles() {
 		// create and return an evenly spaced grid of particles so we can see something on screen
 		ParticleInitData data;
-		Float3 grid = Float3(gridX, gridY, gridZ);
+		Float3 grid = Float3(particlesX, particlesY, particlesZ);
 		Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
 		offset += Float3(offsetX, offsetY, offsetZ); // apply user-defined world space offset
 		for (int x = 0; x < grid.x; x++) {
@@ -494,7 +489,6 @@ protected:
 			{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
 
 		// build the spatial grid from predicted positions, then sort particles into grid order
-		UINT numCells = (UINT)ceilf((boxMax.x - boxMin.x) / h) * (UINT)ceilf((boxMax.y - boxMin.y) / h) * (UINT)ceilf((boxMax.z - boxMin.z) / h);
 		UINT numCellGroups = (numCells + 255) / 256;
 
 		// step 1: zero the cell counts
@@ -660,10 +654,6 @@ protected:
 		ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
-		ImGui::InputFloat("Particle spacing [0.25]", &particleSpacing, 0.01f, 0.1f, "%.4f");
-		particleSpacing = std::clamp(particleSpacing, particleSpacingMin, particleSpacingMax);
-		ImGui::InputFloat("h multiplier [3.5]", &hMultiplier, 0.1f, 0.5f, "%.2f");
-		hMultiplier = std::clamp(hMultiplier, hMultiplierMin, hMultiplierMax);
 		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
@@ -672,7 +662,7 @@ protected:
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
-		ImGui::Text("%d particles, h = %.4f, rho0 = %.2f",numParticles, h, rho0);
+		ImGui::Text("%d particles, %u cells, rho0 = %.2f", numParticles, gridDim*gridDim*gridDim, rho0);
 		ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 		ImGui::End();
@@ -725,14 +715,6 @@ protected:
 		if (arrowDown) externalForce.z -= externalAcceleration;
 	}
 
-	// recompute values that depend on the primary tunables (particleSpacing, hMultiplier)
-	// must be called each frame before uploading constant buffers, because sliders may have changed
-	void RecomputeDerivedParams() {
-		h = particleSpacing * hMultiplier;
-		rho0 = 1.0f / powf(particleSpacing, 3.0f);
-		sCorrDeltaQ = 0.2f * h;
-	}
-
 	void UpdatePerFrameCb() {
 		perFrameCb->viewProjTransform = // calculate the combined view-projection matrix and store it in the constant buffer
 			camera->GetViewMatrix() * // view matrix: world space -> camera space
@@ -768,8 +750,6 @@ protected:
 		camera->Animate(dt); // update camera position and orientation based on user input
 
 		UpdateExternalForce();
-
-		RecomputeDerivedParams(); // recalculate h, rho0, sCorrDeltaQ from current slider values
 
 		UpdatePerFrameCb();
 
@@ -892,7 +872,7 @@ protected:
 
 		// cellCount buffer: one uint per cell, indicating how many particles are in each
 		// cell, zeroed each frame by clearGridCS, then incremented atomically by countGridCS
-		const UINT64 cellCountSize = maxNumCells * sizeof(UINT);
+		const UINT64 cellCountSize = numCells * sizeof(UINT);
 		const CD3DX12_RESOURCE_DESC cellCountDesc = CD3DX12_RESOURCE_DESC::Buffer(
 			cellCountSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		DX_API("Failed to create cell count buffer")
@@ -904,7 +884,7 @@ protected:
 
 		// cellPrefixSumBuffer: one uint per cell, stores the exclusive prefix sum
 		// of cellCount — i.e. where each cell's particles start in the sorted buffer
-		const UINT64 prefixSumSize = maxNumCells * sizeof(UINT);
+		const UINT64 prefixSumSize = numCells * sizeof(UINT);
 		const CD3DX12_RESOURCE_DESC prefixSumDesc = CD3DX12_RESOURCE_DESC::Buffer(
 			prefixSumSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 		DX_API("Failed to create cell prefix sum buffer")
@@ -923,7 +903,7 @@ protected:
 		cellCountUavDesc.Format = DXGI_FORMAT_UNKNOWN;
 		cellCountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 		cellCountUavDesc.Buffer.FirstElement = 0;
-		cellCountUavDesc.Buffer.NumElements = maxNumCells;
+		cellCountUavDesc.Buffer.NumElements = numCells;
 		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
@@ -935,7 +915,7 @@ protected:
 		prefixSumUavDesc.Format = DXGI_FORMAT_UNKNOWN;
 		prefixSumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 		prefixSumUavDesc.Buffer.FirstElement = 0;
-		prefixSumUavDesc.Buffer.NumElements = maxNumCells;
+		prefixSumUavDesc.Buffer.NumElements = numCells;
 		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumHandle(

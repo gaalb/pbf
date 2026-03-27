@@ -1,8 +1,7 @@
 // Clear grid pass:
 //
-// Zeros the cellCount array before buildGridCS repopulates it.
-// Dispatched over cells (not particles): one thread per cell in the current grid.
-// Cells beyond the current grid dimensions (which depend on the current h) are skipped.
+// Zeros the cellCount array before countGridCS repopulates it.
+// Dispatched over cells (not particles): one thread per cell.
 //
 // Root signature:
 //   CBV(b0)                        -- ComputeCb
@@ -30,7 +29,7 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled;
 };
 
-#include "GridUtils.hlsli" // gridDims()
+#include "GridUtils.hlsli" // gridDim()
 
 RWStructuredBuffer<uint> cellCount : register(u7);
 
@@ -40,12 +39,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;
 
-    // The current grid may be smaller than the worst-case allocation.
-    // Only clear cells that belong to the current grid.
-    int3 dims = gridDims();
-    uint numCells = dims.x * dims.y * dims.z;
+    int dim = gridDim();
+    uint totalCells = dim * dim * dim;
 
-    if (i >= numCells)
+    if (i >= totalCells)
         return;
 
     cellCount[i] = 0;

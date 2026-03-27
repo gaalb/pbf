@@ -35,7 +35,7 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 };
 
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDims()
+#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
 
 RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
@@ -60,15 +60,15 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // The displacement between old and predicted is small relative to h, so the
     // grid is still a valid acceleration structure for finding neighbors here.
     int3 myCell = posToCell(pi);
-    int3 dims = gridDims();
+    int dim = gridDim();
     for (int dz = -1; dz <= 1; dz++)
     for (int dy = -1; dy <= 1; dy++)
     for (int dx = -1; dx <= 1; dx++)
     {
         int3 nc = myCell + int3(dx, dy, dz);
-        if (nc.x < 0 || nc.x >= dims.x ||
-            nc.y < 0 || nc.y >= dims.y ||
-            nc.z < 0 || nc.z >= dims.z)
+        if (nc.x < 0 || nc.x >= dim ||
+            nc.y < 0 || nc.y >= dim ||
+            nc.z < 0 || nc.z >= dim)
             continue;
 
         uint ci = cellIndex(nc);

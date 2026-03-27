@@ -5,12 +5,11 @@
 // cell 0's particles go to sorted indices [0, cellCount[0]),
 // cell 1's go to [cellCount[0], cellCount[0]+cellCount[1]), etc.
 //
-// Only runs every N frames as part of the spatial reorder pass, so a simple
-// serial loop (single thread) is used. For ~5,700 cells at typical settings
-// this takes microseconds.
+// Runs every frame as part of the spatial reorder pass. A simple serial loop
+// (single thread) is used. For 32,768 cells (32^3) this takes microseconds.
 //
 // Root signature:
-//   CBV(b0)                        -- ComputeCb (for boxMin, boxMax, h -> gridDims)
+//   CBV(b0)                        -- ComputeCb (for boxMin, boxMax, h -> gridDim)
 //   DescriptorTable(UAV(u0..u6))   -- particle field buffers (unused here)
 //   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount (read), u8 = cellPrefixSum (write)
 //   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
@@ -35,7 +34,7 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled;
 };
 
-#include "GridUtils.hlsli" // gridDims()
+#include "GridUtils.hlsli" // gridDim()
 
 RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
@@ -44,8 +43,8 @@ RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 [numthreads(1, 1, 1)]
 void main()
 {
-    int3 dims = gridDims();
-    uint numCells = dims.x * dims.y * dims.z;
+    int dim = gridDim();
+    uint totalCells = dim * dim * dim;
 
     // prefix sum: for each cell i, store the running total so far (which is
     // the sum of cellCount[0] through cellCount[i-1]), then add cellCount[i] to the running
@@ -53,7 +52,7 @@ void main()
     // for cell ci's particles. For example, if cellCount = [3, 0, 5, 2, ...], then
     // cellPrefixSum = [0, 3, 3, 8, ...].
     uint runningTotal = 0;
-    for (uint i = 0; i < numCells; i++)
+    for (uint i = 0; i < totalCells; i++)
     {
         cellPrefixSum[i] = runningTotal;
         runningTotal += cellCount[i];
