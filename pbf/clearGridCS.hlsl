@@ -1,33 +1,12 @@
-// Clear grid pass:
-//
-// Zeros the cellCount array before countGridCS repopulates it.
+// Zeros the cellCount array.
 // Dispatched over cells (not particles): one thread per cell.
 //
-// Root signature:
-//   CBV(b0)                        -- ComputeCb
-//   DescriptorTable(UAV(u0..u6))   -- particle field buffers (unused here)
-//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount
-//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (unused here)
+// In: -
+// Out: cellCount
 
-#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
+#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u7, numDescriptors = 2))"
 
-cbuffer ComputeCb : register(b0)
-{
-    float dt;
-    uint numParticles;
-    float h;
-    float rho0;
-    float3 boxMin;
-    float epsilon;
-    float3 boxMax;
-    float viscosity;
-    float sCorrK;
-    float sCorrDeltaQ;
-    float sCorrN;
-    float vorticityEpsilon;
-    float3 externalForce;
-    uint fountainEnabled;
-};
+#include "ComputeCb.hlsli"
 
 #include "GridUtils.hlsli" // gridDim()
 

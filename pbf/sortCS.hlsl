@@ -1,5 +1,3 @@
-// Direct sort pass:
-//
 // Each particle computes its grid cell, atomically claims a slot within that
 // cell (via InterlockedAdd on cellCount, which was cleared after the counting
 // pass), and copies its field data directly to the sorted position in the
@@ -13,31 +11,12 @@
 // shader. This avoids scattering every field here and makes adding/removing
 // fields trivial.
 //
-// Root signature:
-//   CBV(b0)                        -- ComputeCb
-//   DescriptorTable(UAV(u0..u6))   -- particle field buffers (read)
-//   DescriptorTable(UAV(u7..u8))   -- grid buffers: u7 = cellCount (write), u8 = cellPrefixSum (read)
-//   DescriptorTable(UAV(u9..u15))  -- sorted particle field buffers (write)
+// In: cellCount?, cellPrefixSum, position, velocity, predictedPosition, lambda, density, omega, scratch
+// Out: sortedPosition, sortedVelocity, sortedPredictedPosition, sortedLambda, sortedDensity, sortedOmega, sortedScratch
 
 #define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 7))"
 
-cbuffer ComputeCb : register(b0)
-{
-    float dt;
-    uint numParticles;
-    float h;
-    float rho0;
-    float3 boxMin;
-    float epsilon;
-    float3 boxMax;
-    float viscosity;
-    float sCorrK;
-    float sCorrDeltaQ;
-    float sCorrN;
-    float vorticityEpsilon;
-    float3 externalForce;
-    uint fountainEnabled;
-};
+#include "ComputeCb.hlsli"
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 

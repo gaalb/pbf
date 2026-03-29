@@ -4,6 +4,7 @@
 #include <Egg/SimpleApp.h>
 #include "ConstantBufferTypes.h"
 #include "ParticleTypes.h"
+#include "ComputeShader.h"
 #include <Egg/Cam/FirstPerson.h>
 #include <Egg/ConstantBuffer.hpp>
 #include <Egg/TextureCube.h>
@@ -15,30 +16,27 @@
 
 using namespace Egg::Math;
 
+// PBF implementation: based on the Macklin & Muller 2013 nvidia research article, I'll call it M&M
 // SimpleApp gives us:
 // command allocator and command list for recording GPU commands
 // depth stencil buffer
 // PSO manager
 // frame synchronization (WaitForPreviousFrame)
 // basic render that populates command list, executes it, presents and syncs
+//
+// main calls app->Run() in an infinite loop, which calculates elapsedTime and deltaTime,
+// and calls Update (overridden), as well as Render (not overridden, simply PopulateCommandList,
+// commandQueue->ExecuteCommandLists and WaitForPreviousFrame), in that order. In other words, when
+// it comes to actual execution (not the setup), the only thing that gets exposed is Run(). And,
+// for Run() to work, the only thing we need to do is correctly override Update, which updates
+// the inner state of the class, and PopulateCommandList which fills the command list with the
+// commands to actually draw the next frame.
 class PbfApp : public Egg::SimpleApp {
 protected:
-	const int particlesX = 60, particlesY = 100, particlesZ = 60; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
-	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
-
-	// parameters that are tunable via ImGui each frame
-	int solverIterations = 4; // how many newton steps to take per frame
-	// constraint force mixing relaxation parameter (Smith 2006), higher value = softer constraints
-	float epsilon = 5.0f;
-	// XSPH viscosity coefficient (Schechter and Bridson 2012), higher value = "thicker" fluid
-	float viscosity = 0.01f; // paper suggests 0.01
-	// artificial purely repulsive pressure term (Monaghan 2000), reduces clumping while leaving room for surface tension
-	float sCorrK = 0.05f; // artificial pressure magnitude coefficient (paper: 0.1)
-	float vorticityEpsilon = 0.01f; // vorticity confinement strength (paper: 0.01)
-	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box
-
 	// Fixed particle and grid constants.
+	const int particlesX = 50, particlesY = 100, particlesZ = 50; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
 	// Morton codes to index the cells, which works best with a cubic simulation space that
@@ -46,29 +44,35 @@ protected:
 	// lets us define the box as exactly gridDim * h on each axis, giving a perfectly aligned 
 	// cubic grid with a dense Morton code space.
 	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
-	const float hMultiplier = 3.0f; // h = particleSpacing * hMultiplier
+	const float hMultiplier = 3.25f; // h = particleSpacing * hMultiplier
 	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
 	const float rho0 = 1.0f / powf(particleSpacing, 3.0f);
 	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
-
-	// non-tunable constants
 	const float sCorrN = 3.0f; // exponent for artificial pressure (paper: 4)
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
-
 	// Spatial grid: cubic, power-of-two cells per axis, box derived from grid.
-	// The grid can use Morton code (Z-order curve) indexing, which requires power-of-two
-	// dimensions for a dense index space (no wasted codes). We choose a single gridDim
+	// The grid can use Morton code (Z-order curve) indexing, which requires equal power-of-two
+	// dimensions on all axes for a dense index space (no wasted codes). We choose a single gridDim
 	// for all three axes (cubic grid), such that the box has gridDim * h cells per axis.
 	// With gridDim = 32 and h = 0.875, the box is 28 units per side, centered at the origin.
 	const UINT gridDim = 32; // cells per axis (must be power of two)
 	const UINT numCells = gridDim * gridDim * gridDim; // total cells in the grid
 	const float boxExtent = gridDim * h; // box side length = 28.0
 	const Float3 boxMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f);
-	const Float3 boxMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f);
+	const Float3 boxMax = Float3(boxExtent / 2.0f, boxExtent / 2.0f, boxExtent / 2.0f);
 
+	// parameters that are tunable via ImGui each frame
+	int solverIterations = 4; // how many newton steps to take per frame
+	float epsilon = 5.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
+	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
+	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
+	float sCorrK = 0.05f; // artificial pressure magnitude coefficient M&M: 0.1
+	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
+	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
+	
 	// non-constant members
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
 	Egg::Cam::FirstPerson::P camera; // WASD + mouse movement camera
@@ -76,49 +80,49 @@ protected:
 	Egg::Mesh::Shaded::P particleMesh; // combines material + geometry + PSO into one drawable
 	Egg::Mesh::Shaded::P backgroundMesh; // fullscreen quad + cubemap shader
 	Egg::TextureCube envTexture; // the cubemap texture for the skybox background
-	com_ptr<ID3D12DescriptorHeap> srvHeap; // descriptor heap for shader-visible resources
 
-	// particle field buffers (default heap, UAV-accessible by compute shaders): one per attribute
-	// Index with ParticleField enum (PF_POSITION..PF_SCRATCH).
-	com_ptr<ID3D12Resource> particleFields[PF_COUNT];
+	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
 
 	// Upload buffers for initial particle data (upload heap, CPU-writable).
 	// Only position and velocity have meaningful initial values; other fields are
 	// overwritten by the simulation before they're first read.
 	com_ptr<ID3D12Resource> positionUploadBuffer;
-	com_ptr<ID3D12Resource> velocityUploadBuffer;
+	com_ptr<ID3D12Resource> velocityUploadBuffer;	
 
+	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
+	com_ptr<ID3D12DescriptorHeap> descriptorHeap; // descriptor heap for shader-visible resources
+
+	// particle field buffers (default heap, UAV-accessible by compute shaders): one per attribute
+	// Index with ParticleField enum (PF_POSITION..PF_SCRATCH).
+	com_ptr<ID3D12Resource> particleFields[PF_COUNT];	
 	// Sorted particle field buffers (default heap, UAV). Same layout as particleFields, only
 	// used as scatter target / scratch pad during sorting
 	com_ptr<ID3D12Resource> sortedFields[PF_COUNT];
-
 	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
 	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
-	Egg::ConstantBuffer<ComputeCb> computeCb; // constant buffer uploaded to GPU each frame -> compute data
-
-	// All compute shaders share the same root signature layout:
-	// Root param 0: CBV(b0) — ComputeCb
-	// Root param 1: DescriptorTable(UAV(u0..u6)) — particle field buffers
-	// Root param 2: DescriptorTable(UAV(u7..u8)) — grid buffers (cellCount, cellPrefixSum)
-	// Root param 3: DescriptorTable(UAV(u9..u15)) — sorted particle field buffers
-	// We extract the root sig from one shader and reuse it for all PSOs.
-	com_ptr<ID3D12RootSignature> computeRootSig;
-	com_ptr<ID3D12PipelineState> predictPso; // apply gravity, compute position prediction p*
-	com_ptr<ID3D12PipelineState> clearGridPso; // zero cellCount array
-	com_ptr<ID3D12PipelineState> countGridPso; // count particles per cell (first grid-build pass)
-	com_ptr<ID3D12PipelineState> lambdaPso; // compute lambda per particle
-	com_ptr<ID3D12PipelineState> deltaPso; // compute delta_p, update p*
-	com_ptr<ID3D12PipelineState> collisionPso; // clamp predictedPosition to box, zero wall-normal velocity
-	com_ptr<ID3D12PipelineState> positionFromScratchPso; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
-	com_ptr<ID3D12PipelineState> updateVelocityPso; // update velocity from displacement: v = (p* - x) / dt
-	com_ptr<ID3D12PipelineState> vorticityPso; // estimate per-particle vorticity (curl of velocity), store in omega
-	com_ptr<ID3D12PipelineState> confinementPso; // apply vorticity confinement force to velocity
-	com_ptr<ID3D12PipelineState> viscosityPso; // XSPH velocity smoothing, writes to scratch
-	com_ptr<ID3D12PipelineState> velocityFromScratchPso; // copy scratch -> velocity (Jacobi commit after viscosity)
-	com_ptr<ID3D12PipelineState> updatePositionPso; // update position from predictedPosition (final step per paper)
-	com_ptr<ID3D12PipelineState> prefixSumPso; // exclusive prefix sum of cellCount -> cellPrefixSum
-	com_ptr<ID3D12PipelineState> sortPso; // each particle writes itself to its sorted position by grid cell
-	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
+	
+	// One ComputeShader per pass. Each holds its own PSO, root signature, descriptor
+	// table bindings, and input/output resource lists for UAV barrier insertion.
+	// GPU descriptor handles for the three UAV table ranges, computed once in LoadCompute.
+	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
+	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
+	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
+	ComputeShader predictShader; // apply external forces like gravity, compute position prediction p*
+	ComputeShader clearGridShader; // zero cellCount array
+	ComputeShader countGridShader; // count particles per cell (first grid-build pass)
+	ComputeShader prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
+	ComputeShader sortShader; // each particle writes itself to its sorted position by grid cell
+	ComputeShader lambdaShader; // compute lambda per particle
+	ComputeShader deltaShader; // compute delta_p, write to scratch
+	ComputeShader positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
+	ComputeShader collisionShader; // handle collision checking and response, such as clamping to bounding box
+	ComputeShader updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
+	ComputeShader vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
+	ComputeShader confinementShader; // apply vorticity confinement force to velocity
+	ComputeShader viscosityShader;  // XSPH velocity smoothing, writes to scratch
+	ComputeShader velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
+	ComputeShader updatePositionShader; // update position from predictedPosition (final step per paper)
+	
 
 	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
 	// Serves as an example for reading particle data back from the GPU
@@ -140,7 +144,7 @@ protected:
 		// create a Shader Resource View so the pixel shader can sample the cubemap
 		// note that this is different from the SRV *heap* that we created earlier, this SRV fills one slot
 		// in the SRV heap, specifically, slot (index) 0
-		envTexture.CreateSRV(device.Get(), srvHeap.Get(), 0);
+		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), 0);
 		// transfer texture data from upload heap to GPU-local memory
 		UploadBackground();
 
@@ -161,7 +165,7 @@ protected:
 		// bind the per-frame constant buffer (root parameter 0)
 		bgMaterial->SetConstantBuffer(perFrameCb);
 		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
-		bgMaterial->SetSrvHeap(1, srvHeap, 0);
+		bgMaterial->SetSrvHeap(1, descriptorHeap, 0);
 
 		// The fullscreen quad from Egg's prefab library - 2 triangles covering the entire screen
 		// the geometry of a mesh is what handles raw vertex data
@@ -171,8 +175,7 @@ protected:
 		backgroundMesh = Egg::Mesh::Shaded::Create(psoManager, bgMaterial, bgGeometry);
 	}
 
-	// CPU-side staging struct for particle initialization.
-	// Only used by GenerateParticles/UploadParticles; the GPU never sees this layout.
+	// CPU-side staging struct for ease of particle initialization.
 	struct ParticleInitData {
 		std::vector<Float3> positions;
 		std::vector<Float3> velocities;
@@ -196,46 +199,47 @@ protected:
 	}
 
 	void UploadParticles(const ParticleInitData& initData) {
-		// Map and fill the position upload buffer
-		{
-			void* pData;
-			CD3DX12_RANGE readRange(0, 0);
-			DX_API("Failed to map position upload buffer")
-				positionUploadBuffer->Map(0, &readRange, &pData);
-			memcpy(pData, initData.positions.data(), initData.positions.size() * sizeof(Float3));
-			positionUploadBuffer->Unmap(0, nullptr);
-		}
-		// Map and fill the velocity upload buffer
-		{
-			void* pData;
-			CD3DX12_RANGE readRange(0, 0);
-			DX_API("Failed to map velocity upload buffer")
-				velocityUploadBuffer->Map(0, &readRange, &pData);
-			memcpy(pData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
-			velocityUploadBuffer->Unmap(0, nullptr);
-		}
+		void* posData; // will point to the mapped CPU memory of the upload buffer
+		CD3DX12_RANGE readRange(0, 0); // empty range: CPU won't read anything from this buffer
+		// make the upload buffer's memory CPU accessible, i.e. positionUploadBuffer - posData association
+		// 0 is subresource index, on success, posData points to the buffer 
+		DX_API("Failed to map position upload buffer") 
+			positionUploadBuffer->Map(0, &readRange, &posData);
+		memcpy(posData, initData.positions.data(), initData.positions.size() * sizeof(Float3)); // actual copy call
+		positionUploadBuffer->Unmap(0, nullptr); // release the CPU mapping -> posData is invalidated
+			
+		// same flow as above
+		void* velData;
+		DX_API("Failed to map velocity upload buffer")
+			velocityUploadBuffer->Map(0, &readRange, &velData);
+		memcpy(velData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
+		velocityUploadBuffer->Unmap(0, nullptr);
 
-		// GPU side: copy from upload buffers to default heap field buffers
+		// The particle data now lives in the Upload buffer, we must
+		// copy it to the default heap. This is done by executing commands on the
+		// command list, which requires us to reset it, as well as its associated allocator (the backing memory).
 		DX_API("Failed to reset command allocator (UploadParticles)")
 			commandAllocator->Reset();
 		DX_API("Failed to reset command list (UploadParticles)")
 			commandList->Reset(commandAllocator.Get(), nullptr);
 
-		// transition position and velocity buffers to COPY_DEST
+		// In order to copy to them, we must transition position and velocity buffers to COPY_DEST
+		// That's done by inserting transition type resource barriers to the command list.
+		// Here we initialize the barriers.
 		D3D12_RESOURCE_BARRIER toCopyDest[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_VELOCITY].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
 		};
-		commandList->ResourceBarrier(2, toCopyDest);
-
+		commandList->ResourceBarrier(2, toCopyDest); // then insert them
+		// then insert the copy commands to the command list: dst, offset, src, offset
 		commandList->CopyBufferRegion(particleFields[PF_POSITION].Get(), 0,
 			positionUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
 		commandList->CopyBufferRegion(particleFields[PF_VELOCITY].Get(), 0,
 			velocityUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
 
-		// transition back to UAV
+		// then transition back to UAV by, again initializing then inserting the proper barriers
 		D3D12_RESOURCE_BARRIER toUav[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -247,98 +251,135 @@ protected:
 		DX_API("Failed to close command list (UploadParticles)")
 			commandList->Close();
 
+		// then we make the command queue execute the command list, or rather, an array of command lists,
+		// which is only 1 command list in our case
 		ID3D12CommandList* commandLists[] = { commandList.Get() };
 		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
 
-		WaitForPreviousFrame();
+		WaitForPreviousFrame(); // sync before moving on
 	}
 
 	void LoadCompute() {
-		// load all compiled compute shader blobs
-		com_ptr<ID3DBlob> predictShader = Egg::Shader::LoadCso("Shaders/predictCS.cso");
-		com_ptr<ID3DBlob> clearGridShader = Egg::Shader::LoadCso("Shaders/clearGridCS.cso");
-		com_ptr<ID3DBlob> countGridShader = Egg::Shader::LoadCso("Shaders/countGridCS.cso");
-		com_ptr<ID3DBlob> lambdaShader = Egg::Shader::LoadCso("Shaders/lambdaCS.cso");
-		com_ptr<ID3DBlob> deltaShader = Egg::Shader::LoadCso("Shaders/deltaCS.cso");
-		com_ptr<ID3DBlob> collisionShader = Egg::Shader::LoadCso("Shaders/collisionCS.cso");
-		com_ptr<ID3DBlob> positionFromScratchShader = Egg::Shader::LoadCso("Shaders/positionFromScratchCS.cso");
-		com_ptr<ID3DBlob> updateVelocityShader = Egg::Shader::LoadCso("Shaders/updateVelocityCS.cso");
-		com_ptr<ID3DBlob> vorticityShader = Egg::Shader::LoadCso("Shaders/vorticityCS.cso");
-		com_ptr<ID3DBlob> confinementShader = Egg::Shader::LoadCso("Shaders/confinementCS.cso");
-		com_ptr<ID3DBlob> viscosityShader = Egg::Shader::LoadCso("Shaders/viscosityCS.cso");
-		com_ptr<ID3DBlob> velocityFromScratchShader = Egg::Shader::LoadCso("Shaders/velocityFromScratchCS.cso");
-		com_ptr<ID3DBlob> updatePositionShader = Egg::Shader::LoadCso("Shaders/updatePositionCS.cso");
-		com_ptr<ID3DBlob> prefixSumShader = Egg::Shader::LoadCso("Shaders/prefixSumCS.cso");
-		com_ptr<ID3DBlob> sortShader = Egg::Shader::LoadCso("Shaders/sortCS.cso");
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// all shaders embed the same root signature string, so we extract it once
-		// from predictCS and reuse it for all PSO descriptors
-		computeRootSig = Egg::Shader::LoadRootSignature(device.Get(), predictShader.Get());
+		// GPU descriptor handles for the three UAV table ranges; stored as members so ComputePass
+		// can reach them after LoadCompute returns.
+		particleFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, descriptorSize);  // slot 3  = start of particle field UAVs (u0..u6)
+		gridHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 10, descriptorSize); // slot 10 = start of grid UAVs (u7..u8)
+		sortedFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, descriptorSize); // slot 12 = start of sorted field UAVs (u9..u15)
 
-		// compute PSO descriptor: much simpler than a graphics PSO --
-		// no rasterizer, blend state, render targets, or input layout; just root sig + shader bytecode
-		D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
-		psoDesc.pRootSignature = computeRootSig.Get();
+		D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(predictShader.Get());
-		DX_API("Failed to create predict compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(predictPso.GetAddressOf()));
+		// --- particle-only category: CBV(b0), DescriptorTable(UAV(u0..u6)) ---
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(clearGridShader.Get());
-		DX_API("Failed to create clearGrid compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(clearGridPso.GetAddressOf()));
+		predictShader.createResources(device.Get(), "Shaders/predictCS.cso");
+		predictShader.cbvAddress    = cbv;
+		predictShader.tableBindings = { {1, particleFieldsHandle} };
+		predictShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
+		predictShader.outputs       = { particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(countGridShader.Get());
-		DX_API("Failed to create countGrid compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(countGridPso.GetAddressOf()));
+		collisionShader.createResources(device.Get(), "Shaders/collisionCS.cso");
+		collisionShader.cbvAddress    = cbv;
+		collisionShader.tableBindings = { {1, particleFieldsHandle} };
+		collisionShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
+		collisionShader.outputs       = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(lambdaShader.Get());
-		DX_API("Failed to create lambda compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(lambdaPso.GetAddressOf()));
+		positionFromScratchShader.createResources(device.Get(), "Shaders/positionFromScratchCS.cso");
+		positionFromScratchShader.cbvAddress    = cbv;
+		positionFromScratchShader.tableBindings = { {1, particleFieldsHandle} };
+		positionFromScratchShader.inputs        = { particleFields[PF_SCRATCH].Get() };
+		positionFromScratchShader.outputs       = { particleFields[PF_PREDICTED_POSITION].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(deltaShader.Get());
-		DX_API("Failed to create delta compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(deltaPso.GetAddressOf()));
+		updateVelocityShader.createResources(device.Get(), "Shaders/updateVelocityCS.cso");
+		updateVelocityShader.cbvAddress    = cbv;
+		updateVelocityShader.tableBindings = { {1, particleFieldsHandle} };
+		updateVelocityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_PREDICTED_POSITION].Get() };
+		updateVelocityShader.outputs       = { particleFields[PF_VELOCITY].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(collisionShader.Get());
-		DX_API("Failed to create collision compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(collisionPso.GetAddressOf()));
+		velocityFromScratchShader.createResources(device.Get(), "Shaders/velocityFromScratchCS.cso");
+		velocityFromScratchShader.cbvAddress    = cbv;
+		velocityFromScratchShader.tableBindings = { {1, particleFieldsHandle} };
+		velocityFromScratchShader.inputs        = { particleFields[PF_SCRATCH].Get() };
+		velocityFromScratchShader.outputs       = { particleFields[PF_VELOCITY].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(positionFromScratchShader.Get());
-		DX_API("Failed to create positionFromScratch compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(positionFromScratchPso.GetAddressOf()));
+		updatePositionShader.createResources(device.Get(), "Shaders/updatePositionCS.cso");
+		updatePositionShader.cbvAddress    = cbv;
+		updatePositionShader.tableBindings = { {1, particleFieldsHandle} };
+		updatePositionShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get() };
+		updatePositionShader.outputs       = { particleFields[PF_POSITION].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(updateVelocityShader.Get());
-		DX_API("Failed to create updateVelocity compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(updateVelocityPso.GetAddressOf()));
+		// --- grid-only category: CBV(b0), DescriptorTable(UAV(u7..u8)) ---
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(vorticityShader.Get());
-		DX_API("Failed to create vorticity compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(vorticityPso.GetAddressOf()));
+		clearGridShader.createResources(device.Get(), "Shaders/clearGridCS.cso");
+		clearGridShader.cbvAddress    = cbv;
+		clearGridShader.tableBindings = { {1, gridHandle} };
+		clearGridShader.inputs        = {};
+		clearGridShader.outputs       = { cellCountBuffer.Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(confinementShader.Get());
-		DX_API("Failed to create confinement compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(confinementPso.GetAddressOf()));
+		prefixSumShader.createResources(device.Get(), "Shaders/prefixSumCS.cso");
+		prefixSumShader.cbvAddress    = cbv;
+		prefixSumShader.tableBindings = { {1, gridHandle} };
+		prefixSumShader.inputs        = { cellCountBuffer.Get() };
+		prefixSumShader.outputs       = { cellPrefixSumBuffer.Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(viscosityShader.Get());
-		DX_API("Failed to create viscosity compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(viscosityPso.GetAddressOf()));
+		// --- particle + grid category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)) ---
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(velocityFromScratchShader.Get());
-		DX_API("Failed to create velocityFromScratch compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(velocityFromScratchPso.GetAddressOf()));
+		countGridShader.createResources(device.Get(), "Shaders/countGridCS.cso");
+		countGridShader.cbvAddress    = cbv;
+		countGridShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		countGridShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get() };
+		countGridShader.outputs       = { cellCountBuffer.Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(updatePositionShader.Get());
-		DX_API("Failed to create updatePosition compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(updatePositionPso.GetAddressOf()));
+		lambdaShader.createResources(device.Get(), "Shaders/lambdaCS.cso");
+		lambdaShader.cbvAddress    = cbv;
+		lambdaShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		lambdaShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
+		lambdaShader.outputs       = { particleFields[PF_LAMBDA].Get(), particleFields[PF_DENSITY].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(prefixSumShader.Get());
-		DX_API("Failed to create prefixSum compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(prefixSumPso.GetAddressOf()));
+		deltaShader.createResources(device.Get(), "Shaders/deltaCS.cso");
+		deltaShader.cbvAddress    = cbv;
+		deltaShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		deltaShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
+		deltaShader.outputs       = { particleFields[PF_SCRATCH].Get() };
 
-		psoDesc.CS = CD3DX12_SHADER_BYTECODE(sortShader.Get());
-		DX_API("Failed to create sort compute PSO")
-			device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(sortPso.GetAddressOf()));
+		vorticityShader.createResources(device.Get(), "Shaders/vorticityCS.cso");
+		vorticityShader.cbvAddress    = cbv;
+		vorticityShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		vorticityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
+		vorticityShader.outputs       = { particleFields[PF_OMEGA].Get() };
+
+		confinementShader.createResources(device.Get(), "Shaders/confinementCS.cso");
+		confinementShader.cbvAddress    = cbv;
+		confinementShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		confinementShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_OMEGA].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
+		confinementShader.outputs       = { particleFields[PF_VELOCITY].Get() };
+
+		viscosityShader.createResources(device.Get(), "Shaders/viscosityCS.cso");
+		viscosityShader.cbvAddress    = cbv;
+		viscosityShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
+		viscosityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
+		viscosityShader.outputs       = { particleFields[PF_SCRATCH].Get() };
+
+		// --- all-three category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)), DescriptorTable(UAV(u9..u15)) ---
+
+		sortShader.createResources(device.Get(), "Shaders/sortCS.cso");
+		sortShader.cbvAddress    = cbv;
+		sortShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle}, {3, sortedFieldsHandle} };
+		sortShader.inputs = {
+			particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(),
+			particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(),
+			particleFields[PF_DENSITY].Get(), particleFields[PF_OMEGA].Get(),
+			particleFields[PF_SCRATCH].Get(), cellPrefixSumBuffer.Get(), cellCountBuffer.Get()
+		};
+		sortShader.outputs = {
+			sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
+			sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
+			sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
+			sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get()
+		};
 	}
 
 	void LoadParticles() {
@@ -369,7 +410,7 @@ protected:
 		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index,
 		// so we must multiply the slot index by the descriptor increment size to get the correct byte offset
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		material->SetSrvHeap(1, srvHeap, 1 * descriptorSize); // slot 1 = start of position+density SRV table
+		material->SetSrvHeap(1, descriptorHeap, 1 * descriptorSize); // slot 1 = start of position+density SRV table
 
 		// NullGeometry: no vertex buffer - the VS fetches positions from the structured buffer using SV_VertexID
 		// numParticles tells DrawInstanced how many vertices (and therefore SV_VertexID values) to generate
@@ -420,7 +461,7 @@ protected:
 		commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
 		// make the SRV heap visible to the GPU for this command list, so shaders can access textures in it
-		commandList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
+		commandList->SetDescriptorHeaps(1, descriptorHeap.GetAddressOf());
 	}
 
 	void CloseCommandList() {
@@ -436,81 +477,35 @@ protected:
 			commandList->Close();
 	}
 
-	// Shorthand: set PSO, dispatch, then place UAV barriers on the given resources.
-	// Most compute passes in the pipeline follow this exact pattern.
-	void DispatchAndBarrier(ID3D12PipelineState* pso, UINT numGroups, std::initializer_list<ID3D12Resource*> barrierResources) {
-		commandList->SetPipelineState(pso);
-		commandList->Dispatch(numGroups, 1, 1);
-		for (auto* resource : barrierResources)
-			commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(resource));
-	}
-
 	void ComputePass() {
-		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-		// GPU handles for the three compute descriptor tables
-		CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle(
-			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			3, // slot 3 = start of particle field UAVs (u0..u6)
-			descriptorSize);
-		CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle(
-			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			10, // slot 10 = start of grid UAVs (u7..u8)
-			descriptorSize);
-		CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle(
-			srvHeap->GetGPUDescriptorHandleForHeapStart(),
-			12, // slot 12 = start of sorted field UAVs (u9..u15)
-			descriptorSize);
-
-		// switch to the compute pipeline: root signature first, then PSO
-		// (setting the root sig before the PSO is required - the PSO references the root sig)
-		// all compute shaders share the same root signature, so we set it once here.
-		// root parameter bindings persist across PSO swaps as long
-		// as we don't call SetComputeRootSignature again.
-		commandList->SetComputeRootSignature(computeRootSig.Get());
-		// bind the compute CB at root parameter 0 via its GPU virtual address directly.
-		// this is a root CBV - it doesn't occupy a descriptor heap slot, the address goes straight into the root signature.
-		commandList->SetComputeRootConstantBufferView(0, computeCb.GetGPUVirtualAddress());
-		// bind the three descriptor tables
-		commandList->SetComputeRootDescriptorTable(1, particleFieldsHandle);
-		commandList->SetComputeRootDescriptorTable(2, gridHandle);
-		commandList->SetComputeRootDescriptorTable(3, sortedFieldsHandle);
-
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
 
 		// prediction: apply gravity, compute p* = x + v*dt
-		DispatchAndBarrier(predictPso.Get(), numGroups,
-			{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
+		predictShader.dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
 		// simulation box and zero wall-normal velocity before building the grid.
-		DispatchAndBarrier(collisionPso.Get(), numGroups,
-			{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
+		collisionShader.dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// build the spatial grid from predicted positions, then sort particles into grid order
 		UINT numCellGroups = (numCells + 255) / 256;
 
 		// step 1: zero the cell counts
-		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, { cellCountBuffer.Get() });
+		clearGridShader.dispatch_then_barrier(commandList.Get(), numCellGroups);
 
 		// step 2: count particles per cell (each particle does InterlockedAdd on its cell)
-		DispatchAndBarrier(countGridPso.Get(), numGroups, { cellCountBuffer.Get() });
+		countGridShader.dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// step 3: exclusive prefix sum of cellCount -> cellPrefixSum
 		// tells us where each cell's particle run starts in the sorted buffer
-		DispatchAndBarrier(prefixSumPso.Get(), 1, { cellPrefixSumBuffer.Get() });
+		prefixSumShader.dispatch_then_barrier(commandList.Get(), 1);
 
 		// step 4: zero cell counts again so sortCS can use them as per-cell atomic counters
-		DispatchAndBarrier(clearGridPso.Get(), numCellGroups, { cellCountBuffer.Get() });
+		clearGridShader.dispatch_then_barrier(commandList.Get(), numCellGroups);
 
 		// step 5: each particle scatters all its field data into sorted order
-		DispatchAndBarrier(sortPso.Get(), numGroups, {
-			sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
-			sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
-			sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
-			sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get()
-		});
+		sortShader.dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// step 6: copy sorted data back into the main particle field buffers
 		{
@@ -545,28 +540,18 @@ protected:
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
-			DispatchAndBarrier(lambdaPso.Get(), numGroups,
-				{ particleFields[PF_LAMBDA].Get(), particleFields[PF_DENSITY].Get() }); // compute lambda and density
-			DispatchAndBarrier(deltaPso.Get(), numGroups,
-				{ particleFields[PF_SCRATCH].Get() }); // delta_p -> scratch
-			DispatchAndBarrier(positionFromScratchPso.Get(), numGroups,
-				{ particleFields[PF_PREDICTED_POSITION].Get() }); // scratch -> predictedPosition
-			DispatchAndBarrier(collisionPso.Get(), numGroups,
-				{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() }); // clamp to box
+			lambdaShader.dispatch_then_barrier(commandList.Get(), numGroups);              // compute lambda and density
+			deltaShader.dispatch_then_barrier(commandList.Get(), numGroups);               // delta_p -> scratch
+			positionFromScratchShader.dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> predictedPosition
+			collisionShader.dispatch_then_barrier(commandList.Get(), numGroups);           // clamp to box
 		}
 
-		DispatchAndBarrier(updateVelocityPso.Get(), numGroups,
-			{ particleFields[PF_VELOCITY].Get() }); // v = (p* - x) / dt
-		DispatchAndBarrier(vorticityPso.Get(), numGroups,
-			{ particleFields[PF_OMEGA].Get() }); // estimate curl(v) -> omega
-		DispatchAndBarrier(confinementPso.Get(), numGroups,
-			{ particleFields[PF_VELOCITY].Get() }); // vorticity confinement -> velocity
-		DispatchAndBarrier(viscosityPso.Get(), numGroups,
-			{ particleFields[PF_SCRATCH].Get() }); // XSPH viscosity -> scratch
-		DispatchAndBarrier(velocityFromScratchPso.Get(), numGroups,
-			{ particleFields[PF_VELOCITY].Get() }); // scratch -> velocity
-		DispatchAndBarrier(updatePositionPso.Get(), numGroups,
-			{ particleFields[PF_POSITION].Get() }); // position = predictedPosition
+		updateVelocityShader.dispatch_then_barrier(commandList.Get(), numGroups);    // v = (p* - x) / dt
+		vorticityShader.dispatch_then_barrier(commandList.Get(), numGroups);         // estimate curl(v) -> omega
+		confinementShader.dispatch_then_barrier(commandList.Get(), numGroups);       // vorticity confinement -> velocity
+		viscosityShader.dispatch_then_barrier(commandList.Get(), numGroups);         // XSPH viscosity -> scratch
+		velocityFromScratchShader.dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> velocity
+		updatePositionShader.dispatch_then_barrier(commandList.Get(), numGroups);    // position = predictedPosition
 
 		// Copy density data to readback buffer for CPU access next frame
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
@@ -832,7 +817,7 @@ protected:
 		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3);
 		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE posSrvHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 1, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, descriptorSize);
 		device->CreateShaderResourceView(particleFields[PF_POSITION].Get(), &posSrvDesc, posSrvHandle);
 
 		// density SRV (slot 2, t1): read-only view for the vertex shader
@@ -845,7 +830,7 @@ protected:
 		denSrvDesc.Buffer.StructureByteStride = sizeof(float);
 		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE denSrvHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 2, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, descriptorSize);
 		device->CreateShaderResourceView(particleFields[PF_DENSITY].Get(), &denSrvDesc, denSrvHandle);
 	}
 
@@ -862,7 +847,7 @@ protected:
 			uavDesc.Buffer.CounterOffsetInBytes = 0;
 			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-				srvHeap->GetCPUDescriptorHandleForHeapStart(), 3 + f, descriptorSize);
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 3 + f, descriptorSize);
 			device->CreateUnorderedAccessView(particleFields[f].Get(), nullptr, &uavDesc, handle);
 		}
 	}
@@ -907,7 +892,7 @@ protected:
 		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 10, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 10, descriptorSize);
 		device->CreateUnorderedAccessView(cellCountBuffer.Get(), nullptr, &cellCountUavDesc, cellCountHandle);
 
 		// cellPrefixSum UAV (slot 11, u8)
@@ -919,7 +904,7 @@ protected:
 		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumHandle(
-			srvHeap->GetCPUDescriptorHandleForHeapStart(), 11, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 11, descriptorSize);
 		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumHandle);
 	}
 
@@ -953,7 +938,7 @@ protected:
 			uavDesc.Buffer.CounterOffsetInBytes = 0;
 			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-				srvHeap->GetCPUDescriptorHandleForHeapStart(), 12 + f, descriptorSize);
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 12 + f, descriptorSize);
 			device->CreateUnorderedAccessView(sortedFields[f].Get(), nullptr, &uavDesc, handle);
 		}
 	}
@@ -988,7 +973,7 @@ protected:
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
-			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(srvHeap.GetAddressOf()));
+			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(descriptorHeap.GetAddressOf()));
 	}
 
 	void CreateImGuiDescriptorHeap() {

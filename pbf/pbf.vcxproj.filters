@@ -56,6 +56,9 @@
     <ClInclude Include="ParticleTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ComputeShader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="particleVS.hlsl">
@@ -124,6 +127,9 @@
       <Filter>Shaders\Include</Filter>
     </None>
     <None Include="GridUtils.hlsli">
+      <Filter>Shaders\Include</Filter>
+    </None>
+    <None Include="ComputeCb.hlsli">
       <Filter>Shaders\Include</Filter>
     </None>
   </ItemGroup>

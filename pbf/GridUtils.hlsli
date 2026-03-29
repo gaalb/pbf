@@ -19,15 +19,10 @@
 //
 // Row-major (default):
 //   cellIndex = x + y * dim + z * dim * dim
-//   Simple and predictable, but spatially distant cells can be adjacent in memory.
 //
 // Morton codes (Z-order curve, #define USE_MORTON_CODES before including):
 //   cellIndex = bit-interleave(x, y, z)
-//   Preserves 3D spatial locality better than row-major: cells close in 3D tend to
-//   have close indices, so after the counting sort, particles in nearby cells end up
-//   near each other in the buffer, improving GPU cache hit rates during the neighbor
-//   loops in lambdaCS, deltaCS, vorticityCS, confinementCS, viscosityCS.
-//   Requires power-of-two grid dimensions for a dense index space (no wasted codes).
+
 //
 // Must be included after the cbuffer declaration, as these functions reference
 // boxMin, boxMax, and h from ComputeCb.
@@ -35,18 +30,19 @@
 #ifndef GRID_UTILS_HLSLI
 #define GRID_UTILS_HLSLI
 
-// ─── Common functions (shared by both indexing schemes) ───────────────────────
 
 // Computes the grid dimension (number of cells along each axis) from the
-// box size and cell size h. Since the box is constructed as gridDim * h on
-// each axis, this always yields a clean integer (the same power of two).
+// box size and cell size h. 
 int gridDim()
 {
     return int((boxMax.x - boxMin.x) / h + 0.5);
 }
 
-// Maps a world-space position to its 3D grid cell coordinates.
-// The grid origin is boxMin (no centering offset needed since box = gridDim * h).
+// Maps a world-space position to its 3D grid cell coordinates, i.e. taking the
+// SPH smoothing kernel radius "h" as a "unit", how far away from the grid origin
+// is the given position, measured in h units.
+// The grid origin is boxMin, not the center of the box, so that we only get 
+// unsigned integer numbers that are easily converted to binary for the Morton code.
 // Clamped to [0, gridDim-1] so particles exactly on the boundary don't index out of bounds.
 int3 posToCell(float3 pos)
 {
@@ -54,9 +50,34 @@ int3 posToCell(float3 pos)
     return clamp(int3((pos - boxMin) / h), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
 }
 
-// ─── Cell indexing ────────────────────────────────────────────────────────────
 
 #ifdef USE_MORTON_CODES
+
+// Morton Codes preserve 3D spatial locality better than row-major: cells close in 3D tend to
+// have close indices, so after the counting sort, particles in nearby cells end up
+// near each other in the buffer, improving GPU cache hit rates during the neighbor
+// loops in lambdaCS, deltaCS, vorticityCS, confinementCS, viscosityCS.
+// In order for this to produce a dense index space - meaning every integer from 0 
+// to numCells-1 maps to exactly one cell with no gaps - we need the number of
+// reachable Morton Codes to equal the number of cells. A Morton code for a 3D cell
+// (x, y, z) is formed by bit-interleaving the three coordinates: z1 y1 x1 z0 y0 x0.
+// If each coordinate has a range that's a power of two, say, 32=2^5, each coordinate
+// fits exactly 5 bits without waste. This means that interleaving three 5-bit values
+// gives a 15-bit result in range 0..2^15-1, so each code maps to a valid cell in the
+// index range 0..32767. If gridDim isn't a power of two, let's say it's 30, then 
+// each dimension still requires 5 bits but only uses 0..29, leaving 30 and 31 unused.
+// This means that when you interleave, combinations that include 30 or 31 for any of
+// the coordiantes don't map to any actual cells. The code still spans to 0..32767 but
+// it will be interspersed with invalid codes. This is an issue because cellCount and
+// cellPrefixSum are indexed by Morton codes directly, so they must be allocated large
+// enough to cover the full code range. With power of two dimensions, that allocation size
+// equals gridDim^3 exactly without waste, but with a non power of two dimension, we'd
+// need to over-allocate to the next power of two, cubed, and only use gridDim^3 of them.
+// In addition, every cell lookup would need bounds checks to not look in the "holes", 
+// becuase the holes containing invalid values aren't at the end of the index range, but
+// interspersed in the middle.
+
+
 
 // Spreads the 10 low bits of x into every-third-bit positions.
 // E.g. input bits  ...9876543210

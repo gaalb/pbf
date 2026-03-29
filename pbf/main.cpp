@@ -83,25 +83,25 @@ HWND InitWindow(HINSTANCE hInstance) {
 
     WNDCLASSW windowClass;
     ZeroMemory(&windowClass, sizeof(WNDCLASSW)); // zero out any memory trash
-    windowClass.lpfnWndProc = WindowProcess;      // assign our callback function to handle window messages
-    windowClass.lpszClassName = windowClassName;   // assign the class name - used later in CreateWindowExW
-    windowClass.hInstance = hInstance;              // the OS uses this to identify which program owns the window
+    windowClass.lpfnWndProc = WindowProcess; // assign our callback function to handle window messages
+    windowClass.lpszClassName = windowClassName; // assign the class name - used later in CreateWindowExW
+    windowClass.hInstance = hInstance; // the OS uses this to identify which program owns the window
 
 	
     RegisterClassW(&windowClass); // register the window class with the OS before we make a window of that class
 
     HWND wnd = CreateWindowExW(
-        0,                    // extended window style flags (none)
-        windowClassName,      // must match the class name we registered above
+        0, // extended window style flags (none)
+        windowClassName, // must match the class name we registered above
         L"Position Based Fluids", // the text that appears in the title bar
-        WS_OVERLAPPEDWINDOW,  // standard window style: title bar, border, minimize/maximize/close buttons
-        CW_USEDEFAULT,        // initial X position - let Windows decide
-        CW_USEDEFAULT,        // initial Y position - let Windows decide
-        1280, 720,            // window width and height in pixels (including title bar and borders)
-        NULL,                 // no parent window
-        NULL,                 // no menu
-        hInstance,            // same instance handle we used for the window class
-        NULL);                // no extra creation data
+        WS_OVERLAPPEDWINDOW, // standard window style: title bar, border, minimize/maximize/close buttons
+        CW_USEDEFAULT, // initial X position - let Windows decide
+        CW_USEDEFAULT, // initial Y position - let Windows decide
+        1280, 720, // window width and height in pixels (including title bar and borders)
+        NULL, // no parent window
+        NULL, // no menu
+        hInstance, // same instance handle we used for the window class
+        NULL);  // no extra creation data
 
 	ASSERT(wnd != NULL, "Failed to create window"); // make sure window creation succeeded
     return wnd;
@@ -113,7 +113,7 @@ void InitDX12(
     com_ptr<ID3D12Device>& device) {
     DX_API("Failed to create debug layer")
         D3D12GetDebugInterface(IID_PPV_ARGS(debugController.GetAddressOf()));
-    debugController->EnableDebugLayer(); // turn on the debug layer - causes D3D12 to validate API calls
+    //debugController->EnableDebugLayer(); // turn on the debug layer - causes D3D12 to validate API calls
     DX_API("Failed to create DXGI factory")
         CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory.GetAddressOf()));
 

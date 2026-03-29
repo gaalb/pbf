@@ -91,6 +91,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ComputeShader.h" />
     <ClInclude Include="ConstantBufferTypes.h" />
     <ClInclude Include="ParticleTypes.h" />
     <ClInclude Include="PbfApp.h" />
@@ -178,6 +179,7 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="ComputeCb.hlsli" />
     <None Include="GridUtils.hlsli" />
     <None Include="SphKernels.hlsli" />
   </ItemGroup>
