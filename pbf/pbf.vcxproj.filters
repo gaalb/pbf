@@ -79,9 +79,6 @@
     <FxCompile Include="clearGridCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
-    <FxCompile Include="collisionCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="confinementCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -92,9 +89,6 @@
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="positionFromScratchCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
-    <FxCompile Include="predictCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumCS.hlsl">
@@ -119,6 +113,18 @@
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
     <FxCompile Include="sortCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="collisionPredictedPositionCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="collisionVelocityCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="applyForcesCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="predictPositionCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
   </ItemGroup>

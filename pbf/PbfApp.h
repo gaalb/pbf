@@ -103,6 +103,7 @@ protected:
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
 	float sCorrK = 0.05f; // artificial pressure magnitude coefficient M&M: 0.1
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
+	float adhesion = 0.05f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
 	
 	// non-constant members
@@ -139,7 +140,10 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
-	ComputeShader::P predictShader; // apply external forces like gravity, compute position prediction p*
+	ComputeShader::P applyForcesShader;  // apply gravity and external forces to velocity
+	ComputeShader::P collisionVelocityShader;  // zero wall-directed velocity, apply adhesion
+	ComputeShader::P predictPositionShader; // p* = position + velocity * dt
+	ComputeShader::P collisionPredictedPositionShader; // clamp p* to box; runs pre-sort and every solver iteration
 	ComputeShader::P clearGridShader; // zero cellCount array
 	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
 	ComputeShader::P prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
@@ -147,7 +151,6 @@ protected:
 	ComputeShader::P lambdaShader; // compute lambda per particle
 	ComputeShader::P deltaShader; // compute delta_p, write to scratch
 	ComputeShader::P positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
-	ComputeShader::P collisionShader; // handle collision checking and response, such as clamping to bounding box
 	ComputeShader::P updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
 	ComputeShader::P vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
 	ComputeShader::P confinementShader; // apply vorticity confinement force to velocity
@@ -312,15 +315,25 @@ protected:
 		using std::vector;
 		using TableBinding = ComputeShader::TableBinding;
 
-		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
+		applyForcesShader = ComputeShader::Create(device.Get(), "Shaders/applyForcesCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle} },
 			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
-			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
-		collisionShader = ComputeShader::Create(device.Get(), "Shaders/collisionCS.cso", cbv,
+		collisionVelocityShader = ComputeShader::Create(device.Get(), "Shaders/collisionVelocityCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle} },
-			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
-			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() });
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
+
+		predictPositionShader = ComputeShader::Create(device.Get(), "Shaders/predictPositionCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() });
+
+		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() });
 
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle} },
@@ -557,13 +570,20 @@ protected:
 		UINT numGroups = (numParticles + 255) / 256;
 		
 
-		// prediction: apply external forces such as gravity, compute p* = x + v*dt
-		predictShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		// apply gravity + external forces to velocity
+		applyForcesShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
-		// pre-stabilization: clamp predicted positions to the
-		// simulation box and zero wall-normal velocity before building the grid.
-		collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);
-		
+		// Zero wall-directed velocity components and apply adhesion damping.
+		// Must run before predictPosition so the correction survives into p*;
+		// updateVelocityCS would overwrite any velocity edits made after prediction.
+		collisionVelocityShader->dispatch_then_barrier(commandList.Get(), numGroups);
+
+		// p* = position + velocity * dt  (velocity is now wall-corrected)
+		predictPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);
+
+		// Clamp p* to the simulation box before building the spatial grid.
+		collisionPredictedPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);
+
 		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
 		// constraint solver loop
@@ -571,10 +591,10 @@ protected:
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
-			lambdaShader->dispatch_then_barrier(commandList.Get(), numGroups);              // compute lambda and density
-			deltaShader->dispatch_then_barrier(commandList.Get(), numGroups);               // delta_p -> scratch
+			lambdaShader->dispatch_then_barrier(commandList.Get(), numGroups); // compute lambda and density
+			deltaShader->dispatch_then_barrier(commandList.Get(), numGroups); // delta_p -> scratch
 			positionFromScratchShader->dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> predictedPosition
-			collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);           // clamp to box
+			collisionPredictedPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);   // clamp to box
 		}
 
 		updateVelocityShader->dispatch_then_barrier(commandList.Get(), numGroups);    // v = (p* - x) / dt
@@ -674,6 +694,7 @@ protected:
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
@@ -758,6 +779,7 @@ protected:
 		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb->externalForce = externalForce;
 		computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
+		computeCb->adhesion = adhesion;
 		computeCb.Upload();
 	}
 

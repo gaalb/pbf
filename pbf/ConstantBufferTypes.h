@@ -31,4 +31,5 @@ __declspec(align(16)) struct ComputeCb {
 	float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
 	Float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
 	UINT fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
+	float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 };
