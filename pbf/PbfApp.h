@@ -107,21 +107,21 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
-	ComputeShader predictShader; // apply external forces like gravity, compute position prediction p*
-	ComputeShader clearGridShader; // zero cellCount array
-	ComputeShader countGridShader; // count particles per cell (first grid-build pass)
-	ComputeShader prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
-	ComputeShader sortShader; // each particle writes itself to its sorted position by grid cell
-	ComputeShader lambdaShader; // compute lambda per particle
-	ComputeShader deltaShader; // compute delta_p, write to scratch
-	ComputeShader positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
-	ComputeShader collisionShader; // handle collision checking and response, such as clamping to bounding box
-	ComputeShader updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
-	ComputeShader vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
-	ComputeShader confinementShader; // apply vorticity confinement force to velocity
-	ComputeShader viscosityShader;  // XSPH velocity smoothing, writes to scratch
-	ComputeShader velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
-	ComputeShader updatePositionShader; // update position from predictedPosition (final step per paper)
+	ComputeShader::P predictShader; // apply external forces like gravity, compute position prediction p*
+	ComputeShader::P clearGridShader; // zero cellCount array
+	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
+	ComputeShader::P prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
+	ComputeShader::P sortShader; // each particle writes itself to its sorted position by grid cell
+	ComputeShader::P lambdaShader; // compute lambda per particle
+	ComputeShader::P deltaShader; // compute delta_p, write to scratch
+	ComputeShader::P positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
+	ComputeShader::P collisionShader; // handle collision checking and response, such as clamping to bounding box
+	ComputeShader::P updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
+	ComputeShader::P vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
+	ComputeShader::P confinementShader; // apply vorticity confinement force to velocity
+	ComputeShader::P viscosityShader;  // XSPH velocity smoothing, writes to scratch
+	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
+	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 	
 
 	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
@@ -259,7 +259,11 @@ protected:
 		WaitForPreviousFrame(); // sync before moving on
 	}
 
+	
+
 	void LoadCompute() {
+		// Descriptor heaps are just flat arrays of descriptors in GPU memory, and to index into them we need
+		// to know the byte stride betweeen consecutive entries, which is hardware dependent
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 		// GPU descriptor handles for the three UAV table ranges; stored as members so ComputePass
@@ -272,114 +276,97 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, descriptorSize); // slot 12 = start of sorted field UAVs (u9..u15)
 
 		D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
+		using std::vector;
+		using TableBinding = ComputeShader::TableBinding;
 
 		// --- particle-only category: CBV(b0), DescriptorTable(UAV(u0..u6)) ---
 
-		predictShader.createResources(device.Get(), "Shaders/predictCS.cso");
-		predictShader.cbvAddress    = cbv;
-		predictShader.tableBindings = { {1, particleFieldsHandle} };
-		predictShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
-		predictShader.outputs       = { particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() };
+		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get(), particleFields[PF_PREDICTED_POSITION].Get() });
 
-		collisionShader.createResources(device.Get(), "Shaders/collisionCS.cso");
-		collisionShader.cbvAddress    = cbv;
-		collisionShader.tableBindings = { {1, particleFieldsHandle} };
-		collisionShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
-		collisionShader.outputs       = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() };
+		collisionShader = ComputeShader::Create(device.Get(), "Shaders/collisionCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_VELOCITY].Get() });
 
-		positionFromScratchShader.createResources(device.Get(), "Shaders/positionFromScratchCS.cso");
-		positionFromScratchShader.cbvAddress    = cbv;
-		positionFromScratchShader.tableBindings = { {1, particleFieldsHandle} };
-		positionFromScratchShader.inputs        = { particleFields[PF_SCRATCH].Get() };
-		positionFromScratchShader.outputs       = { particleFields[PF_PREDICTED_POSITION].Get() };
+		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() });
 
-		updateVelocityShader.createResources(device.Get(), "Shaders/updateVelocityCS.cso");
-		updateVelocityShader.cbvAddress    = cbv;
-		updateVelocityShader.tableBindings = { {1, particleFieldsHandle} };
-		updateVelocityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_PREDICTED_POSITION].Get() };
-		updateVelocityShader.outputs       = { particleFields[PF_VELOCITY].Get() };
+		updateVelocityShader = ComputeShader::Create(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_PREDICTED_POSITION].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
-		velocityFromScratchShader.createResources(device.Get(), "Shaders/velocityFromScratchCS.cso");
-		velocityFromScratchShader.cbvAddress    = cbv;
-		velocityFromScratchShader.tableBindings = { {1, particleFieldsHandle} };
-		velocityFromScratchShader.inputs        = { particleFields[PF_SCRATCH].Get() };
-		velocityFromScratchShader.outputs       = { particleFields[PF_VELOCITY].Get() };
+		velocityFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/velocityFromScratchCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
-		updatePositionShader.createResources(device.Get(), "Shaders/updatePositionCS.cso");
-		updatePositionShader.cbvAddress    = cbv;
-		updatePositionShader.tableBindings = { {1, particleFieldsHandle} };
-		updatePositionShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get() };
-		updatePositionShader.outputs       = { particleFields[PF_POSITION].Get() };
+		updatePositionShader = ComputeShader::Create(device.Get(), "Shaders/updatePositionCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get() });
 
 		// --- grid-only category: CBV(b0), DescriptorTable(UAV(u7..u8)) ---
 
-		clearGridShader.createResources(device.Get(), "Shaders/clearGridCS.cso");
-		clearGridShader.cbvAddress    = cbv;
-		clearGridShader.tableBindings = { {1, gridHandle} };
-		clearGridShader.inputs        = {};
-		clearGridShader.outputs       = { cellCountBuffer.Get() };
+		clearGridShader = ComputeShader::Create(device.Get(), "Shaders/clearGridCS.cso", cbv,
+			vector<TableBinding>{ {1, gridHandle} },
+			vector<ID3D12Resource*>{},
+			vector<ID3D12Resource*>{ cellCountBuffer.Get() });
 
-		prefixSumShader.createResources(device.Get(), "Shaders/prefixSumCS.cso");
-		prefixSumShader.cbvAddress    = cbv;
-		prefixSumShader.tableBindings = { {1, gridHandle} };
-		prefixSumShader.inputs        = { cellCountBuffer.Get() };
-		prefixSumShader.outputs       = { cellPrefixSumBuffer.Get() };
+		prefixSumShader = ComputeShader::Create(device.Get(), "Shaders/prefixSumCS.cso", cbv,
+			vector<TableBinding>{ {1, gridHandle} },
+			vector<ID3D12Resource*>{ cellCountBuffer.Get() },
+			vector<ID3D12Resource*>{ cellPrefixSumBuffer.Get() });
 
 		// --- particle + grid category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)) ---
 
-		countGridShader.createResources(device.Get(), "Shaders/countGridCS.cso");
-		countGridShader.cbvAddress    = cbv;
-		countGridShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		countGridShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get() };
-		countGridShader.outputs       = { cellCountBuffer.Get() };
+		countGridShader = ComputeShader::Create(device.Get(), "Shaders/countGridCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
+			vector<ID3D12Resource*>{ cellCountBuffer.Get() });
 
-		lambdaShader.createResources(device.Get(), "Shaders/lambdaCS.cso");
-		lambdaShader.cbvAddress    = cbv;
-		lambdaShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		lambdaShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
-		lambdaShader.outputs       = { particleFields[PF_LAMBDA].Get(), particleFields[PF_DENSITY].Get() };
+		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_LAMBDA].Get(), particleFields[PF_DENSITY].Get() });
 
-		deltaShader.createResources(device.Get(), "Shaders/deltaCS.cso");
-		deltaShader.cbvAddress    = cbv;
-		deltaShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		deltaShader.inputs        = { particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
-		deltaShader.outputs       = { particleFields[PF_SCRATCH].Get() };
+		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() });
 
-		vorticityShader.createResources(device.Get(), "Shaders/vorticityCS.cso");
-		vorticityShader.cbvAddress    = cbv;
-		vorticityShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		vorticityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
-		vorticityShader.outputs       = { particleFields[PF_OMEGA].Get() };
+		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_OMEGA].Get() });
 
-		confinementShader.createResources(device.Get(), "Shaders/confinementCS.cso");
-		confinementShader.cbvAddress    = cbv;
-		confinementShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		confinementShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_OMEGA].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
-		confinementShader.outputs       = { particleFields[PF_VELOCITY].Get() };
+		confinementShader = ComputeShader::Create(device.Get(), "Shaders/confinementCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_OMEGA].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
-		viscosityShader.createResources(device.Get(), "Shaders/viscosityCS.cso");
-		viscosityShader.cbvAddress    = cbv;
-		viscosityShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle} };
-		viscosityShader.inputs        = { particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() };
-		viscosityShader.outputs       = { particleFields[PF_SCRATCH].Get() };
+		viscosityShader = ComputeShader::Create(device.Get(), "Shaders/viscosityCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() });
 
 		// --- all-three category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)), DescriptorTable(UAV(u9..u15)) ---
 
-		sortShader.createResources(device.Get(), "Shaders/sortCS.cso");
-		sortShader.cbvAddress    = cbv;
-		sortShader.tableBindings = { {1, particleFieldsHandle}, {2, gridHandle}, {3, sortedFieldsHandle} };
-		sortShader.inputs = {
-			particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(),
-			particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(),
-			particleFields[PF_DENSITY].Get(), particleFields[PF_OMEGA].Get(),
-			particleFields[PF_SCRATCH].Get(), cellPrefixSumBuffer.Get(), cellCountBuffer.Get()
-		};
-		sortShader.outputs = {
-			sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
-			sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
-			sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
-			sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get()
-		};
+		sortShader = ComputeShader::Create(device.Get(), "Shaders/sortCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle}, {3, sortedFieldsHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(),
+			  particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(),
+			  particleFields[PF_DENSITY].Get(), particleFields[PF_OMEGA].Get(),
+			  particleFields[PF_SCRATCH].Get(), cellPrefixSumBuffer.Get(), cellCountBuffer.Get() },
+			vector<ID3D12Resource*>{ sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
+			  sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
+			  sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
+			  sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get() });
 	}
 
 	void LoadParticles() {
@@ -482,30 +469,30 @@ protected:
 		UINT numGroups = (numParticles + 255) / 256;
 
 		// prediction: apply gravity, compute p* = x + v*dt
-		predictShader.dispatch_then_barrier(commandList.Get(), numGroups);
+		predictShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
 		// simulation box and zero wall-normal velocity before building the grid.
-		collisionShader.dispatch_then_barrier(commandList.Get(), numGroups);
+		collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// build the spatial grid from predicted positions, then sort particles into grid order
 		UINT numCellGroups = (numCells + 255) / 256;
 
 		// step 1: zero the cell counts
-		clearGridShader.dispatch_then_barrier(commandList.Get(), numCellGroups);
+		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
 
 		// step 2: count particles per cell (each particle does InterlockedAdd on its cell)
-		countGridShader.dispatch_then_barrier(commandList.Get(), numGroups);
+		countGridShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// step 3: exclusive prefix sum of cellCount -> cellPrefixSum
 		// tells us where each cell's particle run starts in the sorted buffer
-		prefixSumShader.dispatch_then_barrier(commandList.Get(), 1);
+		prefixSumShader->dispatch_then_barrier(commandList.Get(), 1);
 
 		// step 4: zero cell counts again so sortCS can use them as per-cell atomic counters
-		clearGridShader.dispatch_then_barrier(commandList.Get(), numCellGroups);
+		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
 
 		// step 5: each particle scatters all its field data into sorted order
-		sortShader.dispatch_then_barrier(commandList.Get(), numGroups);
+		sortShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// step 6: copy sorted data back into the main particle field buffers
 		{
@@ -540,18 +527,18 @@ protected:
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
-			lambdaShader.dispatch_then_barrier(commandList.Get(), numGroups);              // compute lambda and density
-			deltaShader.dispatch_then_barrier(commandList.Get(), numGroups);               // delta_p -> scratch
-			positionFromScratchShader.dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> predictedPosition
-			collisionShader.dispatch_then_barrier(commandList.Get(), numGroups);           // clamp to box
+			lambdaShader->dispatch_then_barrier(commandList.Get(), numGroups);              // compute lambda and density
+			deltaShader->dispatch_then_barrier(commandList.Get(), numGroups);               // delta_p -> scratch
+			positionFromScratchShader->dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> predictedPosition
+			collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);           // clamp to box
 		}
 
-		updateVelocityShader.dispatch_then_barrier(commandList.Get(), numGroups);    // v = (p* - x) / dt
-		vorticityShader.dispatch_then_barrier(commandList.Get(), numGroups);         // estimate curl(v) -> omega
-		confinementShader.dispatch_then_barrier(commandList.Get(), numGroups);       // vorticity confinement -> velocity
-		viscosityShader.dispatch_then_barrier(commandList.Get(), numGroups);         // XSPH viscosity -> scratch
-		velocityFromScratchShader.dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> velocity
-		updatePositionShader.dispatch_then_barrier(commandList.Get(), numGroups);    // position = predictedPosition
+		updateVelocityShader->dispatch_then_barrier(commandList.Get(), numGroups);    // v = (p* - x) / dt
+		vorticityShader->dispatch_then_barrier(commandList.Get(), numGroups);         // estimate curl(v) -> omega
+		confinementShader->dispatch_then_barrier(commandList.Get(), numGroups);       // vorticity confinement -> velocity
+		viscosityShader->dispatch_then_barrier(commandList.Get(), numGroups);         // XSPH viscosity -> scratch
+		velocityFromScratchShader->dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> velocity
+		updatePositionShader->dispatch_then_barrier(commandList.Get(), numGroups);    // position = predictedPosition
 
 		// Copy density data to readback buffer for CPU access next frame
 		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
