@@ -779,12 +779,14 @@ protected:
 	void CalculateAvgDensity() {
 		// map the readback buffer to CPU memory and copy the density data into a vector
 		const UINT64 bufferSize = numParticles * sizeof(float);
-		void* pData;
+		void* pData; // ptr will be set by Map to point at the readback buffer's CPU visible memory
 		CD3DX12_RANGE readRange(0, bufferSize);
-		if (SUCCEEDED(densityReadbackBuffer->Map(0, &readRange, &pData))) {
-			memcpy(densityReadbackData.data(), pData, bufferSize);
-			CD3DX12_RANGE writeRange(0, 0);
-			densityReadbackBuffer->Unmap(0, &writeRange);
+		// in the Map call, we map with the range we intend to read
+		if (SUCCEEDED(densityReadbackBuffer->Map(0, &readRange, &pData))) { // prepare pData for reading
+			memcpy(densityReadbackData.data(), pData, bufferSize); // actual data movement call
+			// during the unmap, we unmap while indicating which bytes we dirtied
+			CD3DX12_RANGE writeRange(0, 0); // in this case, we wrote nothing
+			densityReadbackBuffer->Unmap(0, &writeRange); // release mapping: invalidate pData
 		}
 
 		// Compute average density from readback data
@@ -839,17 +841,17 @@ protected:
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 		// position SRV (slot 1, t0): read-only view for the vertex shader
-		D3D12_SHADER_RESOURCE_VIEW_DESC posSrvDesc = {};
-		posSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-		posSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-		posSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-		posSrvDesc.Buffer.FirstElement = 0;
-		posSrvDesc.Buffer.NumElements = numParticles;
-		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3);
-		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-		CD3DX12_CPU_DESCRIPTOR_HANDLE posSrvHandle(
+		D3D12_SHADER_RESOURCE_VIEW_DESC posSrvDesc = {}; // zero out the struct to start with default values, then fill in the rest
+		posSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // structured buffers use unknown format
+		posSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; // this is a view of a buffer, not a texture, so we use the BUFFER option
+		posSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; // required for buffer views
+		posSrvDesc.Buffer.FirstElement = 0; // start of the buffer
+		posSrvDesc.Buffer.NumElements = numParticles; // how many elements (particles) are in the buffer
+		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3); // how big is each element (particle) in bytes
+		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; // no special options, just a plain structured buffer view
+		CD3DX12_CPU_DESCRIPTOR_HANDLE posSrvHandle( // calculate the CPU handle for the SRV descriptor: start of heap + slot index * descriptor size
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, descriptorSize);
-		device->CreateShaderResourceView(particleFields[PF_POSITION].Get(), &posSrvDesc, posSrvHandle);
+		device->CreateShaderResourceView(particleFields[PF_POSITION].Get(), &posSrvDesc, posSrvHandle); // create the SRV using the description we just filled out
 
 		// density SRV (slot 2, t1): read-only view for the vertex shader
 		D3D12_SHADER_RESOURCE_VIEW_DESC denSrvDesc = {};
