@@ -50,12 +50,16 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    int3 cell = posToCell(predictedPosition[i]);
-    uint ci = cellIndex(cell);
+    int3 cell = posToCell(predictedPosition[i]); // 3D cell grid position of the float position
+    uint ci = cellIndex(cell); // 1D index of the cell this particle belongs to
 
-    uint slot;
-    InterlockedAdd(cellCount[ci], 1, slot);
+    // this shader uses cellCount as a running index for a given cell
+    // slot is the index that this particle is going to take in the cell
+    uint slot; 
+    InterlockedAdd(cellCount[ci], 1, slot); // our slot = index before the increment (so first is 0)
 
+    // cellPrefixSum[ci] is basically the offset of the cell we're in, to which we add
+    // the current running index (slot) to find where this particle's data shall get inserted
     uint dest = cellPrefixSum[ci] + slot;
     sortedPosition[dest] = position[i];
     sortedVelocity[dest] = velocity[i];

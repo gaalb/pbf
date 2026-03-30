@@ -31,6 +31,38 @@ using namespace Egg::Math;
 // for Run() to work, the only thing we need to do is correctly override Update, which updates
 // the inner state of the class, and PopulateCommandList which fills the command list with the
 // commands to actually draw the next frame.
+//
+// Initialization flow:
+// In order to initialize the app, main.cpp must first initialize the swap chain, creating
+// the window handle, command queue, d3d12 device and swap chain objects. Then main.cpp 
+// can initialize the pbf App by calling the following methods (which in turn call the
+// methods indented under them)
+// SetDevice
+// SetCommandQueue
+// SetSwapChain
+// CreateResources
+//   createBuffers
+//     CreateParticleBuffers
+//     CreateUploadBuffers
+//     CreateGridBuffers
+//     CreateSortBuffers
+//     CreateDensityReadbackBuffer
+//   CreateImGuiDescriptorHeap
+//   CreateDescriptorHeap
+//   createDescriptors
+//     CreateParticleSrvs
+//     CreateParticleUavs
+//     CreateGridUavs
+//     CreateSortUavs
+// CreateSwapChainResources
+// LoadAssets
+//   LoadBackground
+//     UploadBackground
+//   LoadParticles
+//     GenerateParticles
+//     UploadParticles
+//   LoadCompute
+// InitImGui
 class PbfApp : public Egg::SimpleApp {
 protected:
 	// Fixed particle and grid constants.
@@ -259,7 +291,6 @@ protected:
 		WaitForPreviousFrame(); // sync before moving on
 	}
 
-	
 
 	void LoadCompute() {
 		// Descriptor heaps are just flat arrays of descriptors in GPU memory, and to index into them we need
@@ -276,10 +307,10 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, descriptorSize); // slot 12 = start of sorted field UAVs (u9..u15)
 
 		D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
+
+		// aliases for a tiny bit of verbosity
 		using std::vector;
 		using TableBinding = ComputeShader::TableBinding;
-
-		// --- particle-only category: CBV(b0), DescriptorTable(UAV(u0..u6)) ---
 
 		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle} },
@@ -311,8 +342,6 @@ protected:
 			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
 			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get() });
 
-		// --- grid-only category: CBV(b0), DescriptorTable(UAV(u7..u8)) ---
-
 		clearGridShader = ComputeShader::Create(device.Get(), "Shaders/clearGridCS.cso", cbv,
 			vector<TableBinding>{ {1, gridHandle} },
 			vector<ID3D12Resource*>{},
@@ -323,11 +352,9 @@ protected:
 			vector<ID3D12Resource*>{ cellCountBuffer.Get() },
 			vector<ID3D12Resource*>{ cellPrefixSumBuffer.Get() });
 
-		// --- particle + grid category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)) ---
-
 		countGridShader = ComputeShader::Create(device.Get(), "Shaders/countGridCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
-			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(), cellCountBuffer.Get() },
 			vector<ID3D12Resource*>{ cellCountBuffer.Get() });
 
 		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
@@ -354,8 +381,6 @@ protected:
 			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle} },
 			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(), cellCountBuffer.Get(), cellPrefixSumBuffer.Get() },
 			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() });
-
-		// --- all-three category: CBV(b0), DescriptorTable(UAV(u0..u6)), DescriptorTable(UAV(u7..u8)), DescriptorTable(UAV(u9..u15)) ---
 
 		sortShader = ComputeShader::Create(device.Get(), "Shaders/sortCS.cso", cbv,
 			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle}, {3, sortedFieldsHandle} },
@@ -464,39 +489,41 @@ protected:
 			commandList->Close();
 	}
 
-	void ComputePass() {
+	void SortParticles() {
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
-
-		// prediction: apply gravity, compute p* = x + v*dt
-		predictShader->dispatch_then_barrier(commandList.Get(), numGroups);
-
-		// pre-stabilization (Koster & Kruger 2016): clamp predicted positions to the
-		// simulation box and zero wall-normal velocity before building the grid.
-		collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);
-
-		// build the spatial grid from predicted positions, then sort particles into grid order
+		// ceil(numCells / 256) groups cover all cells; the shader discards extra threads
 		UINT numCellGroups = (numCells + 255) / 256;
 
-		// step 1: zero the cell counts
+		// zero the cell count
 		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
 
-		// step 2: count particles per cell (each particle does InterlockedAdd on its cell)
+		// count particles per cell (each particle does InterlockedAdd on its cell)
+		// after this call, the ith element in cellCount indicates how many particles
+		// are in that cell
 		countGridShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
-		// step 3: exclusive prefix sum of cellCount -> cellPrefixSum
-		// tells us where each cell's particle run starts in the sorted buffer
+		// exclusive prefix sum of cellCount -> cellPrefixSum
+		// tells us where each cell's particle run starts in the sorted buffer,
+		// meaning that after this call, the ith element in cellPrefixSum tells
+		// us where the ith cell's range begins in the particle buffer
 		prefixSumShader->dispatch_then_barrier(commandList.Get(), 1);
 
-		// step 4: zero cell counts again so sortCS can use them as per-cell atomic counters
+		// zero cell counts again so sortCS can use them as per-cell atomic counters
 		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
 
-		// step 5: each particle scatters all its field data into sorted order
+		// this is the step that actually arranges particles belonging to the same cell 
+		// contiguously, for each particle:
+		// -find which cell it's in
+		// -the start (offset) of that cell's data is found in prefixSum 
+		// -the index within that cell is tracked using cellCount
 		sortShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
-		// step 6: copy sorted data back into the main particle field buffers
+		// copy sorted data back into the main particle field buffers
 		{
-			D3D12_RESOURCE_BARRIER barriers[PF_COUNT * 2];
+			// one barrier for each buffer both sorted and unsorted
+			// sorted fields become copy source, unsorted fields become copy destination
+			D3D12_RESOURCE_BARRIER barriers[PF_COUNT * 2]; 
 			for (UINT f = 0; f < PF_COUNT; f++) {
 				barriers[f * 2] = CD3DX12_RESOURCE_BARRIER::Transition(
 					sortedFields[f].Get(),
@@ -505,12 +532,14 @@ protected:
 					particleFields[f].Get(),
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
 			}
-			commandList->ResourceBarrier(PF_COUNT * 2, barriers);
+			commandList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
 
+			// actual copy calls here
 			for (UINT f = 0; f < PF_COUNT; f++)
 				commandList->CopyBufferRegion(particleFields[f].Get(), 0,
 					sortedFields[f].Get(), 0, (UINT64)numParticles * fieldStrides[f]);
 
+			// copy is done, transition back to the "default" state, which is UAV, for the next pass
 			for (UINT f = 0; f < PF_COUNT; f++) {
 				barriers[f * 2] = CD3DX12_RESOURCE_BARRIER::Transition(
 					sortedFields[f].Get(),
@@ -519,8 +548,23 @@ protected:
 					particleFields[f].Get(),
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			}
-			commandList->ResourceBarrier(PF_COUNT * 2, barriers);
+			commandList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
 		}
+	}
+
+	void ComputePass() {
+		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
+		UINT numGroups = (numParticles + 255) / 256;
+		
+
+		// prediction: apply external forces such as gravity, compute p* = x + v*dt
+		predictShader->dispatch_then_barrier(commandList.Get(), numGroups);
+
+		// pre-stabilization: clamp predicted positions to the
+		// simulation box and zero wall-normal velocity before building the grid.
+		collisionShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		
+		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
 		// constraint solver loop
 		// particles are now in grid-sorted order, and cellCount + cellPrefixSum describe
@@ -974,6 +1018,21 @@ protected:
 			device->CreateDescriptorHeap(&imguiHeapDesc, IID_PPV_ARGS(imguiSrvHeap.GetAddressOf()));
 	}
 
+	void createBuffers() {
+		CreateParticleBuffers();
+		CreateUploadBuffers();
+		CreateGridBuffers();
+		CreateSortBuffers();
+		CreateDensityReadbackBuffer();
+	}
+
+	void createDescriptors() {
+		CreateParticleSrvs();
+		CreateParticleUavs();
+		CreateGridUavs();
+		CreateSortUavs();
+	}
+
 public:
 
 	virtual void CreateResources() override {
@@ -984,27 +1043,10 @@ public:
 		camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f)); // start further back to see the full box
 		camera->SetSpeed(10.0f); // movement speed of the camera
 
+		createBuffers();
 		CreateImGuiDescriptorHeap();
-
 		CreateDescriptorHeap();
-
-		CreateParticleBuffers();
-
-		CreateUploadBuffers();
-
-		CreateGridBuffers();
-
-		CreateParticleSrvs();
-
-		CreateParticleUavs();
-
-		CreateGridUavs();
-
-		CreateSortBuffers();
-
-		CreateSortUavs();
-
-		CreateDensityReadbackBuffer();
+		createDescriptors();	
 	}
 
 	virtual void LoadAssets() override {

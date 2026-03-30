@@ -1,7 +1,7 @@
 // First of two grid-build passes. Each particle computes which cell it belongs to
 // (from its predictedPosition) and atomically increments that cell's count.
 //
-// In: predictedPosition (maybe also cellCount?)
+// In: predictedPosition, cellCount
 // Out: cellCount
 
 #define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"

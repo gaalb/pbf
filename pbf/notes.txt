@@ -128,7 +128,7 @@ currently the neighboring particle lookup x spatial sort looks like so:
 	 It can actually be completely removed, and we can use a shader that calculates the next free slot in
 	 the cell using a counter (for example repurposing cellCount after the prefix has been calculated),
 	 claiming it with an interlocked add, and writing the particle's data directly to the sorted buffer.
-TODO: Write a similar summary about the outcome.
+TODO: Write a similar summary about the new sort
 ---------------------------------------------------------------------------------------
 IMPROVEMENTS:
 -fix D3D12 WARNING: ID3D12Device::CreateCommittedResource: Ignoring InitialState D3D12_RESOURCE_STATE_UNORDERED_ACCESS. Buffers are effectively created in state D3D12_RESOURCE_STATE_COMMON. [ STATE_CREATION WARNING #1328: CREATERESOURCE_STATE_IGNORED]

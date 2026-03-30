@@ -26,7 +26,7 @@ public:
 
     // Descriptor table bindings applied before every dispatch.
     struct TableBinding {
-        UINT rootParam;                     // root parameter index in this shader's root signature
+        UINT rootParam; // root parameter index in this shader's root signature
         D3D12_GPU_DESCRIPTOR_HANDLE handle; // GPU handle to the descriptor table start
     };
     std::vector<TableBinding> tableBindings;
@@ -41,13 +41,15 @@ public:
         std::vector<ID3D12Resource*> ins,
         std::vector<ID3D12Resource*> outs)
         : cbvAddress(cbv)
-        , tableBindings(std::move(tbs))
-        , inputs(std::move(ins))
-        , outputs(std::move(outs))
+        , tableBindings(std::move(tbs)) // move: avoid copy
+        , inputs(std::move(ins)) // move: avoid copy
+        , outputs(std::move(outs)) // move: avoid copy
     {
+        // extract roog signature
         com_ptr<ID3DBlob> shader = Egg::Shader::LoadCso(csoPath);
         rootSig = Egg::Shader::LoadRootSignature(device, shader.Get());
 
+        // create the pipeline state object using the root signature and shader bytecode
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.pRootSignature = rootSig.Get();
         psoDesc.CS = CD3DX12_SHADER_BYTECODE(shader.Get());

@@ -18,11 +18,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;
 
-    int dim = gridDim();
-    uint totalCells = dim * dim * dim;
+    int dim = gridDim(); // how many cells there are along each axis
+    uint totalCells = dim * dim * dim; // grid is cubic
 
     if (i >= totalCells)
-        return;
+        return; // discard threads that don't belong to cells
 
     cellCount[i] = 0;
 }

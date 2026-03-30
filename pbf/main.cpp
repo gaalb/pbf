@@ -200,7 +200,8 @@ void InitSwapChain(
 std::unique_ptr<PbfApp> InitPbfApp(
     com_ptr<ID3D12Device> device,
     com_ptr<ID3D12CommandQueue> commandQueue,
-    com_ptr<IDXGISwapChain3> swapChain) {
+    com_ptr<IDXGISwapChain3> swapChain,
+    HWND windowHandle) {
 	auto pbfApp = std::make_unique<PbfApp>();
 
     // set attributes
@@ -212,6 +213,9 @@ std::unique_ptr<PbfApp> InitPbfApp(
     pbfApp->CreateResources(); // creates fence, command allocator, command list
     pbfApp->CreateSwapChainResources(); // creates render target views and depth buffer
     pbfApp->LoadAssets();  // we'll load shaders and geometry here later
+
+    pbfApp->InitImGui(windowHandle); // initialize Dear ImGui for the parameter tuning UI
+
     return pbfApp;
 }
 
@@ -254,9 +258,7 @@ int APIENTRY wWinMain(
     com_ptr<IDXGISwapChain3> swapChain; // we'll store the created swap chain here
 	InitSwapChain(swapChain, dxgiFactory, commandQueue, windowHandle);
 
-    app = InitPbfApp(device, commandQueue, swapChain); // create our application instance, which will manage the rendering loop and resources
-
-    app->InitImGui(windowHandle); // initialize Dear ImGui for the parameter tuning UI
+    app = InitPbfApp(device, commandQueue, swapChain, windowHandle); // create our application instance, which will manage the rendering loop and resources
 
     // Disable ALT+Enter fullscreen shortcut
     DX_API("Failed to make window association")
