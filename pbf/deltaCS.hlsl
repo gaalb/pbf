@@ -45,19 +45,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float3 deltaP = float3(0, 0, 0);
 
-    int3 myCell = posToCell(pi);
-    int dim = gridDim();
-    for (int dz = -1; dz <= 1; dz++)
-    for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++)
+    NeighborCells nCells = NeighborCellIndices(pi);
+    for (uint c = 0; c < nCells.count; c++)
     {
-        int3 nc = myCell + int3(dx, dy, dz);
-        if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
-            continue;
-
-        uint ci = cellIndex(nc);
+        uint ci = nCells.indices[c];
         uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)

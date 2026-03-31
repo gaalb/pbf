@@ -42,19 +42,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // The grid was built from predictedPositions, but this pass uses old positions.
     // See vorticityCS for the justification of this approximation.
-    int3 myCell = posToCell(pi);
-    int dim = gridDim();
-    for (int dz = -1; dz <= 1; dz++) // loop over neighboring cells in z
-    for (int dy = -1; dy <= 1; dy++) // loop over neighboring cells in y
-    for (int dx = -1; dx <= 1; dx++) // loop over neighboring cells in x
+    NeighborCells nCells = NeighborCellIndices(pi);
+    for (uint c = 0; c < nCells.count; c++)
     {
-        int3 nc = myCell + int3(dx, dy, dz); // neighbor cell
-        if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
-            continue; // skip out-of-bounds cells (can happen at the edges of the simulation box)
-
-        uint ci = cellIndex(nc);
+        uint ci = nCells.indices[c];
         uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)

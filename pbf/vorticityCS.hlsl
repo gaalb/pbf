@@ -37,19 +37,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // The grid was built from predictedPositions, but this pass uses old positions.
     // The displacement between old and predicted is small relative to h, so the
     // grid is still a valid acceleration structure for finding neighbors here.
-    int3 myCell = posToCell(pi);
-    int dim = gridDim();
-    for (int dz = -1; dz <= 1; dz++)
-    for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++)
+    NeighborCells nCells = NeighborCellIndices(pi);
+    for (uint c = 0; c < nCells.count; c++)
     {
-        int3 nc = myCell + int3(dx, dy, dz);
-        if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
-            continue;
-
-        uint ci = cellIndex(nc);
+        uint ci = nCells.indices[c];
         uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)

@@ -50,22 +50,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 gradI = float3(0,0,0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
     float gradSqSum = 0.0; // accumulates sum_k(|grad_pk(C_i)|^2) for the k=j case
 
-    // Iterate over the 27 neighboring cells (own cell +/- 1 along each axis).
-    // Since cell size = h (the kernel support radius), all particles within
-    // distance h are guaranteed to be in one of these cells.
-    int3 myCell = posToCell(pi);
-    int dim = gridDim();
-    for (int dz = -1; dz <= 1; dz++)
-    for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++)
+    // Iterate over neighboring cells using the precomputed cell index list.
+    NeighborCells nCells = NeighborCellIndices(pi);
+    for (uint c = 0; c < nCells.count; c++)
     {
-        int3 nc = myCell + int3(dx, dy, dz);
-        if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
-            continue;
-
-        uint ci = cellIndex(nc);
+        uint ci = nCells.indices[c];
         uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)

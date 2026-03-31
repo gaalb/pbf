@@ -119,4 +119,31 @@ uint cellIndex(int3 cell)
 
 #endif // USE_MORTON_CODES
 
+struct NeighborCells {
+    uint indices[27];
+    uint count;
+};
+
+// Given a world-space position, returns the flat cell indices of all valid
+// (in-bounds) neighboring cells.
+NeighborCells NeighborCellIndices(float3 pos)
+{
+    NeighborCells result;
+    result.count = 0;
+    int3 myCell = posToCell(pos);
+    int dim = gridDim();
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        int3 nc = myCell + int3(dx, dy, dz);
+        if (nc.x < 0 || nc.x >= dim ||
+            nc.y < 0 || nc.y >= dim ||
+            nc.z < 0 || nc.z >= dim)
+            continue;
+        result.indices[result.count++] = cellIndex(nc);
+    }
+    return result;
+}
+
 #endif // GRID_UTILS_HLSLI

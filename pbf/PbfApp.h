@@ -101,7 +101,7 @@ protected:
 	float epsilon = 5.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
 	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
-	float sCorrK = 0.05f; // artificial pressure magnitude coefficient M&M: 0.1
+	float sCorrK = 0.02f; // artificial pressure magnitude coefficient M&M: 0.1
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
 	float adhesion = 0.05f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
@@ -692,7 +692,7 @@ protected:
 		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
 		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
 		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
-		ImGui::InputFloat("Artificial pressure [0.05]", &sCorrK, 0.005f, 0.05f, "%.4f");
+		ImGui::InputFloat("Artificial pressure [0.02]", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
