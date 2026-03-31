@@ -1,26 +1,35 @@
-// Applies velocity-level wall response. Because updateVelocityCS later 
-// overwrites velocity with (p* - position) / dt, any velocity edits made 
+// Applies velocity-level collision response. Because updateVelocityCS later
+// overwrites velocity with (p* - position) / dt, any velocity edits made
 // after the position prediction (using the external forces) is
 // lost. By running here (after applyForcesCS, before predictPositionCS) the
 // corrected velocity is baked into p* and survives.
 //
-// Two effects are applied when a particle is headed into a wall:
+// Two effects are applied when a particle is headed into a wall or solid:
 //
-// Normal zeroing: zero the velocity component pointing into the wall,
+// Normal zeroing: zero the velocity component pointing into the surface,
 // preventing the particle from accelerating further into it.
 //
-// Adhesion (tangential damping): reduce velocity components parallel to
-// the wall surface slightly to mimic the adhesion/friction.
+// Adhesion (tangential damping): reduce the remaining velocity slightly to
+// mimic wall friction / surface tension.
 //
-// Wall contact is detected by checking the current (committed) position against
-// the box boundaries.
-
+// Box wall contact is detected from the current (committed) position.
+// Solid SDF contact is detected when the SDF value at the position is < 0.
+//
 // In:  position, velocity  (force-applied by applyForcesCS)
 // Out: velocity
 
-#define CollisionVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7))"
+#define CollisionVelocityRootSig \
+    "CBV(b0), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 7)), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
+    "StaticSampler(s0, " \
+        "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
+        "addressU = TEXTURE_ADDRESS_CLAMP, " \
+        "addressV = TEXTURE_ADDRESS_CLAMP, " \
+        "addressW = TEXTURE_ADDRESS_CLAMP)"
 
 #include "ComputeCb.hlsli"
+#include "SolidSdf.hlsli"
 
 RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
@@ -36,15 +45,30 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 pos = position[i];
     float3 v   = velocity[i];
 
-    // Detect wall contact from the current (committed) position.
-    // Positions are always clamped to [boxMin, boxMax] by collisionPositionCS,
-    // so equality with a boundary means the particle is at that wall.
-    if (pos.x <= boxMin.x) { v.x = max(v.x, 0.0); v.y *= (1.0 - adhesion); v.z *= (1.0 - adhesion); }
-    if (pos.x >= boxMax.x) { v.x = min(v.x, 0.0); v.y *= (1.0 - adhesion); v.z *= (1.0 - adhesion); }
-    if (pos.y <= boxMin.y) { v.y = max(v.y, 0.0); v.x *= (1.0 - adhesion); v.z *= (1.0 - adhesion); }
-    if (pos.y >= boxMax.y) { v.y = min(v.y, 0.0); v.x *= (1.0 - adhesion); v.z *= (1.0 - adhesion); }
-    if (pos.z <= boxMin.z) { v.z = max(v.z, 0.0); v.x *= (1.0 - adhesion); v.y *= (1.0 - adhesion); }
-    if (pos.z >= boxMax.z) { v.z = min(v.z, 0.0); v.x *= (1.0 - adhesion); v.y *= (1.0 - adhesion); }
+    // box wall response
+    if (pos.x <= boxMin.x) { v.x = max(v.x, 0.0f); v.y *= (1.0f - adhesion); v.z *= (1.0f - adhesion); }
+    if (pos.x >= boxMax.x) { v.x = min(v.x, 0.0f); v.y *= (1.0f - adhesion); v.z *= (1.0f - adhesion); }
+    if (pos.y <= boxMin.y) { v.y = max(v.y, 0.0f); v.x *= (1.0f - adhesion); v.z *= (1.0f - adhesion); }
+    if (pos.y >= boxMax.y) { v.y = min(v.y, 0.0f); v.x *= (1.0f - adhesion); v.z *= (1.0f - adhesion); }
+    if (pos.z <= boxMin.z) { v.z = max(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
+    if (pos.z >= boxMax.z) { v.z = min(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
+
+    // solid SDF response
+    // The committed position should be clear of the solid (corrected last frame by
+    // collisionPredictedPositionCS). We check d < pushRadius to handle the first frame,
+    // a newly moved solid, and numerical slip.
+    float d = SampleSdf(pos);
+    if (d < pushRadius) {
+        float3 normal = normalize(SdfGradient(pos)); // outward surface normal in world space
+        float vn = dot(v, normal);
+        if (vn < 0.0f) { // particle heading into the solid
+            // zero the inward component: normal points in the push direction,
+            // vn is negative, so vn*normal points towards the middle of the object,
+            // which means it must be substracted from v, which also points inward
+            v -= vn * normal; 
+            v *= (1.0f - adhesion); // damp the remaining (tangential) velocity
+        }
+    }
 
     velocity[i] = v;
 }

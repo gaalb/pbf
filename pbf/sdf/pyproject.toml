@@ -1,0 +1,11 @@
+[project]
+name = "sdf"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "trimesh",
+    "numpy",
+    "Pillow",
+    "rtree",
+    "scipy"
+]

@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
+#include "SolidObstacle.h"
 
 using namespace Egg::Math;
 
@@ -61,13 +62,14 @@ using namespace Egg::Math;
 //   LoadParticles
 //     GenerateParticles
 //     UploadParticles
+//   LoadSolid
 //   LoadCompute
 // InitImGui
 class PbfApp : public Egg::SimpleApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 50, particlesY = 100, particlesZ = 50; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int particlesX = 75, particlesY = 45, particlesZ = 75; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 6, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -76,6 +78,7 @@ protected:
 	// lets us define the box as exactly gridDim * h on each axis, giving a perfectly aligned 
 	// cubic grid with a dense Morton code space.
 	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
+	const float particleRadius = particleSpacing * 0.4f;
 	const float hMultiplier = 3.25f; // h = particleSpacing * hMultiplier
 	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
@@ -157,6 +160,12 @@ protected:
 	ComputeShader::P viscosityShader;  // XSPH velocity smoothing, writes to scratch
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
+	// Solid obstacle: owns the renderable mesh and the SDF volume texture
+	SolidObstacle::P solidObstacle;
+	CD3DX12_GPU_DESCRIPTOR_HANDLE sdfHandle; // GPU handle for descriptor heap slot 19: SDF Texture3D SRV
+	Float3 solidPosition = Float3(0.0f, -8.0f, 0.0f); // world-space translation, driven by ImGui
+	Float3 solidEulerDeg = Float3(30.0f, 30.0f, 30.0f); // XYZ Euler rotation in degrees, driven by ImGui
+	float  solidScale = 10.0f; // uniform scale, driven by ImGui
 	
 
 	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
@@ -167,7 +176,6 @@ protected:
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
-
 
 	void LoadBackground() {
 		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube :
@@ -321,7 +329,7 @@ protected:
 			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
 		collisionVelocityShader = ComputeShader::Create(device.Get(), "Shaders/collisionVelocityCS.cso", cbv,
-			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, sdfHandle} },
 			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get() },
 			vector<ID3D12Resource*>{ particleFields[PF_VELOCITY].Get() });
 
@@ -331,7 +339,7 @@ protected:
 			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() });
 
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
-			vector<TableBinding>{ {1, particleFieldsHandle} },
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, sdfHandle} },
 			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() },
 			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get() });
 
@@ -405,6 +413,50 @@ protected:
 			  sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
 			  sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
 			  sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get() });
+	}
+
+	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
+	void SetSolidTransform() {
+		const float deg2rad = 3.14159265358979323846f / 180.0f;
+		float rx = solidEulerDeg.x * deg2rad;
+		float ry = solidEulerDeg.y * deg2rad;
+		float rz = solidEulerDeg.z * deg2rad;
+		Float4x4 rot =
+			Float4x4::Rotation(Float3(1.0f, 0.0f, 0.0f), rx) *
+			Float4x4::Rotation(Float3(0.0f, 1.0f, 0.0f), ry) *
+			Float4x4::Rotation(Float3(0.0f, 0.0f, 1.0f), rz);
+		solidObstacle->SetTransform(Float4x4::Scaling(Float3(solidScale, solidScale, solidScale)) * rot * Float4x4::Translation(solidPosition));
+	}
+
+	// Load the solid obstacle mesh and SDF, upload the SDF texture to the GPU,
+	// create the SDF SRV at descriptor heap slot 19, and initialise the transform.
+	void LoadSolid() {
+		solidObstacle = SolidObstacle::Create();
+		solidObstacle->Load(device.Get(), psoManager, "cube.obj", "cube.sdf", perFrameCb);
+		//solidObstacle->Load(device.Get(), psoManager, "giraffe.obj", "giraffe.sdf", perFrameCb);
+
+		// Upload SDF texture (same pattern as UploadBackground)
+		DX_API("Failed to reset command allocator (LoadSolid)")
+			commandAllocator->Reset();
+		DX_API("Failed to reset command list (LoadSolid)")
+			commandList->Reset(commandAllocator.Get(), nullptr);
+		solidObstacle->UploadSdf(commandList.Get());
+		DX_API("Failed to close command list (LoadSolid)")
+			commandList->Close();
+		ID3D12CommandList* commandLists[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+		WaitForPreviousFrame();
+		solidObstacle->ReleaseUploadResources();
+
+		// Create the SDF SRV at slot 19 of the shared descriptor heap
+		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
+
+		// GPU handle for slot 19; LoadCompute() will pass it to the collision shaders
+		UINT descSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		sdfHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, descSize);
+
+		SetSolidTransform();
 	}
 
 	void LoadParticles() {
@@ -617,6 +669,7 @@ protected:
 
 	void GraphicsPass() {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
+		solidObstacle->Draw(commandList.Get());  // draw solid with depth test before particles
 
 		// The particle field buffers' home state is UNORDERED_ACCESS, because that's what the compute
 		// shaders need. The vertex shader reads position and density as SRVs, which requires the
@@ -702,6 +755,13 @@ protected:
 		ImGui::Text("%d particles, %u cells, rho0 = %.2f", numParticles, gridDim*gridDim*gridDim, rho0);
 		ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
+		ImGui::Separator();
+		ImGui::Text("Solid obstacle");
+		ImGui::PushItemWidth(200);
+		ImGui::DragFloat3("Position",       &solidPosition.x, 0.1f);
+		ImGui::DragFloat3("Rotation (deg)", &solidEulerDeg.x, 1.0f);
+		ImGui::DragFloat ("Scale",          &solidScale,       0.1f, 0.1f, 100.0f);			
+		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		ImGui::End();
 
 		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
@@ -759,8 +819,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, 0.4f * particleSpacing); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
-
+		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, particleRadius); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
 
@@ -780,6 +839,12 @@ protected:
 		computeCb->externalForce = externalForce;
 		computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
 		computeCb->adhesion = adhesion;
+		computeCb->pushRadius = particleRadius; // TODO: FIX, this is visually too big but not sure why
+		computeCb->solidInvTransform = solidObstacle->GetInvTransform();
+		Float3 smin = solidObstacle->GetSdfMin();
+		Float3 smax = solidObstacle->GetSdfMax();
+		computeCb->sdfMin = Float4(smin, 0.0f);
+		computeCb->sdfMax = Float4(smax, 0.0f);
 		computeCb.Upload();
 	}
 
@@ -793,6 +858,7 @@ protected:
 
 		UpdateComputeCb(dt);
 
+		SetSolidTransform();
 
 		// Read back previous frame's particle data (GPU is done after WaitForPreviousFrame)
 		if (physicsRunning) { CalculateAvgDensity(); }
@@ -1021,10 +1087,11 @@ protected:
 		//   slot 10:    cellCount UAV (u7)          — per-cell particle count for the spatial grid
 		//   slot 11:    cellPrefixSum UAV (u8)      — exclusive prefix sum for sort offsets and neighbor lookups
 		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
+		//   slot 19:    SDF Texture3D SRV (t0) — sampled by the solid-obstacle collision compute shaders
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 19;
+		dhd.NumDescriptors = 20;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -1076,6 +1143,7 @@ public:
 	virtual void LoadAssets() override {
 		LoadBackground();
 		LoadParticles();
+		LoadSolid(); // must come before LoadCompute so sdfHandle is valid
 		LoadCompute();
 	}
 

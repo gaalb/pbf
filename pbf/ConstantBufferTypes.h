@@ -14,6 +14,11 @@ __declspec(align(16)) struct PerFrameCb {
 	Float4 particleParams; // xyz are color, w is radius
 };
 
+// per-draw data for the solid obstacle rendering shader
+__declspec(align(16)) struct SolidCb {
+	Float4x4 modelMat; // object-to-world transform for solidVS
+};
+
 // per-simulation-step data uploaded to all PBF compute shaders before each dispatch
 // must be 16-byte aligned, hence the not-so-didactic ordering under here, that avoids padding
 __declspec(align(16)) struct ComputeCb {
@@ -32,4 +37,10 @@ __declspec(align(16)) struct ComputeCb {
 	Float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
 	UINT fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 	float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
+	float pushRadius; // offset 84 (4 bytes): SDF push-out target distance (particleSpacing * pushRadiusMult, set on CPU)
+	float _pad[2]; // offsets 88, 92: padding to align solidInvTransform to 16-byte boundary
+	Float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform; updated each frame
+	Float4 sdfMin; // offset 160 (16 bytes): object-space SDF AABB min (xyz = min corner, w unused)
+	Float4 sdfMax; // offset 176 (16 bytes): object-space SDF AABB max (xyz = max corner, w unused)
+	// total: 192 bytes
 };

@@ -22,6 +22,15 @@
     <Filter Include="Shaders\Include">
       <UniqueIdentifier>{cf41e256-e587-4377-ae31-a60d993b5f0a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Vertex">
+      <UniqueIdentifier>{f68d55e0-0768-4ba3-8fee-0d6ba07cb59f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Pixel">
+      <UniqueIdentifier>{276c448d-3b15-46d9-968b-33ba28bc187b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Geometry">
+      <UniqueIdentifier>{a2e37ae3-76d8-400f-80f4-8fdb854e1f46}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -59,23 +68,11 @@
     <ClInclude Include="ComputeShader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="SolidObstacle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="particleVS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="bgVS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="bgPS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="particleGS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="particlePS.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
     <FxCompile Include="clearGridCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -127,6 +124,27 @@
     <FxCompile Include="predictPositionCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
+    <FxCompile Include="particleGS.hlsl">
+      <Filter>Shaders\Geometry</Filter>
+    </FxCompile>
+    <FxCompile Include="particlePS.hlsl">
+      <Filter>Shaders\Pixel</Filter>
+    </FxCompile>
+    <FxCompile Include="bgPS.hlsl">
+      <Filter>Shaders\Pixel</Filter>
+    </FxCompile>
+    <FxCompile Include="bgVS.hlsl">
+      <Filter>Shaders\Vertex</Filter>
+    </FxCompile>
+    <FxCompile Include="particleVS.hlsl">
+      <Filter>Shaders\Vertex</Filter>
+    </FxCompile>
+    <FxCompile Include="solidVS.hlsl">
+      <Filter>Shaders\Vertex</Filter>
+    </FxCompile>
+    <FxCompile Include="solidPS.hlsl">
+      <Filter>Shaders\Pixel</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">
@@ -136,6 +154,9 @@
       <Filter>Shaders\Include</Filter>
     </None>
     <None Include="ComputeCb.hlsli">
+      <Filter>Shaders\Include</Filter>
+    </None>
+    <None Include="SolidSdf.hlsli">
       <Filter>Shaders\Include</Filter>
     </None>
   </ItemGroup>

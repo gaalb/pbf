@@ -3,3 +3,7 @@ Build/
 /Bin/
 Slides/\~\$*.pptx
 .claude
+pbf/sdf/venv/
+pbf/sdf/build/
+pbf/sdf/.idea/
+pbf/sdf/sdf.egg-info/
