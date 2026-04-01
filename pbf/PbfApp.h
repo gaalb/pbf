@@ -34,36 +34,30 @@ using namespace Egg::Math;
 // commands to actually draw the next frame.
 //
 // Initialization flow:
-// In order to initialize the app, main.cpp must first initialize the swap chain, creating
-// the window handle, command queue, d3d12 device and swap chain objects. Then main.cpp 
-// can initialize the pbf App by calling the following methods (which in turn call the
-// methods indented under them)
-// SetDevice
-// SetCommandQueue
-// SetSwapChain
-// CreateResources
-//   createBuffers
-//     CreateParticleBuffers
-//     CreateUploadBuffers
-//     CreateGridBuffers
-//     CreateSortBuffers
-//     CreateDensityReadbackBuffer
-//   CreateImGuiDescriptorHeap
-//   CreateDescriptorHeap
-//   createDescriptors
-//     CreateParticleSrvs
-//     CreateParticleUavs
-//     CreateGridUavs
-//     CreateSortUavs
+// main.cpp first creates the window handle, command queue, d3d12 device and swap chain,
+// then initializes the pbf App by calling (which in turn call the methods indented under them):
+//
+// SetDevice / SetCommandQueue / SetSwapChain
+// CreateResources                     -- allocate ALL GPU memory and ALL descriptors
+//   SimpleApp::CreateResources        -- cmdAllocator, cmdList, psoManager, fence
+//   constant buffers + camera
+//   CreateParticleBuffers             -- 7 default-heap UAV buffers
+//   CreateUploadBuffers               -- 2 upload-heap staging buffers (position, velocity)
+//   CreateGridBuffers                 -- cellCount + cellPrefixSum
+//   CreateSortBuffers                 -- 7 sorted field buffers
+//   CreateDensityReadbackBuffer       -- readback buffer
+//   CreateTextureResources            -- envTexture + SolidObstacle (mesh, SDF allocation)
+//   CreateImGuiDescriptorHeap         -- 1-slot SRV heap for ImGui font
+//   CreateDescriptorHeap              -- 20-slot main descriptor heap
+//   CreateAllDescriptors              -- ALL 20 descriptor slots filled here
+//     slot 0: cubemap SRV, slots 1-2: particle SRVs, slots 3-9: particle UAVs,
+//     slots 10-11: grid UAVs, slots 12-18: sort UAVs, slot 19: SDF SRV
+//   CacheDescriptorHandles            -- GPU handles for compute shader binding
 // CreateSwapChainResources
-// LoadAssets
-//   LoadBackground
-//     UploadBackground
-//   LoadParticles
-//     GenerateParticles
-//     UploadParticles
-//   LoadSolid
-//   LoadCompute
+// LoadAssets                          -- upload data to GPU and build pipelines
+//   UploadAll                         -- single batched command list: cubemap + particles + SDF
+//   BuildGraphicsPipelines            -- background mesh, particle mesh, solid transform
+//   BuildComputePipelines             -- all compute shader PSOs
 // InitImGui
 class PbfApp : public Egg::SimpleApp {
 protected:
@@ -139,7 +133,7 @@ protected:
 	
 	// One ComputeShader per pass. Each holds its own PSO, root signature, descriptor
 	// table bindings, and input/output resource lists for UAV barrier insertion.
-	// GPU descriptor handles for the three UAV table ranges, computed once in LoadCompute.
+	// GPU descriptor handles for the descriptor table ranges, computed once in CacheDescriptorHandles.
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
@@ -163,9 +157,9 @@ protected:
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
 	SolidObstacle::P solidObstacle;
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sdfHandle; // GPU handle for descriptor heap slot 19: SDF Texture3D SRV
-	Float3 solidPosition = Float3(-2.0f, -8.0f, -2.0f); // world-space translation, driven by ImGui
-	Float3 solidEulerDeg = Float3(30.0f, 30.0f, 30.0f); // XYZ Euler rotation in degrees, driven by ImGui
-	float  solidScale = 10.0f; // uniform scale, driven by ImGui
+	Float3 solidPosition = Float3(0.0f, -13.0f, 0.0f); // world-space translation, driven by ImGui
+	Float3 solidEulerDeg = Float3(0.0f, 30.0f, 0.0f); // XYZ Euler rotation in degrees, driven by ImGui
+	float  solidScale = 1.5f; // uniform scale, driven by ImGui
 	
 
 	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
@@ -177,20 +171,25 @@ protected:
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
-	void LoadBackground() {
-		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube :
+	// Allocate GPU resources for the cubemap texture and the solid obstacle (mesh + SDF).
+	// No GPU commands are recorded here; uploads happen later in UploadAll().
+	void CreateTextureResources() {
+		// ImportTextureCube reads the dds file, and creates the two GPU resources for the texture cube:
 		// 1. the default heap resource, which has 6 array slices for the cube map faces and is GPU-local (fast)
 		// 2. the upload heap resource, which the CPU can write to, and is used for staging
 		// the texture data is also copied to the upload heap by this function call, but not yet transferred to
-		// the default heap until we call UploadBackground(), as this step requires the command queue
+		// the default heap until we call UploadAll(), as this step requires the command queue
 		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
-		// create a Shader Resource View so the pixel shader can sample the cubemap
-		// note that this is different from the SRV *heap* that we created earlier, this SRV fills one slot
-		// in the SRV heap, specifically, slot (index) 0
-		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), 0);
-		// transfer texture data from upload heap to GPU-local memory
-		UploadBackground();
 
+		// Create the solid obstacle: loads mesh geometry, shaders, material, constant buffer,
+		// reads the SDF file and allocates the SDF Texture3D + upload buffer. No GPU commands.
+		solidObstacle = SolidObstacle::Create();
+		solidObstacle->Load(device.Get(), psoManager, "dragonite.obj", "dragonite.sdf", perFrameCb);
+	}
+
+	// Build the background skybox rendering pipeline (shaders, material, mesh).
+	// Called after all resources and descriptors are ready.
+	void BuildBackgroundPipeline() {
 		// loadCso reads the pre-compiled .cso binary into a blob
 		com_ptr<ID3DBlob> bgVertexShader = Egg::Shader::LoadCso("Shaders/bgVS.cso"); // vertex shader
 		com_ptr<ID3DBlob> bgPixelShader = Egg::Shader::LoadCso("Shaders/bgPS.cso"); // pixel shader
@@ -241,48 +240,45 @@ protected:
 		return data;
 	}
 
-	void UploadParticles(const ParticleInitData& initData) {
+	// Map the upload buffers and copy initial particle data (positions + velocities) from CPU memory.
+	// This is a CPU-side operation; the actual GPU transfer is recorded by RecordParticleUpload().
+	void FillUploadBuffers(const ParticleInitData& initData) {
 		void* posData; // will point to the mapped CPU memory of the upload buffer
 		CD3DX12_RANGE readRange(0, 0); // empty range: CPU won't read anything from this buffer
 		// make the upload buffer's memory CPU accessible, i.e. positionUploadBuffer - posData association
-		// 0 is subresource index, on success, posData points to the buffer 
-		DX_API("Failed to map position upload buffer") 
+		// 0 is subresource index, on success, posData points to the buffer
+		DX_API("Failed to map position upload buffer")
 			positionUploadBuffer->Map(0, &readRange, &posData);
 		memcpy(posData, initData.positions.data(), initData.positions.size() * sizeof(Float3)); // actual copy call
 		positionUploadBuffer->Unmap(0, nullptr); // release the CPU mapping -> posData is invalidated
-			
+
 		// same flow as above
 		void* velData;
 		DX_API("Failed to map velocity upload buffer")
 			velocityUploadBuffer->Map(0, &readRange, &velData);
 		memcpy(velData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
 		velocityUploadBuffer->Unmap(0, nullptr);
+	}
 
-		// The particle data now lives in the Upload buffer, we must
-		// copy it to the default heap. This is done by executing commands on the
-		// command list, which requires us to reset it, as well as its associated allocator (the backing memory).
-		DX_API("Failed to reset command allocator (UploadParticles)")
-			commandAllocator->Reset();
-		DX_API("Failed to reset command list (UploadParticles)")
-			commandList->Reset(commandAllocator.Get(), nullptr);
-
+	// Record copy commands for particle data into the already-open command list.
+	// The command list must have been Reset() before calling this.
+	void RecordParticleUpload() {
 		// In order to copy to them, we must transition position and velocity buffers to COPY_DEST
 		// That's done by inserting transition type resource barriers to the command list.
-		// Here we initialize the barriers.
 		D3D12_RESOURCE_BARRIER toCopyDest[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_VELOCITY].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
 		};
-		commandList->ResourceBarrier(2, toCopyDest); // then insert them
-		// then insert the copy commands to the command list: dst, offset, src, offset
+		commandList->ResourceBarrier(2, toCopyDest);
+		// copy commands: dst, offset, src, offset
 		commandList->CopyBufferRegion(particleFields[PF_POSITION].Get(), 0,
 			positionUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
 		commandList->CopyBufferRegion(particleFields[PF_VELOCITY].Get(), 0,
 			velocityUploadBuffer.Get(), 0, numParticles * sizeof(Float3));
 
-		// then transition back to UAV by, again initializing then inserting the proper barriers
+		// transition back to UAV
 		D3D12_RESOURCE_BARRIER toUav[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
@@ -290,33 +286,12 @@ protected:
 				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 		};
 		commandList->ResourceBarrier(2, toUav);
-
-		DX_API("Failed to close command list (UploadParticles)")
-			commandList->Close();
-
-		// then we make the command queue execute the command list, or rather, an array of command lists,
-		// which is only 1 command list in our case
-		ID3D12CommandList* commandLists[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
-
-		WaitForPreviousFrame(); // sync before moving on
 	}
 
 
-	void LoadCompute() {
-		// Descriptor heaps are just flat arrays of descriptors in GPU memory, and to index into them we need
-		// to know the byte stride betweeen consecutive entries, which is hardware dependent
-		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-		// GPU descriptor handles for the three UAV table ranges; stored as members so ComputePass
-		// can reach them after LoadCompute returns.
-		particleFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, descriptorSize);  // slot 3  = start of particle field UAVs (u0..u6)
-		gridHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 10, descriptorSize); // slot 10 = start of grid UAVs (u7..u8)
-		sortedFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, descriptorSize); // slot 12 = start of sorted field UAVs (u9..u15)
-
+	// Create all 16 compute shader PSOs and their descriptor table bindings.
+	// Requires CacheDescriptorHandles() to have been called first.
+	void BuildComputePipelines() {
 		D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
 
 		// aliases for a tiny bit of verbosity
@@ -428,41 +403,9 @@ protected:
 		solidObstacle->SetTransform(Float4x4::Scaling(Float3(solidScale, solidScale, solidScale)) * rot * Float4x4::Translation(solidPosition));
 	}
 
-	// Load the solid obstacle mesh and SDF, upload the SDF texture to the GPU,
-	// create the SDF SRV at descriptor heap slot 19, and initialise the transform.
-	void LoadSolid() {
-		solidObstacle = SolidObstacle::Create();
-		solidObstacle->Load(device.Get(), psoManager, "cube.obj", "cube.sdf", perFrameCb);
-		//solidObstacle->Load(device.Get(), psoManager, "giraffe.obj", "giraffe.sdf", perFrameCb);
-
-		// Upload SDF texture (same pattern as UploadBackground)
-		DX_API("Failed to reset command allocator (LoadSolid)")
-			commandAllocator->Reset();
-		DX_API("Failed to reset command list (LoadSolid)")
-			commandList->Reset(commandAllocator.Get(), nullptr);
-		solidObstacle->UploadSdf(commandList.Get());
-		DX_API("Failed to close command list (LoadSolid)")
-			commandList->Close();
-		ID3D12CommandList* commandLists[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
-		WaitForPreviousFrame();
-		solidObstacle->ReleaseUploadResources();
-
-		// Create the SDF SRV at slot 19 of the shared descriptor heap
-		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
-
-		// GPU handle for slot 19; LoadCompute() will pass it to the collision shaders
-		UINT descSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		sdfHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, descSize);
-
-		SetSolidTransform();
-	}
-
-	void LoadParticles() {
-		ParticleInitData initData = GenerateParticles(); // generate initial particle positions and zero velocities
-		UploadParticles(initData); // copy particle data from CPU to the GPU default heap buffers
-
+	// Build the particle rendering pipeline (shaders, material, mesh).
+	// Called after all resources and descriptors are ready.
+	void BuildParticlePipeline() {
 		// loadCso reads the pre-compiled .cso binary into a blob
 		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
 		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
@@ -698,34 +641,6 @@ protected:
 		commandList->ResourceBarrier(2, toUav);
 	}
 
-	// uploads textures from CPU to GPU. Must be called after importing textures.
-	// similar to a render call: resets command list, records copy commands, executes, waits.
-	void UploadBackground() {
-		// free the memory used by the previous frame's commands, must be done after GPU finished executing those commands
-		DX_API("Failed to reset command allocator (UploadBackground)")
-			commandAllocator->Reset();
-
-		// reset command list to start recording copy commands, no initial pipeline state needed for copy commands
-		DX_API("Failed to reset command list (UploadBackground)")
-			commandList->Reset(commandAllocator.Get(), nullptr);
-
-		// record the copy commands that transfer texture data from upload heap to default heap
-		envTexture.UploadResource(commandList.Get());
-
-		DX_API("Failed to close command list (UploadBackground)")
-			commandList->Close();
-
-		// execute the copy commands
-		ID3D12CommandList* commandLists[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
-
-		// wait for the GPU to finish copying before we release the upload buffers
-		WaitForPreviousFrame();
-
-		// the upload heap copies are done - we can free the temporary upload resources
-		envTexture.ReleaseUploadResources();
-	}
-
 	void ImGuiPass() {
 		// begin a new ImGui frame, which gives us a clean slate to construct the UI for this frame
 		ImGui_ImplDX12_NewFrame(); // tell ImGui about the new frame for DX12
@@ -760,7 +675,7 @@ protected:
 		ImGui::PushItemWidth(200);
 		ImGui::DragFloat3("Position",       &solidPosition.x, 0.1f);
 		ImGui::DragFloat3("Rotation (deg)", &solidEulerDeg.x, 1.0f);
-		ImGui::DragFloat ("Scale",          &solidScale,       0.1f, 0.1f, 100.0f);			
+		ImGui::DragFloat ("Scale",          &solidScale,       0.01f, 0.01f, 100.0f);			
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		ImGui::End();
 
@@ -1109,42 +1024,102 @@ protected:
 			device->CreateDescriptorHeap(&imguiHeapDesc, IID_PPV_ARGS(imguiSrvHeap.GetAddressOf()));
 	}
 
-	void createBuffers() {
-		CreateParticleBuffers();
-		CreateUploadBuffers();
-		CreateGridBuffers();
-		CreateSortBuffers();
-		CreateDensityReadbackBuffer();
+	// Fill slots of the main descriptor heap. Every SRV and UAV is created here,
+	// so the heap layout is visible in one place.
+	void CreateAllDescriptors() {
+		// slot 0: cubemap SRV (t0) -- sampled by the background pixel shader
+		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), 0);
+		// slots 1-2: particle position + density SRVs -- read by the particle vertex shader
+		CreateParticleSrvs();
+		// slots 3-9: particle field UAVs (u0..u6) -- compute shader read/write
+		CreateParticleUavs();
+		// slots 10-11: grid UAVs (u7..u8) -- per-cell particle count and prefix sum
+		CreateGridUavs();
+		// slots 12-18: sorted field UAVs (u9..u15) -- scatter targets for spatial sorting
+		CreateSortUavs();
+		// slot 19: SDF Texture3D SRV (t0) -- sampled by solid-obstacle collision compute shaders
+		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
 	}
 
-	void createDescriptors() {
-		CreateParticleSrvs();
-		CreateParticleUavs();
-		CreateGridUavs();
-		CreateSortUavs();
+	// Compute GPU descriptor handles for the descriptor table ranges used by compute shaders.
+	// These are byte offsets into the descriptor heap, stored as members so ComputePass can use them.
+	void CacheDescriptorHandles() {
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		particleFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, sz);   // slot 3  = particle field UAVs (u0..u6)
+		gridHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 10, sz);  // slot 10 = grid UAVs (u7..u8)
+		sortedFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, sz);  // slot 12 = sorted field UAVs (u9..u15)
+		sdfHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, sz);  // slot 19 = SDF Texture3D SRV
+	}
+
+	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
+	// All three operate on independent resources so there are no state conflicts.
+	void UploadAll() {
+		ParticleInitData initData = GenerateParticles();
+		FillUploadBuffers(initData);
+
+		DX_API("Failed to reset command allocator (UploadAll)")
+			commandAllocator->Reset();
+		DX_API("Failed to reset command list (UploadAll)")
+			commandList->Reset(commandAllocator.Get(), nullptr);
+
+		envTexture.UploadResource(commandList.Get()); // record cubemap copy + barrier
+		RecordParticleUpload(); // record particle copy + barriers
+		solidObstacle->UploadSdf(commandList.Get()); // record SDF texture copy + barrier
+
+		DX_API("Failed to close command list (UploadAll)")
+			commandList->Close();
+		ID3D12CommandList* cls[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(cls), cls);
+		WaitForPreviousFrame();
+
+		// the upload heap copies are done - free the temporary upload resources
+		envTexture.ReleaseUploadResources();
+		solidObstacle->ReleaseUploadResources();
+	}
+
+	// Build all graphics rendering pipelines (background, particles, solid obstacle transform).
+	void BuildGraphicsPipelines() {
+		BuildBackgroundPipeline();
+		BuildParticlePipeline();
+		SetSolidTransform();
 	}
 
 public:
 
+	// Allocate all GPU memory and descriptors.
+	// After this returns, every ID3D12Resource and every descriptor heap slot exists,
+	// but texture/buffer contents have not been uploaded yet.
 	virtual void CreateResources() override {
 		Egg::SimpleApp::CreateResources(); // creates command allocator, command list, PSO manager, and sync objects (fence)
+
 		perFrameCb.CreateResources(device.Get()); // create the constant buffer on the GPU (upload heap, so CPU can write to it every frame)
 		computeCb.CreateResources(device.Get()); // create the compute constant buffer (upload heap: dt and numParticles written each frame)
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
 		camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f)); // start further back to see the full box
 		camera->SetSpeed(10.0f); // movement speed of the camera
 
-		createBuffers();
+		CreateParticleBuffers();
+		CreateUploadBuffers();
+		CreateGridBuffers();
+		CreateSortBuffers();
+		CreateDensityReadbackBuffer();
+		CreateTextureResources();
+
 		CreateImGuiDescriptorHeap();
 		CreateDescriptorHeap();
-		createDescriptors();	
+		CreateAllDescriptors();
+		CacheDescriptorHandles();
 	}
 
+	// Phase 2: upload initial data to the GPU and build rendering/compute pipelines.
 	virtual void LoadAssets() override {
-		LoadBackground();
-		LoadParticles();
-		LoadSolid(); // must come before LoadCompute so sdfHandle is valid
-		LoadCompute();
+		UploadAll();
+		BuildGraphicsPipelines();
+		BuildComputePipelines();
 	}
 
 	// When the window is resized, update the camera's aspect ratio

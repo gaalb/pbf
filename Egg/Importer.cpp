@@ -163,8 +163,14 @@ namespace Egg {
 				v.normal.y = mesh->mNormals[i].y;
 				v.normal.z = mesh->mNormals[i].z;
 
-				v.tex.x = mesh->mTextureCoords[0][i].x;
-				v.tex.y = mesh->mTextureCoords[0][i].y;
+				if (mesh->mTextureCoords[0]) {
+					v.tex.x = mesh->mTextureCoords[0][i].x;
+					v.tex.y = mesh->mTextureCoords[0][i].y;
+				}
+				else {
+					v.tex.x = 0.0f;
+					v.tex.y = 0.0f;
+				}
 
 				vertices.emplace_back(v);
 			}
@@ -216,8 +222,14 @@ namespace Egg {
 				v.normal.y = mesh->mNormals[i].y;
 				v.normal.z = mesh->mNormals[i].z;
 
-				v.tex.x = mesh->mTextureCoords[0][i].x;
-				v.tex.y = mesh->mTextureCoords[0][i].y;
+				if (mesh->mTextureCoords[0]) {
+					v.tex.x = mesh->mTextureCoords[0][i].x;
+					v.tex.y = mesh->mTextureCoords[0][i].y;
+				}
+				else {
+					v.tex.x = 0.0f;
+					v.tex.y = 0.0f;
+				}				
 
 				v.tangent.x = mesh->mTangents[i].x;
 				v.tangent.y = mesh->mTangents[i].y;

@@ -5,7 +5,7 @@ Loads a mesh, samples a regular 3D grid of signed distances in the mesh's
 own coordinate space, and saves a compact binary .sdf file for the PBF runtime.
 
 Setup (run once, inside this folder's venv):
-    pip install trimesh numpy
+    pip install .
 
 Usage:
     python generate_sdf.py <mesh_path> <output.sdf> [--res N] [--padding F]
@@ -34,7 +34,6 @@ Notes:
 
 import argparse
 import struct
-import sys
 import numpy as np
 import trimesh
 import trimesh.proximity
@@ -56,8 +55,6 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
     print(f"  Vertices : {len(mesh.vertices):,}")
     print(f"  Faces    : {len(mesh.faces):,}")
     print(f"  Watertight: {mesh.is_watertight}")
-    if not mesh.is_watertight:
-        print("  WARNING: mesh is not watertight — sign determination may be inaccurate near holes.")
 
     bounds_min = mesh.bounds[0].astype(np.float64)
     bounds_max = mesh.bounds[1].astype(np.float64)
@@ -69,7 +66,7 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
     padding = np.maximum(extent * padding_factor, 1e-4)
     sdf_min = (bounds_min - padding).astype(np.float32)
     sdf_max = (bounds_max + padding).astype(np.float32)
-    print(f"  SDF region: {sdf_min}  to  {sdf_max}")
+    print(f"  SDF region after padding: {sdf_min}  to  {sdf_max}")
 
     N = resolution
     # Sample at texel center positions, not at the sdfMin/sdfMax endpoints.
@@ -112,7 +109,7 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
     sign      = np.where(inside, -1.0, 1.0)[:, np.newaxis]        # +1 outside, -1 inside
     gradient  = (sign * direction / np.maximum(norm, 1e-8)).astype(np.float32)  # shape (N³, 3)
 
-    # Interleave into float4 per voxel: (d, gx, gy, gz), z-major (x varies fastest)
+    # Pack into float4 per voxel: (d, gx, gy, gz), z-major (x varies fastest)
     data = np.stack([sdf_values, gradient[:, 0], gradient[:, 1], gradient[:, 2]], axis=1)
     # data shape: (N³, 4) — C-order write gives the correct z-major interleaved layout
 
