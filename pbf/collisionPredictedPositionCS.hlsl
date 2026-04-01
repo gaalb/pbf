@@ -38,12 +38,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 p = predictedPosition[i];
 
     // Solid push-out: move p along the outward SDF gradient until it is pushRadius world units
-    // from the surface. SampleSdf returns object-space distance, so multiply by solidScale to
-    // convert to world space before comparing and computing the displacement.
-    float dWorld = SampleSdf(p) * SolidScale();
-    if (dWorld < pushRadius) {
+    // from the surface.
+    float d = SampleSdf(p);
+    if (d < pushRadius) {
         float3 grad = SdfGradient(p);
-        p += (pushRadius - dWorld) * normalize(grad);
+        p += (pushRadius - d) * normalize(grad);
     }
     
     // clamp to bounding box

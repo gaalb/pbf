@@ -31,11 +31,11 @@ float SampleSdf(float3 worldPos)
     // convert the local space into [0,1]^3 for UVW sampling
     float3 uvw    = (objPos.xyz - sdfMin) / (sdfMax - sdfMin);
     if (any(uvw < 0.0f) || any(uvw > 1.0f)) return 1e4f; // outside SDF region: no solid here
-    return sdf.SampleLevel(sdfSampler, uvw, 0).r; // .r = distance channel; negative if inside object
+    float d = sdf.SampleLevel(sdfSampler, uvw, 0).r; // .r = distance channel; negative if inside object
+    return d * SolidScale(); // d was in model space units, convert to world space units
 }
 
-// Gradient of the SDF in world space (unnormalized result from numeric path; normalised from precomputed).
-// The result points outward (away from the solid surface, toward increasing SDF values).
+// Gradient of the SDF in world space: points outward (away from the solid surface, toward increasing SDF values).
 float3 SdfGradient(float3 worldPos)
 {
 #ifdef USE_PRECOMPUTED_GRADIENTS
@@ -48,11 +48,12 @@ float3 SdfGradient(float3 worldPos)
     return normalize(mul(grad, (float3x3)solidInvTransform));
 #else
     const float eps = 0.01f;
-    return float3(
+    float3 grad = float3(
         SampleSdf(worldPos + float3(eps, 0, 0)) - SampleSdf(worldPos - float3(eps, 0, 0)),
         SampleSdf(worldPos + float3(0, eps, 0)) - SampleSdf(worldPos - float3(0, eps, 0)),
         SampleSdf(worldPos + float3(0, 0, eps)) - SampleSdf(worldPos - float3(0, 0, eps))
     ) * (0.5f / eps);
+    return normalize(grad);
 #endif
 }
 

@@ -1,8 +1,5 @@
 // Pixel shader for solid obstacle rendering.
 // Simple Blinn-Phong shading with a flat grey material colour.
-//
-// In:  WORLDPOS, NORMAL (interpolated from VS)
-// Out: SV_Target (RGBA colour)
 
 #define SolidRootSig \
     "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
@@ -14,11 +11,11 @@ cbuffer SolidCb : register(b0) {
 }
 
 cbuffer PerFrameCb : register(b1) {
-    float4x4 viewProjTransform; // unused in PS
-    float4x4 rayDirTransform;   // unused in PS
+    float4x4 viewProjTransform;
+    float4x4 rayDirTransform; 
     float4 cameraPos;
     float4 lightDir;
-    float4 particleParams; // unused in PS
+    float4 particleParams; 
 }
 
 struct PSInput {

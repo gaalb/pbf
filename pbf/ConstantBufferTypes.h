@@ -4,6 +4,13 @@
 
 using namespace Egg::Math;
 
+// note on __declspec(align(16)): HLSL constant buffers are read by the GPU in 16-byte chunks ("rows"),
+// every field in a cbuffer must fit neatly withing these rows, i.e. an element must not straddle
+// a 16-byte boundary. This means two things:
+// 1: the struct must be placed in a memory address that's a multiple of 16: this is what declspec does
+// 2: the struct' fields must not pass a 16-byte boundary: assured by paddings
+
+
 // per-frame data sent to shaders every frame - camera matrices etc.
 // must be 16-byte aligned because the GPU reads constant buffers in 16byte chunks
 __declspec(align(16)) struct PerFrameCb {
