@@ -10,6 +10,17 @@ not the case, the particles penetrate further, seemingly up to a whole particle'
 To get the particles to stop clipping, I must manually make the pushDistance larger than
 the particleRadius. This may be an issue with the obj->sdf generation,
 or with how we handle the sdf on the c++ side, or how the shaders handle it, I don't know yet.
+
+Fix: Half-texel offset in the SDF generator. generate_sdf.py used
+np.linspace(sdfMin, sdfMax, N), which places data at fractions k/(N-1). But GPU texture
+hardware places texel k's center at UV (k+0.5)/N. The two grids don't align: each texel's
+data corresponds to a slightly different position than where the sampler thinks it is. Near
+the mesh surface this made SampleSdf() return ~+0.008 in object space instead of 0, which
+after multiplying by solidScale (10) gave a world-space error of ~0.08 — almost exactly
+particleRadius (0.1). The collision push-out (pushRadius - dWorld) was therefore short by
+that amount, so particles clipped nearly a full radius into the solid.
+Fixed by sampling at texel-center positions: linspace from sdfMin+halfVoxel to
+sdfMax-halfVoxel.
 ---------------------------------------------------------------------------------------
 Issue: FPS degradation over time. 
 Checked memory and GPU usaage like so:

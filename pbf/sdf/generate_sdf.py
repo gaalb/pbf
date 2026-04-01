@@ -72,9 +72,17 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
     print(f"  SDF region: {sdf_min}  to  {sdf_max}")
 
     N = resolution
-    xs = np.linspace(float(sdf_min[0]), float(sdf_max[0]), N)
-    ys = np.linspace(float(sdf_min[1]), float(sdf_max[1]), N)
-    zs = np.linspace(float(sdf_min[2]), float(sdf_max[2]), N)
+    # Sample at texel center positions, not at the sdfMin/sdfMax endpoints.
+    # A Texture3D with N texels along an axis places texel k's center at UV
+    # (k + 0.5) / N.  The shader maps position P to UV = (P - sdfMin) / (sdfMax - sdfMin),
+    # so texel k's center corresponds to position sdfMin + (k + 0.5)/N * (sdfMax - sdfMin).
+    # Using np.linspace(sdfMin, sdfMax, N) would place data at k/(N-1) fractions instead,
+    # creating a half-texel offset that shifts sampled distances by ~0.5 voxels — enough
+    # to cause visible collision penetration at typical grid resolutions.
+    half_voxel = 0.5 * (sdf_max - sdf_min) / N
+    xs = np.linspace(float(sdf_min[0] + half_voxel[0]), float(sdf_max[0] - half_voxel[0]), N)
+    ys = np.linspace(float(sdf_min[1] + half_voxel[1]), float(sdf_max[1] - half_voxel[1]), N)
+    zs = np.linspace(float(sdf_min[2] + half_voxel[2]), float(sdf_max[2] - half_voxel[2]), N)
 
     # Build query points in D3D12 Texture3D layout: z outermost, x innermost.
     # After meshgrid with indexing='ij', arrays have shape (nz, ny, nx) so that

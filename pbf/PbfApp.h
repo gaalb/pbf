@@ -839,7 +839,7 @@ protected:
 		computeCb->externalForce = externalForce;
 		computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
 		computeCb->adhesion = adhesion;
-		computeCb->pushRadius = 2.0*particleRadius; // TODO: only looks correct with 2.0 multiplier, but not sure why
+		computeCb->pushRadius = particleRadius; // push the particle out one radius' width to not clip visually
 		computeCb->solidInvTransform = solidObstacle->GetInvTransform();
 		Float3 smin = solidObstacle->GetSdfMin();
 		Float3 smax = solidObstacle->GetSdfMax();
