@@ -2,7 +2,8 @@
 Build/
 /Bin/
 Slides/\~\$*.pptx
-.claude
+.claude/
+pbf/.claude/
 pbf/sdf/venv/
 pbf/sdf/build/
 pbf/sdf/.idea/
