@@ -19,7 +19,7 @@ cbuffer ComputeCb : register(b0)
     uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
     float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
     float pushRadius; // offset 84 (4 bytes): SDF push-out target distance (particleSpacing * pushRadiusMult, set on CPU)
-    float2 _pad; // offsets 88, 92: padding to reach 16-byte alignment boundary before the matrix
+    float2 _pad; // offsets 88, 92: padding to align solidInvTransform to 16-byte boundary
     float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform for SDF sampling
     float3 sdfMin; // offset 160 (12 bytes): object-space SDF AABB min
     float _pad0; // offset 172

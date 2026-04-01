@@ -1,5 +1,16 @@
 ﻿NOTES: NO SOURCE, JUST NOTES FOR ME
 ---------------------------------------------------------------------------------------
+Issue: Particles clip too far into objects. Currently in the collision shaders, we detect
+a particle-solid collision if the distance from the solid is less than a "pushRadius".
+This radius is the minimum distance a particle's center must be from the solid, and is the
+extra distance we push the particle over its center's penetration when we remove the collision.
+If we didn't care about display, we could leave this out - in this case, the particles *should*
+visually clip into the body halfway, as only their center is forbidden to penetrate. This is
+not the case, the particles penetrate further, seemingly up to a whole particle's worth.
+To get the particles to stop clipping, I must manually make the pushDistance larger than
+the particleRadius, to stop this clipping. This may be an issue with the obj->sdf generation,
+or with how we handle the sdf on the c++ side, or how the shaders handle it, I don't know yet.
+---------------------------------------------------------------------------------------
 Issue: FPS degradation over time. 
 Checked memory and GPU usaage like so:
 nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv -l 1
@@ -37,7 +48,6 @@ The cause for this was an asymmetry in the grid: it wasn't centered at the bound
 but started at the bottom left.
 The *boiling* itself is still present though, remains to be fixed: TODO
 ---------------------------------------------------------------------------------------
-
 Resource state validation error after adding the readback buffer
 
 After adding the particle readback buffer (for reading back density data to the CPU), the D3D12
@@ -131,32 +141,21 @@ currently the neighboring particle lookup x spatial sort looks like so:
 TODO: Write a similar summary about the new sort
 ---------------------------------------------------------------------------------------
 IMPROVEMENTS:
--fix D3D12 WARNING: ID3D12Device::CreateCommittedResource: Ignoring InitialState D3D12_RESOURCE_STATE_UNORDERED_ACCESS. Buffers are effectively created in state D3D12_RESOURCE_STATE_COMMON. [ STATE_CREATION WARNING #1328: CREATERESOURCE_STATE_IGNORED]
 -investigate brownian motion
 -morton codes
 	-implemented, but no efficiency gain?
--make the current spatial grid more memory friendly
-	-hand in hand with a proper hash, as well as fixed particle spacing/h
--proper collision checking with things that aren't a bounding box
--a better scene, with some flow, and objects to flow around
 -liquid surface rendering
--more particles, which will mean better optimization
 -merge fields in the particle struct that never live together
 -adaptive pbf article imrovements
--fix particle spacing and h at compile time eventually, and accompanying code changes
 -fixed dt
 -asynchronosus render and compute
--separete the fields in the particle structured buffer, make it separate buffers and adjust barriers
 -better spatial hash, multi level memory article
 -better sorting, eventually radix sort
--think about separating the constant buffers
--clean up PbfApp.h so that methods are easier to contemplate, also add header comments to them (!)
--move the code relating to the sort to a separate method, and detail its usage intuitively there
-	-make it clear that gridCount has two uses now!
--compare the new sorting to the old "cellParticles" solution visually and FPS-wise
--better header comments for shaders, make it input-output style
+-clean up PbfApp.h so that the initialization is cleaner, maybe centralize a bit with comments that
+ explain the initialization flow better. Also possible separate concerns a bit better: who creates what
+ buffer/texture/descripor, etc.
+-add header comments
 -check if the barriers in the compute pass are correct, and maybe move to wait-calculate rather than calculate-wait (!)
 -rather than the current sort copying all particle data, make sort calculate a permuation and then have a separate copy pass (as per the comment in sortCS)
 	-maybe move all this to a separate class? maybe check g-RadixSort for the compute shader class
--make the neighboring particle check cleaner: 1 pass to gather neighbor indices, 1 pass to iterate over them
--make the simulation space and the bounding box distinct: maybe with collision detection 
+-comments in SolidObstacle.h, SolidSdf.hlsli and the sdf python generator script

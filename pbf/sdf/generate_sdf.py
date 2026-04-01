@@ -16,12 +16,13 @@ Usage:
     --padding F - fractional padding around the mesh AABB (default 0.1 = 10%)
 
 Output binary format (.sdf):
-    int32   nx, ny, nz      grid dimensions (all equal to --res)
-    float32 sdfMin[3]       object-space AABB min (x, y, z)
-    float32 sdfMax[3]       object-space AABB max (x, y, z)
-    float32 data[nz*ny*nx]  signed distances, z-major layout
-                            (matches D3D12 Texture3D: x varies fastest)
-                            negative = inside solid, positive = outside
+    int32   nx, ny, nz          grid dimensions (all equal to --res)
+    float32 sdfMin[3]           object-space AABB min (x, y, z)
+    float32 sdfMax[3]           object-space AABB max (x, y, z)
+    float32 data[nz*ny*nx * 4]  interleaved float4 per voxel: (d, gx, gy, gz)
+                                z-major layout (x varies fastest, matches D3D12 Texture3D)
+                                d  : signed distance (negative = inside, positive = outside)
+                                gx,gy,gz : outward unit gradient in object space
 
 Notes:
   - Uses trimesh's BVH-accelerated closest-point query for unsigned distances,
@@ -83,27 +84,38 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
 
     print(f"Computing SDF for {N}^3 = {N**3:,} query points...")
 
-    # Unsigned distances via BVH closest-point query (fast, O(n log n))
-    _, distances, _ = trimesh.proximity.closest_point(mesh, query_points)
+    # Unsigned distances + closest surface points via BVH query (fast, O(n log n))
+    closest_pts, distances, _ = trimesh.proximity.closest_point(mesh, query_points)
 
     # Sign: True = inside the solid = negative SDF value
     inside = mesh.contains(query_points)
 
     sdf_values = np.where(inside, -distances, distances).astype(np.float32)
-    sdf_grid = sdf_values.reshape(N, N, N)  # shape (nz, ny, nx) — D3D12 layout
 
     n_inside = int(inside.sum())
     print(f"  Distance range : [{sdf_values.min():.4f}, {sdf_values.max():.4f}]")
     print(f"  Inside voxels  : {n_inside:,} / {N**3:,}  ({100.0 * n_inside / N**3:.1f}%)")
 
+    # Geometric gradient: vector from closest surface point to query voxel, normalised.
+    # For exterior voxels this already points outward; for interior voxels it points
+    # inward (into the solid), so we flip with the sign of the SDF.
+    direction = query_points - closest_pts                          # shape (N³, 3)
+    norm      = np.linalg.norm(direction, axis=-1, keepdims=True)  # shape (N³, 1)
+    sign      = np.where(inside, -1.0, 1.0)[:, np.newaxis]        # +1 outside, -1 inside
+    gradient  = (sign * direction / np.maximum(norm, 1e-8)).astype(np.float32)  # shape (N³, 3)
+
+    # Interleave into float4 per voxel: (d, gx, gy, gz), z-major (x varies fastest)
+    data = np.stack([sdf_values, gradient[:, 0], gradient[:, 1], gradient[:, 2]], axis=1)
+    # data shape: (N³, 4) — C-order write gives the correct z-major interleaved layout
+
     with open(output_path, 'wb') as f:
         f.write(struct.pack('<iii', N, N, N))
         f.write(struct.pack('<fff', float(sdf_min[0]), float(sdf_min[1]), float(sdf_min[2])))
         f.write(struct.pack('<fff', float(sdf_max[0]), float(sdf_max[1]), float(sdf_max[2])))
-        sdf_grid.tofile(f)
+        data.tofile(f)
 
     header_bytes = 3 * 4 + 3 * 4 + 3 * 4          # 36 bytes
-    data_bytes   = N * N * N * 4
+    data_bytes   = N * N * N * 4 * 4               # 4 floats per voxel
     total_kb     = (header_bytes + data_bytes) / 1024
     print(f"Written {total_kb:.1f} KB  →  {output_path}")
 

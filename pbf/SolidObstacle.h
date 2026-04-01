@@ -60,8 +60,8 @@ GG_CLASS(SolidObstacle)
         sdfObjMax = Float3(rawMax[0], rawMax[1], rawMax[2]);
 
         const size_t voxelCount = (size_t)nx * ny * nz;
-        std::vector<float> sdfData(voxelCount);
-        file.read(reinterpret_cast<char*>(sdfData.data()), voxelCount * sizeof(float));
+        std::vector<float> sdfData(voxelCount * 4); // float4 per voxel: (d, gx, gy, gz)
+        file.read(reinterpret_cast<char*>(sdfData.data()), voxelCount * 4 * sizeof(float));
         if (!file)
             throw std::runtime_error("SolidObstacle: SDF file truncated: " + path);
 
@@ -72,7 +72,7 @@ GG_CLASS(SolidObstacle)
         texDesc.Height = (UINT)ny;
         texDesc.DepthOrArraySize = (UINT16)nz;
         texDesc.MipLevels = 1;
-        texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        texDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; // R=distance, GBA=gradient xyz
         texDesc.SampleDesc.Count  = 1;
         texDesc.SampleDesc.Quality = 0;
         texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -119,9 +119,8 @@ GG_CLASS(SolidObstacle)
                                  + (UINT64)z * slicePitch
                                  + (UINT64)y * rowPitch;
                 const float* src = sdfData.data()
-                                 + (size_t)z * ny * nx
-                                 + (size_t)y * nx;
-                memcpy(dst, src, (size_t)nx * sizeof(float));
+                                 + ((size_t)z * ny * nx + (size_t)y * nx) * 4;
+                memcpy(dst, src, (size_t)nx * 4 * sizeof(float));
             }
         }
         CD3DX12_RANGE writtenAll(0, uploadBufSize);
@@ -224,7 +223,7 @@ public:
             heap->GetCPUDescriptorHandleForHeapStart(), slot, descSize);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format                        = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.Format                        = DXGI_FORMAT_R32G32B32A32_FLOAT;
         srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE3D;
         srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Texture3D.MipLevels           = 1;
