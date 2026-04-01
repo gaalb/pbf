@@ -102,6 +102,7 @@ protected:
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
 	float adhesion = 0.05f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
+	bool capFps = false; // when true: fixed dt=1/30s, sleep to maintain 30fps; when false: uncapped, dt clamped to 1/30s max
 	
 	// non-constant members
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
@@ -664,6 +665,8 @@ protected:
 		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
+		ImGui::SameLine();
+		ImGui::Checkbox("Cap FPS", &capFps);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
@@ -1169,6 +1172,8 @@ public:
 		ImGui_ImplWin32_Shutdown();
 		ImGui::DestroyContext();
 	}
+
+	bool FpsCapped() const { return capFps; }
 
 	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys
 	virtual void ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override {

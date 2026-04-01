@@ -4,6 +4,9 @@
 #include "PbfApp.h"
 #include <imgui.h> // core ImGui functionality
 #include <imgui_impl_win32.h> // ImGui's Win32 backend for handling window messages
+#include <thread>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib") // for timeBeginPeriod / timeEndPeriod
 
 // This is a forward declaration of a function that lives inside imgui_impl_win32.cpp. It's the Win32
 // backend's message handler. We need to call it from our WindowProcess, but the header doesn't declare
@@ -220,6 +223,10 @@ std::unique_ptr<PbfApp> InitPbfApp(
 }
 
 void RunMessageLoop() {
+	using clock = std::chrono::high_resolution_clock; // alias for convenience
+	std::chrono::duration<double> targetPeriod{ 1.0 / 30.0 }; // chrono duration representing the target frame time (1/30th of a second)
+	auto frameStart = clock::now(); // timestamp for the start of the current frame, used for FPS capping
+
     // message loop: Windows communicates with our app by putting messages into a queue
     // keep pulling messages out and dispatching them until we get WM_QUIT -> stop
     MSG winMessage = { 0 };
@@ -230,10 +237,16 @@ void RunMessageLoop() {
             DispatchMessage(&winMessage);   // sends the message to our WindowProcess callback
         }
         else {
-            // No messages waiting - this is where we update and render each frame
+            // No messages waiting - this is where we update and render each frame.
+            // When cap fps is on, sleep the remainder of the 1/30s budget before starting the next frame.
+			if (app->FpsCapped()) { // check if we should cap fps to 30, if yes, then:
+				auto elapsed = clock::now() - frameStart; // calculate how much time has passed since the start of the last frame
+                // if we still have time left to 33ms, sleep for the remaining time to avoid running the next frame too early
+                if (elapsed < targetPeriod) std::this_thread::sleep_for(targetPeriod - elapsed);
+            }
+            frameStart = clock::now();
             app->Run();
         }
-
     }
 }
 
@@ -266,7 +279,9 @@ int APIENTRY wWinMain(
 
     ShowWindow(windowHandle, nShowCmd); // make the window visible - nShowCmd controls if it's normal/minimized/etc.
 
+    timeBeginPeriod(1); // raise Windows timer resolution to 1ms
     RunMessageLoop();
-    
+	timeEndPeriod(1); // restore default timer resolution
+
     return 0;
 }
