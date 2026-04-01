@@ -163,7 +163,7 @@ protected:
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
 	SolidObstacle::P solidObstacle;
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sdfHandle; // GPU handle for descriptor heap slot 19: SDF Texture3D SRV
-	Float3 solidPosition = Float3(0.0f, -8.0f, 0.0f); // world-space translation, driven by ImGui
+	Float3 solidPosition = Float3(-2.0f, -8.0f, -2.0f); // world-space translation, driven by ImGui
 	Float3 solidEulerDeg = Float3(30.0f, 30.0f, 30.0f); // XYZ Euler rotation in degrees, driven by ImGui
 	float  solidScale = 10.0f; // uniform scale, driven by ImGui
 	

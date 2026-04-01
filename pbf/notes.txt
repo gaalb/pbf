@@ -8,7 +8,7 @@ If we didn't care about display, we could leave this out - in this case, the par
 visually clip into the body halfway, as only their center is forbidden to penetrate. This is
 not the case, the particles penetrate further, seemingly up to a whole particle's worth.
 To get the particles to stop clipping, I must manually make the pushDistance larger than
-the particleRadius, to stop this clipping. This may be an issue with the obj->sdf generation,
+the particleRadius. This may be an issue with the obj->sdf generation,
 or with how we handle the sdf on the c++ side, or how the shaders handle it, I don't know yet.
 ---------------------------------------------------------------------------------------
 Issue: FPS degradation over time. 
