@@ -344,7 +344,7 @@ protected:
 
 		clearGridShader = ComputeShader::Create(device.Get(), "Shaders/clearGridCS.cso", cbv,
 			vector<TableBinding>{ {1, gridHandle} },
-			vector<ID3D12Resource*>{},
+			vector<ID3D12Resource*>{ cellCountBuffer.Get() },
 			vector<ID3D12Resource*>{ cellCountBuffer.Get() });
 
 		prefixSumShader = ComputeShader::Create(device.Get(), "Shaders/prefixSumCS.cso", cbv,

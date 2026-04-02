@@ -145,7 +145,7 @@
     <FxCompile Include="solidPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
     </FxCompile>
-    <FxCompile Include="gatherCS.hlsl">
+    <FxCompile Include="permutateCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
   </ItemGroup>
