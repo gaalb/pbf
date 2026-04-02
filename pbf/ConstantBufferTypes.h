@@ -49,5 +49,9 @@ __declspec(align(16)) struct ComputeCb {
 	Float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform; updated each frame
 	Float4 sdfMin; // offset 160 (16 bytes): object-space SDF AABB min (xyz = min corner, w unused)
 	Float4 sdfMax; // offset 176 (16 bytes): object-space SDF AABB max (xyz = max corner, w unused)
-	// total: 192 bytes
+	Float3 gridMin; // offset 192 (12 bytes): fixed simulation area minimum corner (grid origin, world space)
+	float _pad2;   // offset 204 (4 bytes)
+	Float3 gridMax; // offset 208 (12 bytes): fixed simulation area maximum corner (world space)
+	float _pad3;   // offset 220 (4 bytes)
+	// total: 224 bytes
 };

@@ -9,6 +9,8 @@
 // then we zero it and use it as a counter to keep track of the next free slot in the cell)
 // TODO: check if we can achieve an fps improvement by separating these two uses of cellCount,
 // and having a new buffer to use as a "next free cell" buffer for the sort shader
+// see the related note in ComputeShader::barrier_then_dispatch
+//
 
 #define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u7, numDescriptors = 2))"
 

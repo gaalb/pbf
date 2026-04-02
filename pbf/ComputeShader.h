@@ -70,6 +70,29 @@ public:
     // Inserts a UAV barrier on every input resource, then dispatches the shader.
     // Use this pattern (future "wait-calculate" ordering) to ensure prior writes
     // to inputs are complete before this shader reads them.
+    //
+    // Note: using this instead of dispatch_then_barrier is an interesting idea, but
+    // needs further consideration, due to it leading to WAR hazards. Specifically,
+    // we had this: 
+    // 1. countGridShader -> writes cellCount(atomic increment per particle)
+    // 2. prefixSumShader -> reads cellCount, writes cellPrefixSum
+    // 3. clearGridShader -> zeroes cellCount
+    // 4. sortShader      -> reads cellPrefixSum, cellCount, predictedPosition
+    // 
+    // If we used barrier_then_dispatch here, then steps 2 and 3 *think* they
+    // can run concurrently, because prefixSumShader waits for all operations
+    // on cellCount to finish before dispatching, which is good. However, since
+    // clearGridShader doesn't *read* cellCount, it didn't declare it as an input,
+    // and therefore doesn't wait for reads and writes on it to be finished before
+    // dispatching. This makes it possible for clearGridShader to start immediately
+    // after prefixSumShader, and lets them run concurrently, which is incorrect, 
+    // because clearGridShader overwrites cell data taht prefixSumShader hasn't yet
+    // had time to read. So, we must redefine "input" from "data this shader reads"
+    // to "buffer that must be stable before shader is launched". This has already been
+    // done in clearGridShader, cellCount was added as an input, but I haven't yet
+    // thought this through for the other shaders. It's simpler to just use
+    // dispatch_then_barrier, which is free of such issues (I think?)
+    //
     void barrier_then_dispatch(ID3D12GraphicsCommandList* cmd, UINT numGroups)
     {
         for (auto* r : inputs)

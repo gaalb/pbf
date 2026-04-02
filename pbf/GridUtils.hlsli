@@ -25,7 +25,7 @@
 
 //
 // Must be included after the cbuffer declaration, as these functions reference
-// boxMin, boxMax, and h from ComputeCb.
+// gridMin, gridMax, and h from ComputeCb.
 
 #ifndef GRID_UTILS_HLSLI
 #define GRID_UTILS_HLSLI
@@ -35,19 +35,19 @@
 // box size and cell size h. 
 int gridDim()
 {
-    return int((boxMax.x - boxMin.x) / h + 0.5);
+    return int((gridMax.x - gridMin.x) / h + 0.5);
 }
 
 // Maps a world-space position to its 3D grid cell coordinates, i.e. taking the
 // SPH smoothing kernel radius "h" as a "unit", how far away from the grid origin
 // is the given position, measured in h units.
-// The grid origin is boxMin, not the center of the box, so that we only get 
-// unsigned integer numbers that are easily converted to binary for the Morton code.
+// The grid origin is gridMin (the fixed simulation area corner), not boxMin, so that
+// the grid dimensions stay constant regardless of the adjustable bounding box.
 // Clamped to [0, gridDim-1] so particles exactly on the boundary don't index out of bounds.
 int3 posToCell(float3 pos)
 {
     int dim = gridDim();
-    return clamp(int3((pos - boxMin) / h), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
+    return clamp(int3((pos - gridMin) / h), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
 }
 
 

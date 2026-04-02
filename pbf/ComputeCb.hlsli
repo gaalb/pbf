@@ -25,6 +25,10 @@ cbuffer ComputeCb : register(b0)
     float _pad0; // offset 172
     float3 sdfMax; // offset 176 (12 bytes): object-space SDF AABB max
     float _pad1; // offset 188
+    float3 gridMin; // offset 192 (12 bytes): fixed simulation area minimum corner (grid origin)
+    float _pad2; // offset 204
+    float3 gridMax; // offset 208 (12 bytes): fixed simulation area maximum corner
+    float _pad3; // offset 220
 };
 
 #endif

@@ -90,8 +90,10 @@ protected:
 	const UINT gridDim = 32; // cells per axis (must be power of two)
 	const UINT numCells = gridDim * gridDim * gridDim; // total cells in the grid
 	const float boxExtent = gridDim * h; // box side length = 28.0
-	const Float3 boxMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f);
-	const Float3 boxMax = Float3(boxExtent / 2.0f, boxExtent / 2.0f, boxExtent / 2.0f);
+	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
+	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
+	Float3 boxMin = gridMin; // adjustable collision boundary: each component <= 0
+	Float3 boxMax = gridMax; // adjustable collision boundary: each component >= 0
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 4; // how many newton steps to take per frame
@@ -686,8 +688,14 @@ protected:
 		ImGui::PushItemWidth(200);
 		ImGui::DragFloat3("Position",       &solidPosition.x, 0.1f);
 		ImGui::DragFloat3("Rotation (deg)", &solidEulerDeg.x, 1.0f);
-		ImGui::DragFloat ("Scale",          &solidScale,       0.01f, 0.01f, 100.0f);			
+		ImGui::DragFloat ("Scale",          &solidScale,       0.01f, 0.01f, 100.0f);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
+		ImGui::Separator();
+		ImGui::Text("Simulation box");
+		ImGui::PushItemWidth(200);
+		ImGui::DragFloat3("Box min", &boxMin.x, 0.1f, gridMin.x, 0.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::DragFloat3("Box max", &boxMax.x, 0.1f, 0.0f, gridMax.x, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::PopItemWidth();
 		ImGui::End();
 
 		// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
@@ -771,6 +779,8 @@ protected:
 		Float3 smax = solidObstacle->GetSdfMax();
 		computeCb->sdfMin = Float4(smin, 0.0f);
 		computeCb->sdfMax = Float4(smax, 0.0f);
+		computeCb->gridMin = gridMin;
+		computeCb->gridMax = gridMax;
 		computeCb.Upload();
 	}
 
