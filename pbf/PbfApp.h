@@ -62,8 +62,8 @@ using namespace Egg::Math;
 class PbfApp : public Egg::SimpleApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 75, particlesY = 45, particlesZ = 75; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 6, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int particlesX = 80, particlesY = 40, particlesZ = 80; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -92,8 +92,8 @@ protected:
 	const float boxExtent = gridDim * h; // box side length = 28.0
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = gridMin; // adjustable collision boundary: each component <= 0
-	Float3 boxMax = gridMax; // adjustable collision boundary: each component >= 0
+	Float3 boxMin = Float3(-10.0f, gridMin.y, -10.0f); // adjustable collision boundary
+	Float3 boxMax = Float3(10.0f, gridMax.y, 10.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 4; // how many newton steps to take per frame
@@ -165,7 +165,7 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sdfHandle; // GPU handle for descriptor heap slot 19: SDF Texture3D SRV
 	Float3 solidPosition = Float3(0.0f, -13.0f, 0.0f); // world-space translation, driven by ImGui
 	Float3 solidEulerDeg = Float3(0.0f, 30.0f, 0.0f); // XYZ Euler rotation in degrees, driven by ImGui
-	float  solidScale = 1.5f; // uniform scale, driven by ImGui
+	float  solidScale = 2.0f; // uniform scale, driven by ImGui
 	
 
 	// Readback buffer for density (readback heap, CPU-readable after CopyBufferRegion).
