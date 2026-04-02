@@ -131,13 +131,15 @@ protected:
 	com_ptr<ID3D12Resource> sortedFields[PF_COUNT];
 	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
 	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
-	
+	com_ptr<ID3D12Resource> permBuffer; // default heap: uint per particle, maps old index -> sorted index (computed by sortCS, applied by permutateCS)
+
 	// One ComputeShader per pass. Each holds its own PSO, root signature, descriptor
 	// table bindings, and input/output resource lists for UAV barrier insertion.
 	// GPU descriptor handles for the descriptor table ranges, computed once in CacheDescriptorHandles.
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
+	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // UAV(u16): permutation buffer (slot 20)
 	ComputeShader::P applyForcesShader;  // apply gravity and external forces to velocity
 	ComputeShader::P collisionVelocityShader;  // zero wall-directed velocity, apply adhesion
 	ComputeShader::P predictPositionShader; // p* = position + velocity * dt
@@ -145,7 +147,8 @@ protected:
 	ComputeShader::P clearGridShader; // zero cellCount array
 	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
 	ComputeShader::P prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
-	ComputeShader::P sortShader; // each particle writes itself to its sorted position by grid cell
+	ComputeShader::P sortShader; // each particle computes its sorted destination index -> perm[]
+	ComputeShader::P permutateShader; // applies perm[] to scatter all particle fields to sorted positions
 	ComputeShader::P lambdaShader; // compute lambda per particle
 	ComputeShader::P deltaShader; // compute delta_p, write to scratch
 	ComputeShader::P positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
@@ -380,15 +383,21 @@ protected:
 			vector<ID3D12Resource*>{ particleFields[PF_SCRATCH].Get() });
 
 		sortShader = ComputeShader::Create(device.Get(), "Shaders/sortCS.cso", cbv,
-			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle}, {3, sortedFieldsHandle} },
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, gridHandle}, {3, permHandle} },
+			vector<ID3D12Resource*>{ particleFields[PF_PREDICTED_POSITION].Get(),
+			  cellPrefixSumBuffer.Get(), cellCountBuffer.Get() },
+			vector<ID3D12Resource*>{ permBuffer.Get(), cellCountBuffer.Get() });
+
+		permutateShader = ComputeShader::Create(device.Get(), "Shaders/permutateCS.cso", cbv,
+			vector<TableBinding>{ {1, particleFieldsHandle}, {2, sortedFieldsHandle}, {3, permHandle} },
 			vector<ID3D12Resource*>{ particleFields[PF_POSITION].Get(), particleFields[PF_VELOCITY].Get(),
 			  particleFields[PF_PREDICTED_POSITION].Get(), particleFields[PF_LAMBDA].Get(),
 			  particleFields[PF_DENSITY].Get(), particleFields[PF_OMEGA].Get(),
-			  particleFields[PF_SCRATCH].Get(), cellPrefixSumBuffer.Get(), cellCountBuffer.Get() },
+			  particleFields[PF_SCRATCH].Get(), permBuffer.Get() },
 			vector<ID3D12Resource*>{ sortedFields[PF_POSITION].Get(), sortedFields[PF_VELOCITY].Get(),
 			  sortedFields[PF_PREDICTED_POSITION].Get(), sortedFields[PF_LAMBDA].Get(),
 			  sortedFields[PF_DENSITY].Get(), sortedFields[PF_OMEGA].Get(),
-			  sortedFields[PF_SCRATCH].Get(), cellCountBuffer.Get() });
+			  sortedFields[PF_SCRATCH].Get() });
 	}
 
 	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
@@ -521,12 +530,11 @@ protected:
 		// zero cell counts again so sortCS can use them as per-cell atomic counters
 		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
 
-		// this is the step that actually arranges particles belonging to the same cell 
-		// contiguously, for each particle:
-		// -find which cell it's in
-		// -the start (offset) of that cell's data is found in prefixSum 
-		// -the index within that cell is tracked using cellCount
+		// compute perm[i] = sorted destination index for each particle i
 		sortShader->dispatch_then_barrier(commandList.Get(), numGroups);
+
+		// scatter all particle fields to their sorted positions using perm[]
+		permutateShader->dispatch_then_barrier(commandList.Get(), numGroups);
 
 		// copy sorted data back into the main particle field buffers
 		{
@@ -964,6 +972,20 @@ protected:
 		}
 	}
 
+	void CreatePermBuffer() {
+		// one uint per particle: perm[i] = sorted destination index for particle i
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		const UINT64 bufferSize = (UINT64)numParticles * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(
+			bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create permutation buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				IID_PPV_ARGS(permBuffer.ReleaseAndGetAddressOf()));
+		permBuffer->SetName(L"Permutation Buffer");
+	}
+
 	void CreateSortUavs() {
 		// create one UAV per sorted field at slots 12..18 (u9..u15)
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -980,6 +1002,22 @@ protected:
 				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 12 + f, descriptorSize);
 			device->CreateUnorderedAccessView(sortedFields[f].Get(), nullptr, &uavDesc, handle);
 		}
+	}
+
+	void CreatePermUav() {
+		// create perm UAV at slot 20 (u16)
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		uavDesc.Buffer.FirstElement = 0;
+		uavDesc.Buffer.NumElements = numParticles;
+		uavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		uavDesc.Buffer.CounterOffsetInBytes = 0;
+		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 20, descriptorSize);
+		device->CreateUnorderedAccessView(permBuffer.Get(), nullptr, &uavDesc, handle);
 	}
 
 	void CreateDensityReadbackBuffer() {
@@ -1006,10 +1044,11 @@ protected:
 		//   slot 11:    cellPrefixSum UAV (u8)      — exclusive prefix sum for sort offsets and neighbor lookups
 		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
 		//   slot 19:    SDF Texture3D SRV (t0) — sampled by the solid-obstacle collision compute shaders
+		//   slot 20:    permutation UAV (u16)  — old index -> sorted index, written by sortCS, read by permutateCS
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 20;
+		dhd.NumDescriptors = 21;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -1042,6 +1081,8 @@ protected:
 		CreateSortUavs();
 		// slot 19: SDF Texture3D SRV (t0) -- sampled by solid-obstacle collision compute shaders
 		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
+		// slot 20: permutation UAV (u16) -- old index -> sorted index
+		CreatePermUav();
 	}
 
 	// Compute GPU descriptor handles for the descriptor table ranges used by compute shaders.
@@ -1056,6 +1097,8 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, sz);  // slot 12 = sorted field UAVs (u9..u15)
 		sdfHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, sz);  // slot 19 = SDF Texture3D SRV
+		permHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 20, sz);  // slot 20 = permutation UAV (u16)
 	}
 
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
@@ -1109,6 +1152,7 @@ public:
 		CreateUploadBuffers();
 		CreateGridBuffers();
 		CreateSortBuffers();
+		CreatePermBuffer();
 		CreateDensityReadbackBuffer();
 		CreateTextureResources();
 

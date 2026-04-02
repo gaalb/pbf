@@ -145,6 +145,9 @@
     <FxCompile Include="solidPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
     </FxCompile>
+    <FxCompile Include="gatherCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">

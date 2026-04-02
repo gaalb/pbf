@@ -7,10 +7,11 @@ TODOS:
 -liquid surface rendering
 -merge fields in the particle struct that never live together: probably not a lot to gain
 -adaptive pbf article imrovements
--fixed dt
 -asynchronosus render and compute
 -better spatial hash, multi level memory article
 -better sorting, eventually radix sort
+-separate the simulation domain and the bounding box
 -check if the barriers in the compute pass are correct, and maybe move to wait-calculate rather than calculate-wait (!)
+	-double check inputs / outputs, re-think what uav barriers do
 -rather than the current sort copying all particle data, make sort calculate a permuation and then have a separate copy pass (as per the comment in sortCS)
 	-maybe move all this to a separate class? maybe check g-RadixSort for the compute shader class
