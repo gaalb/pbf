@@ -93,6 +93,7 @@
   <ItemGroup>
     <ClInclude Include="ComputeShader.h" />
     <ClInclude Include="ConstantBufferTypes.h" />
+    <ClInclude Include="Fence.h" />
     <ClInclude Include="ParticleTypes.h" />
     <ClInclude Include="PbfApp.h" />
     <ClInclude Include="SolidObstacle.h" />

@@ -14,6 +14,7 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 #include "SolidObstacle.h"
+#include "Fence.h"
 
 using namespace Egg::Math;
 
@@ -62,7 +63,7 @@ using namespace Egg::Math;
 class PbfApp : public Egg::SimpleApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 80, particlesY = 40, particlesZ = 80; // number of particles along each axis of the initial grid
+	const int particlesX = 80, particlesY = 30, particlesZ = 80; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -104,7 +105,6 @@ protected:
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
 	float adhesion = 0.05f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
-	bool capFps = false; // when true: fixed dt=1/30s, sleep to maintain 30fps; when false: uncapped, dt clamped to 1/30s max
 	
 	// non-constant members
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
@@ -176,6 +176,27 @@ protected:
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
+
+	float lastDt = 0.0f; // dt from last Update(), consumed by Render() for compute CB upload after GPU sync
+
+	// Async compute: physics runs on a dedicated compute queue, decoupled from vsync.
+	// Double-buffered snapshot buffers hold position and density for the graphics queue.
+	// snapshotWriteIdx is the slot currently being written by the compute queue;
+	// the graphics queue always reads from the OTHER slot (1 - snapshotWriteIdx).
+	com_ptr<ID3D12CommandQueue> computeCommandQueue;
+	com_ptr<ID3D12CommandAllocator> computeAllocator;
+	com_ptr<ID3D12GraphicsCommandList> computeList;
+	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (COMMON state, written by compute, read by direct)
+	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (COMMON state, written by compute, read by direct)
+	// snapshotFence is waited on by the graphics queue, it signals when
+	// the compute queue is done writing a snapshot
+	Fence snapshotFence; 
+	// computeDoneFence is waited on by the CPU, its job is to signal when the compute queue is idle,
+	// meaning the CPU can reset the command allocator 
+	Fence computeDoneFence; 
+	uint64_t snapshotFenceValues[2] = { 0, 0 }; // fence value at which each snapshot slot was last written
+	uint64_t fenceCounter = 0; // monotonically increasing counter used for both fences
+	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
 
 	// Allocate GPU resources for the cubemap texture and the solid obstacle (mesh + SDF).
 	// No GPU commands are recorded here; uploads happen later in UploadAll().
@@ -516,33 +537,33 @@ protected:
 		UINT numCellGroups = (numCells + 255) / 256;
 
 		// zero the cell count
-		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
+		clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
 
 		// count particles per cell (each particle does InterlockedAdd on its cell)
 		// after this call, the ith element in cellCount indicates how many particles
 		// are in that cell
-		countGridShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		countGridShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// exclusive prefix sum of cellCount -> cellPrefixSum
 		// tells us where each cell's particle run starts in the sorted buffer,
 		// meaning that after this call, the ith element in cellPrefixSum tells
 		// us where the ith cell's range begins in the particle buffer
-		prefixSumShader->dispatch_then_barrier(commandList.Get(), 1);
+		prefixSumShader->dispatch_then_barrier(computeList.Get(), 1);
 
 		// zero cell counts again so sortCS can use them as per-cell atomic counters
-		clearGridShader->dispatch_then_barrier(commandList.Get(), numCellGroups);
+		clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
 
 		// compute perm[i] = sorted destination index for each particle i
-		sortShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		sortShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// scatter all particle fields to their sorted positions using perm[]
-		permutateShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		permutateShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// copy sorted data back into the main particle field buffers
 		{
 			// one barrier for each buffer both sorted and unsorted
 			// sorted fields become copy source, unsorted fields become copy destination
-			D3D12_RESOURCE_BARRIER barriers[PF_COUNT * 2]; 
+			D3D12_RESOURCE_BARRIER barriers[PF_COUNT * 2];
 			for (UINT f = 0; f < PF_COUNT; f++) {
 				barriers[f * 2] = CD3DX12_RESOURCE_BARRIER::Transition(
 					sortedFields[f].Get(),
@@ -551,11 +572,11 @@ protected:
 					particleFields[f].Get(),
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
 			}
-			commandList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
+			computeList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
 
 			// actual copy calls here
 			for (UINT f = 0; f < PF_COUNT; f++)
-				commandList->CopyBufferRegion(particleFields[f].Get(), 0,
+				computeList->CopyBufferRegion(particleFields[f].Get(), 0,
 					sortedFields[f].Get(), 0, (UINT64)numParticles * fieldStrides[f]);
 
 			// copy is done, transition back to the "default" state, which is UAV, for the next pass
@@ -567,28 +588,28 @@ protected:
 					particleFields[f].Get(),
 					D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			}
-			commandList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
+			computeList->ResourceBarrier(PF_COUNT * 2, barriers); // insert the created barriers
 		}
 	}
 
-	void ComputePass() {
+	// writeIdx: which snapshot slot to write to this step (caller sets and flips).
+	void ComputePass(int writeIdx) {
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
-		
 
 		// apply gravity + external forces to velocity
-		applyForcesShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		applyForcesShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// Zero wall-directed velocity components and apply adhesion damping.
 		// Must run before predictPosition so the correction survives into p*;
 		// updateVelocityCS would overwrite any velocity edits made after prediction.
-		collisionVelocityShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		collisionVelocityShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// p* = position + velocity * dt  (velocity is now wall-corrected)
-		predictPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		predictPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// Clamp p* to the simulation box before building the spatial grid.
-		collisionPredictedPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);
+		collisionPredictedPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
@@ -597,59 +618,103 @@ protected:
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
-			lambdaShader->dispatch_then_barrier(commandList.Get(), numGroups); // compute lambda and density
-			deltaShader->dispatch_then_barrier(commandList.Get(), numGroups); // delta_p -> scratch
-			positionFromScratchShader->dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> predictedPosition
-			collisionPredictedPositionShader->dispatch_then_barrier(commandList.Get(), numGroups);   // clamp to box
+			lambdaShader->dispatch_then_barrier(computeList.Get(), numGroups); // compute lambda and density
+			deltaShader->dispatch_then_barrier(computeList.Get(), numGroups); // delta_p -> scratch
+			positionFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> predictedPosition
+			collisionPredictedPositionShader->dispatch_then_barrier(computeList.Get(), numGroups); // clamp to box
 		}
 
-		updateVelocityShader->dispatch_then_barrier(commandList.Get(), numGroups);    // v = (p* - x) / dt
-		vorticityShader->dispatch_then_barrier(commandList.Get(), numGroups);         // estimate curl(v) -> omega
-		confinementShader->dispatch_then_barrier(commandList.Get(), numGroups);       // vorticity confinement -> velocity
-		viscosityShader->dispatch_then_barrier(commandList.Get(), numGroups);         // XSPH viscosity -> scratch
-		velocityFromScratchShader->dispatch_then_barrier(commandList.Get(), numGroups); // scratch -> velocity
-		updatePositionShader->dispatch_then_barrier(commandList.Get(), numGroups);    // position = predictedPosition
+		updateVelocityShader->dispatch_then_barrier(computeList.Get(), numGroups);    // v = (p* - x) / dt
+		vorticityShader->dispatch_then_barrier(computeList.Get(), numGroups);         // estimate curl(v) -> omega
+		confinementShader->dispatch_then_barrier(computeList.Get(), numGroups);       // vorticity confinement -> velocity
+		viscosityShader->dispatch_then_barrier(computeList.Get(), numGroups);         // XSPH viscosity -> scratch
+		velocityFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> velocity
+		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups);    // position = predictedPosition
 
-		// Copy density data to readback buffer for CPU access next frame
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleFields[PF_DENSITY].Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
-		commandList->CopyBufferRegion(densityReadbackBuffer.Get(), 0,
+		// Write snapshot: copy position and density into snapshot slot [writeIdx].
+		// Transition particle buffers to COPY_SOURCE, snapshot buffers to COPY_DEST.
+		D3D12_RESOURCE_BARRIER toCopySrc[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+		};
+		D3D12_RESOURCE_BARRIER snapshotToDest[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+		};
+		computeList->ResourceBarrier(2, toCopySrc);
+		computeList->ResourceBarrier(2, snapshotToDest);
+
+		computeList->CopyBufferRegion(snapshotPosition[writeIdx].Get(), 0,
+			particleFields[PF_POSITION].Get(), 0, (UINT64)numParticles * sizeof(Float3));
+		computeList->CopyBufferRegion(snapshotDensity[writeIdx].Get(), 0,
 			particleFields[PF_DENSITY].Get(), 0, (UINT64)numParticles * sizeof(float));
-		commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
-			particleFields[PF_DENSITY].Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+
+		// Copy density to readback buffer (CPU reads it after the next WaitForPreviousFrame).
+		computeList->CopyBufferRegion(densityReadbackBuffer.Get(), 0,
+			particleFields[PF_DENSITY].Get(), 0, (UINT64)numParticles * sizeof(float));
+
+		// Transition everything back to its home state.
+		D3D12_RESOURCE_BARRIER toUav[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+		};
+		D3D12_RESOURCE_BARRIER snapshotToCommon[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON),
+		};
+		computeList->ResourceBarrier(2, toUav);
+		computeList->ResourceBarrier(2, snapshotToCommon);
 	}
 
-	void GraphicsPass() {
+	// readIdx: which snapshot slot the graphics queue reads from (always 1 - snapshotWriteIdx).
+	void GraphicsPass(int readIdx) {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 		solidObstacle->Draw(commandList.Get());  // draw solid with depth test before particles
 
-		// The particle field buffers' home state is UNORDERED_ACCESS, because that's what the compute
-		// shaders need. The vertex shader reads position and density as SRVs, which requires the
-		// resources to be in a shader-resource state. We transition in before the draw and back out
-		// to UAV afterward, so the rest of the pipeline always sees the home state.
+		// Before the particle draw, redirect descriptor heap slots 1-2 to the active snapshot.
+		// The particle VS fetches position (t0) and density (t1) from slots 1-2 in the heap.
+		// We copy the snapshot SRVs (slots 21+readIdx and 23+readIdx) into slots 1-2 so the
+		// shader reads the latest complete snapshot without any root signature change.
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		device->CopyDescriptorsSimple(1,
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1,  sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21 + readIdx, sz),
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		device->CopyDescriptorsSimple(1,
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2,  sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 23 + readIdx, sz),
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// Snapshot buffers live in COMMON. Transition them to SRV state for the draw, then back.
 		D3D12_RESOURCE_BARRIER toSrv[2] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
 		};
 		commandList->ResourceBarrier(2, toSrv);
 
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 
-		D3D12_RESOURCE_BARRIER toUav[2] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
+		D3D12_RESOURCE_BARRIER toCommon[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
+				D3D12_RESOURCE_STATE_COMMON),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+				D3D12_RESOURCE_STATE_COMMON),
 		};
-		commandList->ResourceBarrier(2, toUav);
+		commandList->ResourceBarrier(2, toCommon);
 	}
 
 	void ImGuiPass() {
@@ -676,7 +741,6 @@ protected:
 		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::SameLine();
-		ImGui::Checkbox("Cap FPS", &capFps);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
@@ -684,7 +748,7 @@ protected:
 		ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 		ImGui::Separator();
-		ImGui::Text("Solid obstacle");
+		ImGui::Text("Dragonite");
 		ImGui::PushItemWidth(200);
 		ImGui::DragFloat3("Position",       &solidPosition.x, 0.1f);
 		ImGui::DragFloat3("Rotation (deg)", &solidEulerDeg.x, 1.0f);
@@ -720,21 +784,9 @@ protected:
 		ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList.Get());
 	}
 
-	// this is the method we must implement from SimpleApp, Render() calls it,
-	// this is where we record all GPU commands to construct one frame
-	virtual void PopulateCommandList() override {
-		PrepareCommandList(); // set up the command list for a new frame: reset, set viewport/scissor, transition back buffer to render target
-
-		if (physicsRunning)
-			ComputePass(); // dispatch the compute shader to update particle positions on the GPU
-
-		GraphicsPass(); // draw the background and particles using the updated positions
-
-		// draw the parameter tuning UI *after* the main scene so it appears on top
-		ImGuiPass();
-
-		CloseCommandList(); // transition back buffer to present state and close the command list
-	}
+	// PopulateCommandList is pure-virtual in SimpleApp but unused here:
+	// Render() is overridden to run compute and graphics separately.
+	virtual void PopulateCommandList() override { }
 
 	void UpdateExternalForce() {
 		// build a horizontal acceleration vector from held arrow keys
@@ -785,19 +837,12 @@ protected:
 	}
 
 	virtual void Update(float dt, float T) override {
-		dt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
-		camera->Animate(dt); // update camera position and orientation based on user input
-
+		camera->Animate(dt); // real dt for responsive camera
+		lastDt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
 		UpdateExternalForce();
-
 		UpdatePerFrameCb();
-
-		UpdateComputeCb(dt);
-
 		SetSolidTransform();
-
-		// Read back previous frame's particle data (GPU is done after WaitForPreviousFrame)
-		if (physicsRunning) { CalculateAvgDensity(); }
+		// UpdateComputeCb and CalculateAvgDensity have moved to Render() for correct GPU sync ordering.
 	}
 
 	void CalculateAvgDensity() {
@@ -818,6 +863,98 @@ protected:
 		for (int i = 0; i < numParticles; i++)
 			densitySum += densityReadbackData[i];
 		avgDensity = static_cast<float>(densitySum / numParticles);
+	}
+
+	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
+	//
+	// Physics loop: Records physics dispatches on computeList, executes on
+	// computeCommandQueue, copies position+density to snapshotPosition/Density[writeIdx],
+	// signals snapshotFence and computeDoneFence, then flips writeIdx.
+	//
+	// Graphics loop: The direct queue GPU-waits on
+	// snapshotFence[readIdx] to ensure the snapshot is ready, then records and submits
+	// the scene draw, presents, and calls WaitForPreviousFrame.
+	virtual void Render() override {
+		int readIdx = 1 - snapshotWriteIdx;
+
+		// Let us assume that we're going to calculate physics
+		// for frame N, 
+		// --- PHYSICS STEP ---
+		if (physicsRunning) {
+			// Ensure the previous compute step is complete before reusing the allocator.
+			// In order to start calculating the data of frame N, frame N-1 must be done
+			computeDoneFence.cpuWait(); // CPU wait for frame N-1's signal
+
+			// readback buffer, since all this call does is memcpy it to the CPU side
+			// the readback buffer gets filled during the compute pass
+			// since this isn't double buffered (for now) we should only call this whenever 
+			// we're sure that the compute pass is not actively touching the density 
+			// readback buffer, i.e. after the CPU is sure that the compute queue is
+			// empty, such as when we waited for the last fence but haven't issued any
+			// new signals yet
+			if (physicsRunning) CalculateAvgDensity();
+
+			// Safe to write computeCb now: previous step has finished reading it.
+			UpdateComputeCb(lastDt); // fill cb with dt between frame N and N-1
+
+			// reset compute allocato and command list for frame N
+			DX_API("Failed to reset compute allocator")
+				computeAllocator->Reset();
+			DX_API("Failed to reset compute list")
+				computeList->Reset(computeAllocator.Get(), nullptr);
+
+			// Bind the shared descriptor heap so SetComputeRootDescriptorTable handles resolve correctly.
+			// This needs to be done each time the compute command list was reset
+			computeList->SetDescriptorHeaps(1, descriptorHeap.GetAddressOf());
+
+			// record commands for producing frame N into the particle position and 
+			// density buffers identified by snapshotWriteIdx
+			ComputePass(snapshotWriteIdx); 
+
+			// Close the command list, and dispatch the commands: after this point, the compute
+			// command queue is asynchronously executing our commands to produce 
+			DX_API("Failed to close compute list")
+				computeList->Close();
+			ID3D12CommandList* computeCls[] = { computeList.Get() };
+			computeCommandQueue->ExecuteCommandLists(_countof(computeCls), computeCls);
+
+			// Signal both fences with the same monotonically increasing counter.
+			// snapshotFence: graphics queue GPU-waits on snapshotFenceValues[readIdx].
+			// computeDoneFence: CPU waits on it next iteration before resetting allocator.
+			++fenceCounter; // all commands to produce the data for frame N have been dispatched -> set fenceCounter to N
+			snapshotFenceValues[snapshotWriteIdx] = fenceCounter; // the snapshot buffers will now reflect frame N
+			snapshotFence.signal(computeCommandQueue, fenceCounter); // place the signal in the queue: frame N is done 
+			computeDoneFence.signal(computeCommandQueue, fenceCounter); // place the signal in the queue: frame N is done
+
+			snapshotWriteIdx ^= 1; // flip: next step writes the other slot
+		}
+
+		// --- GRAPHICS STEP ---		
+		// At this point while frame N is being calculated asynchronously, frame N-1
+		// should be done (else we wouldn't have been able to dispatch the commands
+		// that calculate the data for frame N). Regardless, we wait on it just to be sure.
+		if (snapshotFenceValues[readIdx] > 0) 
+			commandQueue->Wait(snapshotFence.getFence(), snapshotFenceValues[readIdx]);
+
+		// fill the graphics command list with the commands for displaying frame N-1
+		PrepareCommandList();
+		GraphicsPass(readIdx);
+		ImGuiPass();
+		CloseCommandList();
+
+		// dispatch the commands that will render frame N-1 into the backbuffer
+		ID3D12CommandList* graphicsCls[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(graphicsCls), graphicsCls);
+
+		// while frame N-1 is filling the backbuffer, present the swap chain, i.e.
+		// display frame N-2
+		DX_API("Failed to present swap chain")
+			swapChain->Present(1, 0);
+
+		// CPU-side sync: blocks until the direct queue (including the GPU-side Wait above
+		// and all subsequent draws) has finished. After this, the density readback buffer
+		// is safe to read, because the compute step we waited on is complete.
+		WaitForPreviousFrame();
 	}
 
 	void CreateParticleBuffers() {
@@ -1044,21 +1181,95 @@ protected:
 		densityReadbackData.resize(numParticles);
 	}
 
+	// Create the double-buffered snapshot buffers for position and density.
+	// These live in COMMON state: compute writes via CopyBufferRegion (COPY_DEST),
+	// then transitions back to COMMON; direct queue reads as SRV (promoted from COMMON).
+	void CreateSnapshotBuffers() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+		const UINT64 posSize = (UINT64)numParticles * sizeof(Float3);
+		const UINT64 denSize = (UINT64)numParticles * sizeof(float);
+		const CD3DX12_RESOURCE_DESC posDesc = CD3DX12_RESOURCE_DESC::Buffer(posSize);
+		const CD3DX12_RESOURCE_DESC denDesc = CD3DX12_RESOURCE_DESC::Buffer(denSize);
+		for (int i = 0; i < 2; i++) {
+			DX_API("Failed to create snapshot position buffer")
+				device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &posDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(snapshotPosition[i].ReleaseAndGetAddressOf()));
+			snapshotPosition[i]->SetName(i == 0 ? L"Snapshot Position [0]" : L"Snapshot Position [1]");
+			DX_API("Failed to create snapshot density buffer")
+				device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &denDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(snapshotDensity[i].ReleaseAndGetAddressOf()));
+			snapshotDensity[i]->SetName(i == 0 ? L"Snapshot Density [0]" : L"Snapshot Density [1]");
+		}
+	}
+
+	// Create SRV descriptors for all four snapshot buffers at heap slots 21-24.
+	void CreateSnapshotSrvs() {
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		D3D12_SHADER_RESOURCE_VIEW_DESC posSrvDesc = {};
+		posSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		posSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		posSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		posSrvDesc.Buffer.FirstElement = 0;
+		posSrvDesc.Buffer.NumElements = numParticles;
+		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3);
+		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		D3D12_SHADER_RESOURCE_VIEW_DESC denSrvDesc = {};
+		denSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		denSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		denSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		denSrvDesc.Buffer.FirstElement = 0;
+		denSrvDesc.Buffer.NumElements = numParticles;
+		denSrvDesc.Buffer.StructureByteStride = sizeof(float);
+		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		for (int i = 0; i < 2; i++) {
+			CD3DX12_CPU_DESCRIPTOR_HANDLE posHandle(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21 + i, sz);
+			device->CreateShaderResourceView(snapshotPosition[i].Get(), &posSrvDesc, posHandle);
+			CD3DX12_CPU_DESCRIPTOR_HANDLE denHandle(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 23 + i, sz);
+			device->CreateShaderResourceView(snapshotDensity[i].Get(), &denSrvDesc, denHandle);
+		}
+	}
+
+	// Create the dedicated compute command queue, allocator, command list, and both fences.
+	void CreateComputeQueue() {
+		D3D12_COMMAND_QUEUE_DESC desc = {};
+		desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+		desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+		desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+		desc.NodeMask = 0;
+		DX_API("Failed to create compute command queue")
+			device->CreateCommandQueue(&desc, IID_PPV_ARGS(computeCommandQueue.GetAddressOf()));
+		DX_API("Failed to create compute command allocator")
+			device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
+				IID_PPV_ARGS(computeAllocator.GetAddressOf()));
+		DX_API("Failed to create compute command list")
+			device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, computeAllocator.Get(),
+				nullptr, IID_PPV_ARGS(computeList.GetAddressOf()));
+		computeList->Close();
+		snapshotFence.createResources(device);
+		computeDoneFence.createResources(device);
+	}
+
 	void CreateDescriptorHeap() {
 		// descriptor heap layout (SoA):
 		//   slot 0:     cubemap SRV (t0)           — sampled by the background pixel shader
-		//   slot 1:     position SRV (t0)          — read by the particle vertex shader
-		//   slot 2:     density SRV (t1)           — read by the particle vertex shader
+		//   slot 1:     position SRV (t0)          — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
+		//   slot 2:     density SRV (t1)           — read by particle VS; same
 		//   slots 3-9:  particle field UAVs (u0..u6) — compute shader read/write
 		//   slot 10:    cellCount UAV (u7)          — per-cell particle count for the spatial grid
 		//   slot 11:    cellPrefixSum UAV (u8)      — exclusive prefix sum for sort offsets and neighbor lookups
 		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
 		//   slot 19:    SDF Texture3D SRV (t0) — sampled by the solid-obstacle collision compute shaders
 		//   slot 20:    permutation UAV (u16)  — old index -> sorted index, written by sortCS, read by permutateCS
+		//   slot 21:    snapshotPosition[0] SRV — source for CopyDescriptorsSimple into slot 1
+		//   slot 22:    snapshotPosition[1] SRV — source for CopyDescriptorsSimple into slot 1
+		//   slot 23:    snapshotDensity[0] SRV  — source for CopyDescriptorsSimple into slot 2
+		//   slot 24:    snapshotDensity[1] SRV  — source for CopyDescriptorsSimple into slot 2
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 21;
+		dhd.NumDescriptors = 25;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -1081,7 +1292,7 @@ protected:
 	void CreateAllDescriptors() {
 		// slot 0: cubemap SRV (t0) -- sampled by the background pixel shader
 		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), 0);
-		// slots 1-2: particle position + density SRVs -- read by the particle vertex shader
+		// slots 1-2: particle position + density SRVs -- redirected to active snapshot each frame via CopyDescriptorsSimple
 		CreateParticleSrvs();
 		// slots 3-9: particle field UAVs (u0..u6) -- compute shader read/write
 		CreateParticleUavs();
@@ -1093,6 +1304,8 @@ protected:
 		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
 		// slot 20: permutation UAV (u16) -- old index -> sorted index
 		CreatePermUav();
+		// slots 21-24: snapshot position[0/1] and density[0/1] SRVs -- sources for CopyDescriptorsSimple
+		CreateSnapshotSrvs();
 	}
 
 	// Compute GPU descriptor handles for the descriptor table ranges used by compute shaders.
@@ -1137,6 +1350,51 @@ protected:
 		solidObstacle->ReleaseUploadResources();
 	}
 
+	// Copy initial particle positions into both snapshot slots so particles are visible
+	// before physics starts. Also signals snapshotFence to 1 so the graphics queue's
+	// GPU-side wait is immediately satisfied on the first frame.
+	void InitSnapshotBuffers() {
+		commandAllocator->Reset();
+		commandList->Reset(commandAllocator.Get(), nullptr);
+
+		D3D12_RESOURCE_BARRIER barriers[3];
+		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
+			particleFields[PF_POSITION].Get(),
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+			snapshotPosition[0].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
+			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+		commandList->ResourceBarrier(3, barriers);
+
+		const UINT64 posBytes = (UINT64)numParticles * sizeof(Float3);
+		commandList->CopyBufferRegion(snapshotPosition[0].Get(), 0, particleFields[PF_POSITION].Get(), 0, posBytes);
+		commandList->CopyBufferRegion(snapshotPosition[1].Get(), 0, particleFields[PF_POSITION].Get(), 0, posBytes);
+
+		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
+			particleFields[PF_POSITION].Get(),
+			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+			snapshotPosition[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
+			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+		commandList->ResourceBarrier(3, barriers);
+
+		commandList->Close();
+		ID3D12CommandList* cls[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(cls), cls);
+
+		// Signal snapshotFence to 1 from the direct queue (after the copy).
+		// Since the signal is submitted after ExecuteCommandLists, it fires after the copies complete.
+		// Both snapshot slots are now valid, so mark both with fence value 1.
+		fenceCounter = 1;
+		snapshotFenceValues[0] = 1;
+		snapshotFenceValues[1] = 1;
+		snapshotFence.signal(commandQueue, 1);
+
+		WaitForPreviousFrame(); // blocks until all of the above is GPU-complete
+	}
+
 	// Build all graphics rendering pipelines (background, particles, solid obstacle transform).
 	void BuildGraphicsPipelines() {
 		BuildBackgroundPipeline();
@@ -1164,8 +1422,10 @@ public:
 		CreateSortBuffers();
 		CreatePermBuffer();
 		CreateDensityReadbackBuffer();
+		CreateSnapshotBuffers();
 		CreateTextureResources();
 
+		CreateComputeQueue();
 		CreateImGuiDescriptorHeap();
 		CreateDescriptorHeap();
 		CreateAllDescriptors();
@@ -1175,6 +1435,7 @@ public:
 	// Phase 2: upload initial data to the GPU and build rendering/compute pipelines.
 	virtual void LoadAssets() override {
 		UploadAll();
+		InitSnapshotBuffers();
 		BuildGraphicsPipelines();
 		BuildComputePipelines();
 	}
@@ -1227,7 +1488,20 @@ public:
 		ImGui::DestroyContext();
 	}
 
-	bool FpsCapped() const { return capFps; }
+	virtual void Destroy() override {
+		// Drain the compute queue before releasing compute resources.
+		// Must happen before the parent's WaitForPreviousFrame + device release.
+		computeDoneFence.destroy(); // cpuWait() + event.Close()
+		snapshotFence.destroy();    // cpuWait() + event.Close()
+		computeList.Reset();
+		computeAllocator.Reset();
+		computeCommandQueue.Reset();
+		for (int i = 0; i < 2; i++) {
+			snapshotPosition[i].Reset();
+			snapshotDensity[i].Reset();
+		}
+		Egg::SimpleApp::Destroy(); // WaitForPreviousFrame + parent resource cleanup
+	}
 
 	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys
 	virtual void ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override {
