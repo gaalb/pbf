@@ -21,12 +21,6 @@ TODOS:
 ------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK----------------------------------------
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
--move to being a subclass of App instead of SimpleApp, so we can handle the two command queues identically
-	-also remove the mandatory PopulateCommandQueue
--make computeDoneFence behave similarly to the waitForNextFrame
--maybe merge the computeDoneFence and spanshotFence?
--maybe make Fence.h keep track of its internal counter such that we are abe to signal without a number?
-	-or rather, make Fence work in such a way that it's more closely aligned with the underyling d3d fence
-		-make it able to wait for a certain uint, and just make the no-param wait default to the current behavior
-		-this, and a more involved fence handling would enable us to make it more explicit, and, to me,
-		 clearer, which physics frame and graphics frame we wait for in a given wait, and which one we signal in a signal
+-comment the new parts liberally
+-investigate why the hell calculateAvgDensity being after cpuWaitForCompute , as opposed
+ to after cpuWaitForGraphics in Render() leads to an fps drop.

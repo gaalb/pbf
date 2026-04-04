@@ -91,6 +91,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AsyncComputeApp.h" />
     <ClInclude Include="ComputeShader.h" />
     <ClInclude Include="ConstantBufferTypes.h" />
     <ClInclude Include="Fence.h" />
