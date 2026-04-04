@@ -18,7 +18,7 @@ TODOS:
  to the original, and instead just re-binding the buffers?
 -make the descriptor heap's layout defined in 1 place, such that if I change
  descriptor layout, I don't have to change it in several places, just 1
-------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK----------------------------------------
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
+------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK----------------------------------------
 -do we actually need snapshotComputeFrame[2]? 

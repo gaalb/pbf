@@ -15,6 +15,7 @@
 #include <imgui_impl_dx12.h>
 #include "SolidObstacle.h"
 #include <immintrin.h>
+#include <thread>
 
 using namespace Egg::Math;
 
@@ -171,8 +172,12 @@ protected:
 	com_ptr<ID3D12Resource> densityReadbackBuffer;
 	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
-	std::chrono::steady_clock::time_point t0, t1; // debug timer variabeles
+	using clock = std::chrono::high_resolution_clock;
+	clock::time_point t0, t1; // debug timer variabeles
 	float debugTimer = 0.0f;
+	std::chrono::duration<double> targetPeriod{1.0 / 30.0};
+	bool fpsCapped = false;
+	clock::time_point lastFrame; // tracks accumulated time toward next physics step
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
@@ -731,7 +736,7 @@ protected:
 		commandList->ResourceBarrier(2, toCommon);
 	}
 
-	void RecordImguiCommands() {
+	void BuildImGui() {
 		// begin a new ImGui frame, which gives us a clean slate to construct the UI for this frame
 		ImGui_ImplDX12_NewFrame(); // tell ImGui about the new frame for DX12
 		ImGui_ImplWin32_NewFrame(); // tell ImGui about the new frame for Win32 (input handling, time, etc)
@@ -754,11 +759,12 @@ protected:
 		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::SameLine();
+		ImGui::Checkbox("FPS cap", &fpsCapped);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
 		ImGui::Text("%d particles, %u cells, rho0 = %.2f", numParticles, gridDim*gridDim*gridDim, rho0);
-		ImGui::Text("%.1f FPS, render loop %.2f ms", ImGui::GetIO().Framerate, debugTimer);
+		ImGui::Text("%.1f FPS, render: %.2f ms", ImGui::GetIO().Framerate, debugTimer);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 		ImGui::Separator();
 		ImGui::Text("Dragonite");
@@ -919,8 +925,17 @@ protected:
 		// Record and submit graphics commands for displaying the snapshot at readIdx
 		PrepareCommandList();
 		RecordGraphicsCommands(readIdx);
-		RecordImguiCommands();
+		BuildImGui();
 		ExecuteGraphics();
+	}
+
+	void Throttle() {		
+		if (fpsCapped) {
+			auto elapsed = clock::now() - lastFrame;
+			if (elapsed < targetPeriod) std::this_thread::sleep_for(targetPeriod - elapsed);
+		}
+		lastFrame = clock::now();
+
 	}
 
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
@@ -932,6 +947,7 @@ protected:
 	// to ensure the snapshot is ready, records and submits the scene draw, presents,
 	// signals graphicsFence, and CPU-waits on it.
 	virtual void Render() override {
+		Throttle();
 		t0 = std::chrono::high_resolution_clock::now();
 
 		if (physicsRunning) {
@@ -1390,6 +1406,8 @@ protected:
 		++graphicsFrame;
 		graphicsFence.signal(commandQueue, graphicsFrame);
 		cpuWaitForGraphics(graphicsFrame);
+
+		lastFrame = clock::now();
 	}
 
 	// Build all graphics rendering pipelines (background, particles, solid obstacle transform).
