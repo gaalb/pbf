@@ -212,10 +212,9 @@ std::unique_ptr<PbfApp> InitPbfApp(
     pbfApp->SetSwapChain(swapChain);
 
     // create and load resources, ordering is important here: some resources depend on others being created first
-    pbfApp->CreateResources(); // creates fence, command allocator, command list
     pbfApp->CreateSwapChainResources(); // creates render target views and depth buffer
+    pbfApp->CreateResources(); // creates fence, command allocator, command list
     pbfApp->LoadAssets();  // we'll load shaders and geometry here later
-
     pbfApp->InitImGui(windowHandle); // initialize Dear ImGui for the parameter tuning UI
 
     return pbfApp;

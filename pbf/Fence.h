@@ -2,7 +2,7 @@
 #include "Egg/Common.h"
 
 class Fence {
-	com_ptr<ID3D12Fence> fence;
+	com_ptr<ID3D12Fence> fence; // the underlying D3D fence
 	Microsoft::WRL::Wrappers::Event event; // Win32 event object for CPU waits
 public:
 	void createResources(com_ptr<ID3D12Device> device, D3D12_FENCE_FLAGS flags = D3D12_FENCE_FLAG_NONE) {
@@ -13,18 +13,19 @@ public:
 		event.Attach(CreateEventEx(nullptr, FALSE, FALSE, EVENT_ALL_ACCESS));
 	}
 
-	// note: asynchronous call from CPU POV
+	// asynchronous call from the CPU's POV: places a signal in the queue,
+	// when the GPU reaches this point, it signals the fence
 	void signal(com_ptr<ID3D12CommandQueue> queue, uint64_t value) {
-		queue->Signal(fence.Get(), value); // place a signal command in the queue: fence reaches value when queue reaches this point
+		queue->Signal(fence.Get(), value); 
 	}
 
-	// note: blocking call - CPU waits until fence reaches value
+	// blocking call from the CPU POV- CPU waits until fence reaches value
 	void cpuWait(uint64_t value) {
-		if (fence->GetCompletedValue() < value) {
-			DX_API("Waiting for fence")
+		if (fence->GetCompletedValue() < value) { // fence not reached yet
+			DX_API("Waiting for fence") // D3D signals the win32 event when reached
 				fence->SetEventOnCompletion(value, event.Get());
-			WaitForSingleObject(event.Get(), INFINITE);
-		}
+			WaitForSingleObject(event.Get(), INFINITE); // and then we wait for that signal: BLOCK
+		} // fast path: else branch, missing -> no-op
 	}
 
 	// stalls the GPU queue when it reaches this command, until the fence reaches value (CPU is not stalled)
@@ -35,5 +36,14 @@ public:
 	// Returns the underlying fence pointer, for use where the raw interface is needed.
 	ID3D12Fence* get() {
 		return fence.Get();
+	}
+
+	// Returns the most recently completed fence value (non-blocking CPU query).
+	uint64_t getCompletedValue() {
+		return fence->GetCompletedValue();
+	}
+
+	void destroy() {
+		event.Close();
 	}
 };

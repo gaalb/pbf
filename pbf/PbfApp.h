@@ -18,7 +18,7 @@
 
 using namespace Egg::Math;
 
-// PBF implementation: based on the Macklin & Muller 2013 nvidia research article, I'll call it M&M
+// PBF implementation: based on the Macklin & Muller 2013 nvidia research article (M&M)
 // AsyncComputeApp gives us:
 // graphics command allocator and command list
 // compute command queue, allocator, and command list
@@ -32,9 +32,11 @@ using namespace Egg::Math;
 //
 // Initialization flow:
 // main.cpp first creates the window handle, command queue, d3d12 device and swap chain,
-// then initializes the pbf App by calling (which in turn call the methods indented under them):
+// then initializes the pbf App by calling these methods: 
+//	(which in turn call the methods indented under them like so)
 //
 // SetDevice / SetCommandQueue / SetSwapChain
+// CreateSwapChainResources
 // CreateResources                     -- allocate ALL GPU memory and ALL descriptors
 //   AsyncComputeApp::CreateResources  -- cmdAllocator, cmdList, computeQueue/Allocator/List, fences
 //   constant buffers + camera
@@ -51,10 +53,8 @@ using namespace Egg::Math;
 //     slots 10-11: grid UAVs, slots 12-18: sort UAVs, slot 19: SDF SRV,
 //     slot 20: perm UAV, slots 21-24: snapshot SRVs
 //   CacheDescriptorHandles            -- GPU handles for compute shader binding
-// CreateSwapChainResources
 // LoadAssets                          -- upload data to GPU and build pipelines
 //   UploadAll                         -- single batched command list: cubemap + particles + SDF
-//   InitSnapshotBuffers               -- pre-fill snapshots, set computeFrame = 1
 //   BuildGraphicsPipelines            -- background mesh, particle mesh, solid transform
 //   BuildComputePipelines             -- all compute shader PSOs
 // InitImGui
@@ -171,7 +171,8 @@ protected:
 	com_ptr<ID3D12Resource> densityReadbackBuffer;
 	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
-	float debugTimer = 0.0f; // debug timer for measuring where CPU-side time is lost
+	std::chrono::steady_clock::time_point t0, t1; // debug timer variabeles
+	float debugTimer = 0.0f;
 
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
@@ -463,6 +464,17 @@ protected:
 		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
 	}
 
+	void PrepareComputeCommandList() {
+		// Reset compute allocator and command list for the next compute frame
+		DX_API("Failed to reset compute allocator")
+			computeAllocator->Reset();
+		DX_API("Failed to reset compute list")
+			computeList->Reset(computeAllocator.Get(), nullptr);
+
+		// Bind the shared descriptor heap: must be done each time the compute list is reset
+		computeList->SetDescriptorHeaps(1, descriptorHeap.GetAddressOf());
+	}
+
 	void PrepareCommandList() {
 		// reset the command allocator, freeing the memory used by the previous frame's commands
 		// this can only be done after the GPU finished executing those commands
@@ -506,7 +518,7 @@ protected:
 		commandList->SetDescriptorHeaps(1, descriptorHeap.GetAddressOf());
 	}
 
-	void CloseCommandList() {
+	void ExecuteGraphics() {
 		//transition the back buffer back to "present" state so the swap chain can display it
 		commandList->ResourceBarrier(1, // number of barriers
 			&CD3DX12_RESOURCE_BARRIER::Transition( // helper function to create a transition barrier
@@ -517,6 +529,18 @@ protected:
 		// close the command list, no more commands can be recorded until the next Reset()
 		DX_API("Failed to close command list")
 			commandList->Close();
+		ID3D12CommandList* graphicsCls[] = { commandList.Get() };
+		commandQueue->ExecuteCommandLists(_countof(graphicsCls), graphicsCls);
+
+		DX_API("Failed to present swap chain")
+			swapChain->Present(0, 0);
+	}
+
+	void ExecuteCompute() {
+		DX_API("Failed to close compute list")
+			computeList->Close();
+		ID3D12CommandList* computeCls[] = { computeList.Get() };
+		computeCommandQueue->ExecuteCommandLists(_countof(computeCls), computeCls);
 	}
 
 	void SortParticles() {
@@ -582,7 +606,7 @@ protected:
 	}
 
 	// writeIdx: which snapshot slot to write to this step (caller sets and flips).
-	void ComputePass(int writeIdx) {
+	void RecordComputeCommands(int writeIdx) {
 		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + 255) / 256;
 
@@ -622,18 +646,19 @@ protected:
 
 		// Write snapshot: copy position and density into snapshot slot [writeIdx].
 		// Transition particle buffers to COPY_SOURCE, snapshot buffers to COPY_DEST.
-		D3D12_RESOURCE_BARRIER toCopySrc[2] = {
+		D3D12_RESOURCE_BARRIER toCopySrc[2] = { // position, density particle buffer becomes source
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
 		};
-		D3D12_RESOURCE_BARRIER snapshotToDest[2] = {
+		D3D12_RESOURCE_BARRIER snapshotToDest[2] = { // position, density snapshot buffer becomes destination
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
 		};
+		// insert them into the command list so the GPU knows about the state changes before the copy calls
 		computeList->ResourceBarrier(2, toCopySrc);
 		computeList->ResourceBarrier(2, snapshotToDest);
 
@@ -664,7 +689,7 @@ protected:
 	}
 
 	// readIdx: which snapshot slot the graphics queue reads from (always 1 - snapshotWriteIdx).
-	void GraphicsPass(int readIdx) {
+	void RecordGraphicsCommands(int readIdx) {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 		solidObstacle->Draw(commandList.Get());  // draw solid with depth test before particles
 
@@ -706,13 +731,12 @@ protected:
 		commandList->ResourceBarrier(2, toCommon);
 	}
 
-	void ImGuiPass() {
+	void RecordImguiCommands() {
 		// begin a new ImGui frame, which gives us a clean slate to construct the UI for this frame
 		ImGui_ImplDX12_NewFrame(); // tell ImGui about the new frame for DX12
 		ImGui_ImplWin32_NewFrame(); // tell ImGui about the new frame for Win32 (input handling, time, etc)
 		// the core library consumes the input state the backends just wrote and begins a new frame
 		ImGui::NewFrame(); // after this we can create ImGui widgets for this frame
-
 
 		// InputFloat/InputInt: text field with +/- stepper buttons. Type a value and press Enter.
 		// The "step" argument is how much the +/- buttons change the value per click.
@@ -734,7 +758,7 @@ protected:
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
 		ImGui::Text("%d particles, %u cells, rho0 = %.2f", numParticles, gridDim*gridDim*gridDim, rho0);
-		ImGui::Text("%.1f FPS (%.2f ms), debug: (%.2f ms)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate, debugTimer);
+		ImGui::Text("%.1f FPS, render loop %.2f ms", ImGui::GetIO().Framerate, debugTimer);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 		ImGui::Separator();
 		ImGui::Text("Dragonite");
@@ -757,7 +781,7 @@ protected:
 		// GPU calls happen here - it's pure CPU-side geometry generation.
 		ImGui::Render();
 		// ImGui needs its own SRV heap bound (for the font texture), so we switch heaps here.
-		// The scene's srvHeap was used during GraphicsPass; that's done, so this is safe.
+		// The scene's srvHeap was used during RecordGraphicsCommands; that's done, so this is safe.
 		commandList->SetDescriptorHeaps(1, imguiSrvHeap.GetAddressOf());
 		// This is where ImGui's geometry actually gets drawn. GetDrawData() returns the ImDrawData that
 		// Render() produced.The D3D12 backend takes it and :
@@ -827,7 +851,6 @@ protected:
 		UpdateExternalForce();
 		UpdatePerFrameCb();
 		SetSolidTransform();
-		// UpdateComputeCb and CalculateAvgDensity have moved to Render() for correct GPU sync ordering.
 	}
 
 	void CalculateAvgDensity() {
@@ -850,113 +873,116 @@ protected:
 		avgDensity = static_cast<float>(densitySum / numParticles);
 	}
 
-	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
-	//
-	// Physics step: CPU waits for compute frame N to finish (so the allocator can be reused),
-	// records compute frame N+1 onto computeList, submits it, signals computeFence to N+1.
-	//
-	// Graphics step: graphics queue GPU-waits on computeFence[snapshotComputeFrame[readIdx]]
-	// to ensure the snapshot is ready, records and submits the scene draw, presents,
-	// signals graphicsFence, and CPU-waits on it.
-	virtual void Render() override {
-		std::chrono::steady_clock::time_point t0, t1;
-		int readIdx = 1 - snapshotWriteIdx;
-		// --- PHYSICS STEP ---
-		if (physicsRunning) {
-			// Wait for compute frame N to finish before reusing the allocator and readback buffer.
-			t0 = std::chrono::high_resolution_clock::now();
-			cpuWaitForCompute(computeFrame);
-			t1 = std::chrono::high_resolution_clock::now();
-			debugTimer = std::chrono::duration<float, std::milli>(t1 - t0).count();
-			// BUG: placing this at certain points causes fps degradation
-			// logically, it should be after cpuWaitForCompute(computeFrame);
-			// but putting it at the very end of Render() caused the issue to go away
-			// specifically, it's the cpuWaitForCompute call above that takes a long time,
-			// it's by far the longest cpu-side operation in the loop (80+% of the frame time)
-			// either way, but if we put CalculateAvg Density after it, it takes longer than usual
-			//
-			// an interesting debug finding: putting Sleep(2); here *also* causes the same issue!
-			// I think this is a case of the GPU going idle cause there's no commands going to it...
-			// nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw --format=csv -l 1
-			// yep :) fix: nvidia control panel -> manage 3d settings -> power management mode -> prefer maximum performance
-			CalculateAvgDensity();
-			
+	void ComputePass() {
+		// We're about to compute data for frame N: wait for the computations
+		// of frame N-1 to finish before reusing the allocator and readback buffer.			
+		cpuWaitForCompute(computeFrame);
 
-			// Safe to write computeCb now: the previous step has finished reading it.
-			UpdateComputeCb(lastDt);
 
-			// Reset compute allocator and command list for the next compute frame
-			DX_API("Failed to reset compute allocator")
-				computeAllocator->Reset();
-			DX_API("Failed to reset compute list")
-				computeList->Reset(computeAllocator.Get(), nullptr);
+		// CalculateAvgDensity reads from the particle readback buffers, which
+		// are not double buffered, so techically the GPU can write to them at any point.
+		// This means that we should only read from them when we know they can't be
+		// mid-write. This is exactly that point: the CPU has waited for the compute to
+		// finish, but has not yet dispatched any new GPU commands.
+		// BUG: placing this at certain points causes fps degradation
+		// but putting it at the very end of Render() caused the issue to go away
+		// specifically, it was the cpuWaitForCompute call above that took a long time
+		//
+		// an interesting debug finding: putting Sleep(2); here *also* causes the same issue!
+		// I think this is a case of the GPU going idle cause there's no commands going to it...
+		// nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw --format=csv -l 1
+		// yep :) fix: nvidia control panel -> manage 3d settings -> power management mode -> prefer maximum performance
+		CalculateAvgDensity();
 
-			// Bind the shared descriptor heap: must be done each time the compute list is reset
-			computeList->SetDescriptorHeaps(1, descriptorHeap.GetAddressOf());
 
-			// Record commands for compute frame N+1: physics step + snapshot copy
-			ComputePass(snapshotWriteIdx);
+		// Safe to write computeCb now: the previous step has finished reading it.
+		UpdateComputeCb(lastDt); // update CB to reflect frame N
 
-			DX_API("Failed to close compute list")
-				computeList->Close();
-			ID3D12CommandList* computeCls[] = { computeList.Get() };
-			computeCommandQueue->ExecuteCommandLists(_countof(computeCls), computeCls);
+		PrepareComputeCommandList();
+		// Record commands for compute frame N: physics step + snapshot copy
+		RecordComputeCommands(snapshotWriteIdx);
+		ExecuteCompute(); // dispatch the calculations for frame N
 
-			// Advance the compute frame counter and signal the fence.
-			// snapshotComputeFrame[snapshotWriteIdx] records which compute frame wrote this slot,
-			// so the graphics queue can wait on exactly that value before reading it.
-			++computeFrame;
-			snapshotComputeFrame[snapshotWriteIdx] = computeFrame;
-			computeFence.signal(computeCommandQueue, computeFrame);
+		// Advance the compute frame counter and signal the fence.
+		// snapshotComputeFrame[snapshotWriteIdx] records which compute frame wrote this slot,
+		// so the graphics queue can wait on exactly that value before reading it.
+		++computeFrame;
+		snapshotComputeFrame[snapshotWriteIdx] = computeFrame;
+		computeFence.signal(computeCommandQueue, computeFrame);
 
-			snapshotWriteIdx ^= 1; // flip: next step writes the other slot
-		}
+		snapshotWriteIdx ^= 1; // flip: next step writes the other slot
+	}
 
-		// --- GRAPHICS STEP ---
+	void GraphicsPass() {
+		// When this call happens, the compute queue should be working on producing data for frame N.
+		// That means that snapshotComputeFrame[snapshotWriteIdx]=N, and while the compute
+		// queue is writing the data of frame N to the snapshot buffer with index snapshotWriteIdx,
+		// we can read the data of frame N-1 from 1-snapshotWriteIdx
+		int readIdx = 1 - snapshotWriteIdx; // snapshotComputeFrame[readIdx] should be N-1
+	
 		// GPU-stall the graphics queue until the compute queue has finished writing the snapshot
-		// we're about to read. The compute queue is running compute frame N+1 asynchronously;
-		// snapshotComputeFrame[readIdx] holds the frame that last wrote to readIdx, which is N.
-		if (snapshotComputeFrame[readIdx] > 0)
-			graphicsWaitForCompute(snapshotComputeFrame[readIdx]);
+		// we're about to read. Since the compute pass for frame N is not dispatched until frame
+		// N-1 is done computing, the wait under here is usually no-op, just a sanity check.
+		if (snapshotComputeFrame[readIdx] > 0) graphicsWaitForCompute(snapshotComputeFrame[readIdx]);
 
 		// Record and submit graphics commands for displaying the snapshot at readIdx
 		PrepareCommandList();
-		GraphicsPass(readIdx);
-		ImGuiPass();
-		CloseCommandList();
-
-		ID3D12CommandList* graphicsCls[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(graphicsCls), graphicsCls);
-
-		DX_API("Failed to present swap chain")
-			swapChain->Present(0, 0);
+		RecordGraphicsCommands(readIdx);
+		RecordImguiCommands();
+		ExecuteGraphics();
 
 		// Signal graphicsFence and CPU-wait: blocks until the graphics queue (including the
-		// GPU-side wait above and all subsequent draws) finishes. After this the graphics
-		// allocator is safe to reset next frame.
+		// GPU-side wait above and all subsequent draws) finishes, meaning that the graphics
+		// command queue has processed the commands that render frame N-1. After this the graphics
+		// allocator is safe to reset next frame, and render frame N.
 		++graphicsFrame;
 		graphicsFence.signal(commandQueue, graphicsFrame);
 		cpuWaitForGraphics(graphicsFrame);
 	}
 
+	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
+	//
+	// Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
+	// records compute frame N onto computeList, submits it, signals computeFence to N.
+	//
+	// Graphics step: graphics queue GPU-waits on computeFence[snapshotComputeFrame[readIdx]]
+	// to ensure the snapshot is ready, records and submits the scene draw, presents,
+	// signals graphicsFence, and CPU-waits on it.
+	virtual void Render() override {
+		t0 = std::chrono::high_resolution_clock::now();
+
+		if (physicsRunning) ComputePass();
+
+		GraphicsPass();
+
+		// save debug timer value for display in ImGui
+		t1 = std::chrono::high_resolution_clock::now();
+		debugTimer = std::chrono::duration<float, std::milli>(t1 - t0).count(); 
+	}
+
 	void CreateParticleBuffers() {
 		// create one buffer per particle field on the default heap (GPU-local, writable by compute shaders via UAV)
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
-		for (UINT f = 0; f < PF_COUNT; f++) {
-			const UINT64 bufferSize = (UINT64)numParticles * fieldStrides[f];
+		for (UINT f = 0; f < PF_COUNT; f++) { // PF_COUNT number of particle fields, using enum trick
+			// fieldStrides is where the size of a single particle's worth of data for each field is defined
+			const UINT64 bufferSize = (UINT64)numParticles * fieldStrides[f]; // how many * how big each
 			const CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
-				bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+				bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // make it usable as UAV
 			DX_API("Failed to create particle field buffer")
 				device->CreateCommittedResource(
 					&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
 					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
 					IID_PPV_ARGS(particleFields[f].ReleaseAndGetAddressOf()));
 			std::wstring name = std::wstring(fieldNames[f]) + L" Buffer";
-			particleFields[f]->SetName(name.c_str());
+			particleFields[f]->SetName(name.c_str()); // for debugging
 		}
 	}
 
 	void CreateUploadBuffers() {
+		// here we create the upload buffers that will serve as a staging area
+		// for uploading UAVs' starting data: we can only CPU-copy data into
+		// the GPU via an upload buffer, then we use the GPU to copy from the upload buffer
+		// to the actual (default heap) buffer where we will use the data in the shader
 		const CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
 
 		// position upload buffer
@@ -1032,7 +1058,7 @@ protected:
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
 		// cellCount buffer: one uint per cell, indicating how many particles are in each
-		// cell, zeroed each frame by clearGridCS, then incremented atomically by countGridCS
+		// cell, also used as a running counter by the sorting shader
 		const UINT64 cellCountSize = numCells * sizeof(UINT);
 		const CD3DX12_RESOURCE_DESC cellCountDesc = CD3DX12_RESOURCE_DESC::Buffer(
 			cellCountSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -1086,6 +1112,7 @@ protected:
 
 	void CreateSortBuffers() {
 		// create one sorted buffer per particle field, same size and flags as the main field buffers
+		// these are the buffers into which we gather the particle data in sorted order, then 
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 		for (UINT f = 0; f < PF_COUNT; f++) {
 			const UINT64 bufferSize = (UINT64)numParticles * fieldStrides[f];
@@ -1151,6 +1178,7 @@ protected:
 
 	void CreateDensityReadbackBuffer() {
 		// create a readback buffer for density only (4 bytes per particle instead of 68)
+		// this is here mainly to serve as an example of how to read data back to the CPU
 		const UINT64 bufferSize = (UINT64)numParticles * sizeof(float);
 		const CD3DX12_HEAP_PROPERTIES readbackHeapProps(D3D12_HEAP_TYPE_READBACK);
 		const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
@@ -1166,6 +1194,10 @@ protected:
 	// Create the double-buffered snapshot buffers for position and density.
 	// These live in COMMON state: compute writes via CopyBufferRegion (COPY_DEST),
 	// then transitions back to COMMON; direct queue reads as SRV (promoted from COMMON).
+	// There's 4 of these: 2 per vertex attribute relevant to the graphics: position 
+	// and density (for coloring). The compute step writes to one of the two buffers each frame,
+	// alternating between them, while the graphics step reads from the other buffer, so there's 
+	// no read/write hazard.
 	void CreateSnapshotBuffers() {
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 		const UINT64 posSize = (UINT64)numParticles * sizeof(Float3);
@@ -1271,7 +1303,7 @@ protected:
 	}
 
 	// Compute GPU descriptor handles for the descriptor table ranges used by compute shaders.
-	// These are byte offsets into the descriptor heap, stored as members so ComputePass can use them.
+	// These are byte offsets into the descriptor heap, stored as members so RecordComputeCommands can use them.
 	void CacheDescriptorHandles() {
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		particleFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
@@ -1289,8 +1321,8 @@ protected:
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
 	// All three operate on independent resources so there are no state conflicts.
 	void UploadAll() {
-		ParticleInitData initData = GenerateParticles();
-		FillUploadBuffers(initData);
+		ParticleInitData initData = GenerateParticles(); // initData holds particle data on CPU
+		FillUploadBuffers(initData); // memcpy particle data into the upload buffers on the GPU
 
 		DX_API("Failed to reset command allocator (UploadAll)")
 			commandAllocator->Reset();
@@ -1300,15 +1332,14 @@ protected:
 		envTexture.UploadResource(commandList.Get()); // record cubemap copy + barrier
 		RecordParticleUpload(); // record particle copy + barriers
 		solidObstacle->UploadSdf(commandList.Get()); // record SDF texture copy + barrier
+		UploadSnapshotData(); // record initial state of snapshot buffers for frame 1
 
 		DX_API("Failed to close command list (UploadAll)")
 			commandList->Close();
 		ID3D12CommandList* cls[] = { commandList.Get() };
 		commandQueue->ExecuteCommandLists(_countof(cls), cls);
 
-		++graphicsFrame;
-		graphicsFence.signal(commandQueue, graphicsFrame);
-		cpuWaitForGraphics(graphicsFrame);
+		WaitFirstFrame(); // GPU-wait until the above uploads are finished and the snapshot buffers are ready for use in frame 1
 
 		// the upload heap copies are done - free the temporary upload resources
 		envTexture.ReleaseUploadResources();
@@ -1316,12 +1347,8 @@ protected:
 	}
 
 	// Copy initial particle positions into both snapshot slots so particles are visible
-	// before physics starts. Sets computeFrame = 1 and signals computeFence to 1 so the
-	// graphics queue's GPU-side wait is immediately satisfied on the first frame.
-	void InitSnapshotBuffers() {
-		commandAllocator->Reset();
-		commandList->Reset(commandAllocator.Get(), nullptr);
-
+	// before physics starts. Expects command list to be recording.
+	void UploadSnapshotData() {
 		D3D12_RESOURCE_BARRIER barriers[3];
 		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
 			particleFields[PF_POSITION].Get(),
@@ -1344,18 +1371,18 @@ protected:
 		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
 			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
 		commandList->ResourceBarrier(3, barriers);
+	}
 
-		commandList->Close();
-		ID3D12CommandList* cls[] = { commandList.Get() };
-		commandQueue->ExecuteCommandLists(_countof(cls), cls);
-
+	// Sets computeFrame = 1 and signals computeFence to 1 so the
+	// graphics queue's GPU-side wait is immediately satisfied on the first frame.
+	void WaitFirstFrame() {
 		// Signal computeFence to 1 from the direct queue (after the copy).
 		// Since the signal is submitted after ExecuteCommandLists, it fires after the copies complete.
 		// Both snapshot slots are now valid: treat this initial fill as "compute frame 1".
-		computeFrame = 1;
-		snapshotComputeFrame[0] = 1;
-		snapshotComputeFrame[1] = 1;
-		computeFence.signal(commandQueue, 1);
+		++computeFrame;
+		snapshotComputeFrame[0] = computeFrame;
+		snapshotComputeFrame[1] = computeFrame;
+		computeFence.signal(commandQueue, computeFrame);
 
 		// Drain the graphics queue so the GPU is idle before returning
 		++graphicsFrame;
@@ -1371,7 +1398,6 @@ protected:
 	}
 
 public:
-
 	// Allocate all GPU memory and descriptors.
 	// After this returns, every ID3D12Resource and every descriptor heap slot exists,
 	// but texture/buffer contents have not been uploaded yet.
@@ -1383,6 +1409,7 @@ public:
 		camera = Egg::Cam::FirstPerson::Create(); // create the camera, which will handle user input and calculate view/projection matrices
 		camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f)); // start further back to see the full box
 		camera->SetSpeed(10.0f); // movement speed of the camera
+		camera->SetAspect(aspectRatio);
 
 		CreateParticleBuffers();
 		CreateUploadBuffers();
@@ -1399,20 +1426,11 @@ public:
 		CacheDescriptorHandles();
 	}
 
-	// Phase 2: upload initial data to the GPU and build rendering/compute pipelines.
+	// upload initial data to the GPU and build rendering/compute pipelines.
 	virtual void LoadAssets() override {
 		UploadAll();
-		InitSnapshotBuffers();
 		BuildGraphicsPipelines();
 		BuildComputePipelines();
-	}
-
-	// When the window is resized, update the camera's aspect ratio
-	virtual void CreateSwapChainResources() override {
-		AsyncComputeApp::CreateSwapChainResources();
-		if (camera) {
-			camera->SetAspect(aspectRatio);
-		}
 	}
 
 	// Call once after CreateResources + LoadAssets, from main.cpp where the HWND is available.
@@ -1453,16 +1471,6 @@ public:
 		ImGui_ImplDX12_Shutdown();
 		ImGui_ImplWin32_Shutdown();
 		ImGui::DestroyContext();
-	}
-
-	virtual void Destroy() override {
-		// Release PBF-specific resources, then let AsyncComputeApp drain both queues
-		// and release the shared queue infrastructure.
-		for (int i = 0; i < 2; i++) {
-			snapshotPosition[i].Reset();
-			snapshotDensity[i].Reset();
-		}
-		AsyncComputeApp::Destroy();
 	}
 
 	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys

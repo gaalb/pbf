@@ -7,20 +7,18 @@ TODOS:
 -liquid surface rendering
 -merge fields in the particle struct that never live together: probably not a lot to gain
 -adaptive pbf article imrovements
--asynchronosus render and compute
 -better spatial hash, multi level memory article
 -better sorting, eventually radix sort
 -separate the simulation domain and the bounding box
--rather than the current sort copying all particle data, make sort calculate a permuation and then have a separate copy pass (as per the comment in sortCS)
-	-maybe move all this to a separate class? maybe check g-RadixSort for the compute shader class
--maybe move to being a subclass of App instead of SimpleApp
 -completely disjoin the graphics fps from the simulation timestep:
 	-make it possible to have several physics steps per graphics frame
 	-make it possible for several graphics frames to pass without a physics step
-
+-cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?
+-could we achieve a speedup by not having a separate copy pass where we copy the sorted particles
+ to the original, and instead just re-binding the buffers?
+-make the descriptor heap's layout defined in 1 place, such that if I change
+ descriptor layout, I don't have to change it in several places, just 1
 ------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK----------------------------------------
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
--comment the new parts liberally
--investigate why the hell calculateAvgDensity being after cpuWaitForCompute , as opposed
- to after cpuWaitForGraphics in Render() leads to an fps drop.
+-do we actually need snapshotComputeFrame[2]? 

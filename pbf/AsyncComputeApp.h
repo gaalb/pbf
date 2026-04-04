@@ -14,32 +14,33 @@
 //   Tracked by computeFrame (increments each time the compute queue is signaled).
 //
 // Sync helpers:
-//   cpuWaitForGraphics(N)    -- CPU blocks until graphics queue completes frame N
-//   cpuWaitForCompute(N)     -- CPU blocks until compute queue completes frame N
-//   graphicsWaitForCompute(N)-- graphics queue GPU-stalls until compute fence reaches frame N
+//   cpuWaitForGraphics(N) -- CPU blocks until graphics queue completes frame N
+//   cpuWaitForCompute(N) -- CPU blocks until compute queue completes frame N
+//   graphicsWaitForCompute(N) -- graphics queue GPU-stalls until compute fence reaches frame N
 //
 // The graphics queue is created externally (main.cpp) and injected via SetCommandQueue().
 // The compute queue is created here in CreateResources().
 class AsyncComputeApp : public Egg::App {
 protected:
-	// --- Graphics queue ---
-	com_ptr<ID3D12CommandAllocator>     commandAllocator;
-	com_ptr<ID3D12GraphicsCommandList>  commandList;
-	com_ptr<ID3D12Resource>             depthStencilBuffer;
-	com_ptr<ID3D12DescriptorHeap>       dsvHeap;
-	Egg::PsoManager::P                  psoManager;
-	Fence                               graphicsFence;
-	uint64_t                            graphicsFrame = 0;
+	// Graphics queue
+	// com_ptr<ID3D12CommandQueue> commandQueue; inherited from App
+	com_ptr<ID3D12CommandAllocator> commandAllocator;
+	com_ptr<ID3D12GraphicsCommandList> commandList;
+	com_ptr<ID3D12Resource> depthStencilBuffer;
+	com_ptr<ID3D12DescriptorHeap> dsvHeap;
+	Egg::PsoManager::P psoManager;
+	Fence graphicsFence;
+	uint64_t graphicsFrame = 0;
 
-	// --- Compute queue ---
-	com_ptr<ID3D12CommandQueue>         computeCommandQueue;
-	com_ptr<ID3D12CommandAllocator>     computeAllocator;
-	com_ptr<ID3D12GraphicsCommandList>  computeList;
-	Fence                               computeFence;
-	uint64_t                            computeFrame = 0;
+	// Compute queue
+	com_ptr<ID3D12CommandQueue> computeCommandQueue;
+	com_ptr<ID3D12CommandAllocator> computeAllocator;
+	com_ptr<ID3D12GraphicsCommandList> computeList;
+	Fence computeFence;
+	uint64_t computeFrame = 0;
 
 	// CPU blocks until graphicsFence reaches frame N.
-	// Also updates swapChainBackBufferIndex (like the old WaitForPreviousFrame).
+	// Also updates swapChainBackBufferIndex.
 	void cpuWaitForGraphics(uint64_t frame) {
 		graphicsFence.cpuWait(frame);
 		previousSwapChainBackBufferIndex = swapChainBackBufferIndex;
@@ -68,17 +69,21 @@ public:
 		psoManager = Egg::PsoManager::Create(device);
 
 		// Graphics command list (DIRECT type: can record draws, dispatches, and copies)
+		// Command allocator: backing memory. Command List: the command recording interface.
+		// Many lists can write to an allocator, but we do 1 to 1 mappings here specifically.
 		DX_API("Failed to create graphics command allocator")
 			device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
 				IID_PPV_ARGS(commandAllocator.GetAddressOf()));
 		DX_API("Failed to create graphics command list")
 			device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
 				commandAllocator.Get(), nullptr, IID_PPV_ARGS(commandList.GetAddressOf()));
-		commandList->Close();
+		commandList->Close(); // immediately close, we have no commands for now
 
+		// App created our graphics command queue, but we need to create the new (compute)
+		// queue by hand, using a description object. Then create allocator and list like above.
 		// Compute queue (COMPUTE type: dispatches and copies only, dedicated hardware queue on most GPUs)
-		D3D12_COMMAND_QUEUE_DESC computeQueueDesc = {};
-		computeQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+		D3D12_COMMAND_QUEUE_DESC computeQueueDesc = {}; // zero-initialize all fields, then set the ones we care about
+		computeQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE; 
 		computeQueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
 		computeQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 		computeQueueDesc.NodeMask = 0;
@@ -100,37 +105,43 @@ public:
 	virtual void CreateSwapChainResources() override {
 		Egg::App::CreateSwapChainResources(); // sets up viewPort, scissorRect, RTVs
 
-		D3D12_DESCRIPTOR_HEAP_DESC dsHeapDesc = {};
-		dsHeapDesc.NumDescriptors = 1;
-		dsHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-		dsHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		DX_API("Failed to create depth stencil descriptor heap")
+		D3D12_DESCRIPTOR_HEAP_DESC dsHeapDesc = {}; // zero initialize
+		dsHeapDesc.NumDescriptors = 1; // only one depth buffer
+		dsHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; // this heap will only contain depth stencil views
+		dsHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // not shader visible
+		DX_API("Failed to create depth stencil descriptor heap") // create the heap, then fill pointer
 			device->CreateDescriptorHeap(&dsHeapDesc, IID_PPV_ARGS(dsvHeap.GetAddressOf()));
 
+		// the dsv will always be cleared to the same value, so we can specify 
+		// it here for potential optimization
 		D3D12_CLEAR_VALUE depthOptimizedClearValue = {};
 		depthOptimizedClearValue.Format = DXGI_FORMAT_D32_FLOAT;
 		depthOptimizedClearValue.DepthStencil.Depth = 1.0f;
 		depthOptimizedClearValue.DepthStencil.Stencil = 0;
 
+		// create the actual buffer resource
 		DX_API("Failed to create depth stencil buffer")
 			device->CreateCommittedResource(
-				&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-				D3D12_HEAP_FLAG_NONE,
-				&CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT,
-					scissorRect.right, scissorRect.bottom, 1, 0, 1, 0,
-					D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
-				D3D12_RESOURCE_STATE_DEPTH_WRITE,
-				&depthOptimizedClearValue,
-				IID_PPV_ARGS(depthStencilBuffer.GetAddressOf()));
+				&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), // default memory: fast for gpu only
+				D3D12_HEAP_FLAG_NONE, // no special heap restrictions
+				&CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, // each texel is float32
+					scissorRect.right, scissorRect.bottom, 1, 0, 1, 0, // width, height, array size, mip levels, sample count, quality level 
+					D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), // required flag for depth buffers
+				D3D12_RESOURCE_STATE_DEPTH_WRITE,// initial state
+				&depthOptimizedClearValue, // optimization hint
+				IID_PPV_ARGS(depthStencilBuffer.GetAddressOf())); // save to pointer 
 
-		depthStencilBuffer->SetName(L"Depth Stencil Buffer");
+		depthStencilBuffer->SetName(L"Depth Stencil Buffer"); // for debug purposes
 
-		D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilDesc = {};
-		depthStencilDesc.Format = DXGI_FORMAT_D32_FLOAT;
-		depthStencilDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-		depthStencilDesc.Flags = D3D12_DSV_FLAG_NONE;
-		device->CreateDepthStencilView(depthStencilBuffer.Get(), &depthStencilDesc,
-			dsvHeap->GetCPUDescriptorHandleForHeapStart());
+		// create the view (descriptor) for the depth buffer
+		D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilDesc = {}; // zero initialize, then set the fields we care about
+		depthStencilDesc.Format = DXGI_FORMAT_D32_FLOAT; // must match the format of the resource
+		depthStencilDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D; // 2D texture (not an array, not multisampled)
+		depthStencilDesc.Flags = D3D12_DSV_FLAG_NONE; // full read/write access (not read-only)
+		device->CreateDepthStencilView( // create the view for the depth buffer resource
+			depthStencilBuffer.Get(), // the resource we want to view
+			&depthStencilDesc, // the description of the view (format, dimension, flags)
+			dsvHeap->GetCPUDescriptorHandleForHeapStart()); // where to put the descriptor in the heap
 	}
 
 	virtual void ReleaseSwapChainResources() override {
@@ -159,8 +170,11 @@ public:
 	virtual void Destroy() override {
 		// Drain both queues before releasing any resources
 		cpuWaitForCompute(computeFrame);
+		computeFence.destroy();
 		cpuWaitForGraphics(graphicsFrame);
-		// Fences cleaned up automatically by Fence's RAII event handle
+		graphicsFence.destroy();
+		// Fences would up automatically by Fence's RAII event handle anyway, but I like
+		// the explicit destruction better
 		ReleaseResources();
 		Egg::App::Destroy();
 	}
