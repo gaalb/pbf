@@ -61,7 +61,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 80, particlesY = 40, particlesZ = 80; // number of particles along each axis of the initial grid
+	const int particlesX = 80, particlesY = 30, particlesZ = 80; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -847,7 +847,7 @@ protected:
 
 	virtual void Update(float dt, float T) override {
 		camera->Animate(dt); // real dt for responsive camera
-		lastDt = std::min(dt, 1.0f / 30.0f); // cap at 33ms: prevents energy spikes on window drag or stutter
+		lastDt = std::min(dt, 1.0f / 25.0f); // cap at 25Hz: prevents energy spikes on window drag or stutter
 		UpdateExternalForce();
 		UpdatePerFrameCb();
 		SetSolidTransform();
@@ -902,15 +902,6 @@ protected:
 		// Record commands for compute frame N: physics step + snapshot copy
 		RecordComputeCommands(snapshotWriteIdx);
 		ExecuteCompute(); // dispatch the calculations for frame N
-
-		// Advance the compute frame counter and signal the fence.
-		// snapshotComputeFrame[snapshotWriteIdx] records which compute frame wrote this slot,
-		// so the graphics queue can wait on exactly that value before reading it.
-		++computeFrame;
-		snapshotComputeFrame[snapshotWriteIdx] = computeFrame;
-		computeFence.signal(computeCommandQueue, computeFrame);
-
-		snapshotWriteIdx ^= 1; // flip: next step writes the other slot
 	}
 
 	void GraphicsPass() {
@@ -930,14 +921,6 @@ protected:
 		RecordGraphicsCommands(readIdx);
 		RecordImguiCommands();
 		ExecuteGraphics();
-
-		// Signal graphicsFence and CPU-wait: blocks until the graphics queue (including the
-		// GPU-side wait above and all subsequent draws) finishes, meaning that the graphics
-		// command queue has processed the commands that render frame N-1. After this the graphics
-		// allocator is safe to reset next frame, and render frame N.
-		++graphicsFrame;
-		graphicsFence.signal(commandQueue, graphicsFrame);
-		cpuWaitForGraphics(graphicsFrame);
 	}
 
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
@@ -951,9 +934,28 @@ protected:
 	virtual void Render() override {
 		t0 = std::chrono::high_resolution_clock::now();
 
-		if (physicsRunning) ComputePass();
+		if (physicsRunning) {
+			ComputePass();
+		
+			// Advance the compute frame counter and signal the fence.
+			// snapshotComputeFrame[snapshotWriteIdx] records which compute frame wrote this slot,
+			// so the graphics queue can wait on exactly that value before reading it.
+			++computeFrame;
+			snapshotComputeFrame[snapshotWriteIdx] = computeFrame;
+			computeFence.signal(computeCommandQueue, computeFrame);
+
+			snapshotWriteIdx ^= 1; // flip: next step writes the other slot
+		}
 
 		GraphicsPass();
+
+		// Signal graphicsFence and CPU-wait: blocks until the graphics queue (including the
+		// GPU-side wait above and all subsequent draws) finishes, meaning that the graphics
+		// command queue has processed the commands that render frame N-1. After this the graphics
+		// allocator is safe to reset next frame, and render frame N.
+		++graphicsFrame;
+		graphicsFence.signal(commandQueue, graphicsFrame);
+		cpuWaitForGraphics(graphicsFrame);
 
 		// save debug timer value for display in ImGui
 		t1 = std::chrono::high_resolution_clock::now();
