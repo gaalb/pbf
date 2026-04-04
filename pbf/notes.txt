@@ -20,5 +20,6 @@ TODOS:
  descriptor layout, I don't have to change it in several places, just 1
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
-------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK----------------------------------------
--do we actually need snapshotComputeFrame[2]? 
+------------------THINGS-TO-DO-REGARDING-ASYNC-REWORK---------------------------------------- 
+-investigate whether we're actually double buffering after removing snapshotComputeFrame[2]
+-maybe merge the compute and graphics counters

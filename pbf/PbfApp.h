@@ -190,7 +190,6 @@ protected:
 	// the graphics queue always reads from the OTHER slot (1 - snapshotWriteIdx).
 	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (COMMON state, written by compute, read by direct)
 	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (COMMON state, written by compute, read by direct)
-	uint64_t snapshotComputeFrame[2] = { 0, 0 }; // computeFrame value at which each snapshot slot was last written
 	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
 
 	// Allocate GPU resources for the cubemap texture and the solid obstacle (mesh + SDF).
@@ -912,15 +911,14 @@ protected:
 
 	void GraphicsPass() {
 		// When this call happens, the compute queue should be working on producing data for frame N.
-		// That means that snapshotComputeFrame[snapshotWriteIdx]=N, and while the compute
-		// queue is writing the data of frame N to the snapshot buffer with index snapshotWriteIdx,
-		// we can read the data of frame N-1 from 1-snapshotWriteIdx
-		int readIdx = 1 - snapshotWriteIdx; // snapshotComputeFrame[readIdx] should be N-1
+		// That means that right now the compute  queue is writing the data of frame N to the snapshot 
+		// buffer with index snapshotWriteIdx, we can read the data of frame N-1 from 1-snapshotWriteIdx
+		int readIdx = 1 - snapshotWriteIdx;
 	
 		// GPU-stall the graphics queue until the compute queue has finished writing the snapshot
 		// we're about to read. Since the compute pass for frame N is not dispatched until frame
 		// N-1 is done computing, the wait under here is usually no-op, just a sanity check.
-		if (snapshotComputeFrame[readIdx] > 0) graphicsWaitForCompute(snapshotComputeFrame[readIdx]);
+		graphicsWaitForCompute(computeFrame-1);
 
 		// Record and submit graphics commands for displaying the snapshot at readIdx
 		PrepareCommandList();
@@ -929,21 +927,12 @@ protected:
 		ExecuteGraphics();
 	}
 
-	void Throttle() {		
-		if (fpsCapped) {
-			auto elapsed = clock::now() - lastFrame;
-			if (elapsed < targetPeriod) std::this_thread::sleep_for(targetPeriod - elapsed);
-		}
-		lastFrame = clock::now();
-
-	}
-
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
 	//
 	// Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
 	// records compute frame N onto computeList, submits it, signals computeFence to N.
 	//
-	// Graphics step: graphics queue GPU-waits on computeFence[snapshotComputeFrame[readIdx]]
+	// Graphics step: graphics queue GPU-waits on frame N-1
 	// to ensure the snapshot is ready, records and submits the scene draw, presents,
 	// signals graphicsFence, and CPU-waits on it.
 	virtual void Render() override {
@@ -951,16 +940,13 @@ protected:
 		t0 = std::chrono::high_resolution_clock::now();
 
 		if (physicsRunning) {
+			snapshotWriteIdx ^= 1;
+
 			ComputePass();
 		
 			// Advance the compute frame counter and signal the fence.
-			// snapshotComputeFrame[snapshotWriteIdx] records which compute frame wrote this slot,
-			// so the graphics queue can wait on exactly that value before reading it.
 			++computeFrame;
-			snapshotComputeFrame[snapshotWriteIdx] = computeFrame;
 			computeFence.signal(computeCommandQueue, computeFrame);
-
-			snapshotWriteIdx ^= 1; // flip: next step writes the other slot
 		}
 
 		GraphicsPass();
@@ -976,6 +962,15 @@ protected:
 		// save debug timer value for display in ImGui
 		t1 = std::chrono::high_resolution_clock::now();
 		debugTimer = std::chrono::duration<float, std::milli>(t1 - t0).count(); 
+	}
+
+	// This function cannot be called more than once every targetPeriod time: rate limit
+	void Throttle() {
+		if (fpsCapped) {
+			auto elapsed = clock::now() - lastFrame;
+			if (elapsed < targetPeriod) std::this_thread::sleep_for(targetPeriod - elapsed);
+		}
+		lastFrame = clock::now();
 	}
 
 	void CreateParticleBuffers() {
@@ -1398,8 +1393,6 @@ protected:
 		// Since the signal is submitted after ExecuteCommandLists, it fires after the copies complete.
 		// Both snapshot slots are now valid: treat this initial fill as "compute frame 1".
 		++computeFrame;
-		snapshotComputeFrame[0] = computeFrame;
-		snapshotComputeFrame[1] = computeFrame;
 		computeFence.signal(commandQueue, computeFrame);
 
 		// Drain the graphics queue so the GPU is idle before returning
