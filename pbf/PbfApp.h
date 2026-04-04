@@ -27,6 +27,9 @@ using namespace Egg::Math;
 // PSO manager
 // per-queue frame counters (graphicsFrame, computeFrame) and fences (graphicsFence, computeFence)
 // sync helpers: cpuWaitForGraphics, cpuWaitForCompute, graphicsWaitForCompute
+// note: we're not using graphicsFrame and computeFrame, instead, we use a single frame counter,
+// because the two queues are currently in lockstep (this might change later if we want a different
+// display and physics frequency)
 //
 // main calls app->Run() in an infinite loop, which calculates elapsedTime and deltaTime,
 // and calls Update (overridden) and Render (overridden), in that order.
@@ -173,16 +176,18 @@ protected:
 	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
 	using clock = std::chrono::high_resolution_clock;
+	clock::time_point lastFrame; // tracks accumulated time toward next physics step
+	std::chrono::duration<double> targetPeriod{ 1.0 / 30.0 };
 	clock::time_point t0, t1; // debug timer variabeles
 	float debugTimer = 0.0f;
-	std::chrono::duration<double> targetPeriod{1.0 / 30.0};
-	bool fpsCapped = false;
-	clock::time_point lastFrame; // tracks accumulated time toward next physics step
-
-	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
-	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
-
 	float lastDt = 0.0f; // dt from last Update(), consumed by Render() for compute CB upload after GPU sync
+
+	uint64_t frameCount = 0;
+
+	bool fpsCapped = false;
+	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
+	
+	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
 	// Async compute: physics runs on the compute queue (from AsyncComputeApp), decoupled from vsync.
 	// Double-buffered snapshot buffers hold position and density for the graphics queue.
@@ -878,55 +883,6 @@ protected:
 		avgDensity = static_cast<float>(densitySum / numParticles);
 	}
 
-	void ComputePass() {
-		// We're about to compute data for frame N: wait for the computations
-		// of frame N-1 to finish before reusing the allocator and readback buffer.			
-		cpuWaitForCompute(computeFrame);
-
-
-		// CalculateAvgDensity reads from the particle readback buffers, which
-		// are not double buffered, so techically the GPU can write to them at any point.
-		// This means that we should only read from them when we know they can't be
-		// mid-write. This is exactly that point: the CPU has waited for the compute to
-		// finish, but has not yet dispatched any new GPU commands.
-		// BUG: placing this at certain points causes fps degradation
-		// but putting it at the very end of Render() caused the issue to go away
-		// specifically, it was the cpuWaitForCompute call above that took a long time
-		//
-		// an interesting debug finding: putting Sleep(2); here *also* causes the same issue!
-		// I think this is a case of the GPU going idle cause there's no commands going to it...
-		// nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw --format=csv -l 1
-		// yep :) fix: nvidia control panel -> manage 3d settings -> power management mode -> prefer maximum performance
-		CalculateAvgDensity();
-
-
-		// Safe to write computeCb now: the previous step has finished reading it.
-		UpdateComputeCb(lastDt); // update CB to reflect frame N
-
-		PrepareComputeCommandList();
-		// Record commands for compute frame N: physics step + snapshot copy
-		RecordComputeCommands(snapshotWriteIdx);
-		ExecuteCompute(); // dispatch the calculations for frame N
-	}
-
-	void GraphicsPass() {
-		// When this call happens, the compute queue should be working on producing data for frame N.
-		// That means that right now the compute  queue is writing the data of frame N to the snapshot 
-		// buffer with index snapshotWriteIdx, we can read the data of frame N-1 from 1-snapshotWriteIdx
-		int readIdx = 1 - snapshotWriteIdx;
-	
-		// GPU-stall the graphics queue until the compute queue has finished writing the snapshot
-		// we're about to read. Since the compute pass for frame N is not dispatched until frame
-		// N-1 is done computing, the wait under here is usually no-op, just a sanity check.
-		graphicsWaitForCompute(computeFrame-1);
-
-		// Record and submit graphics commands for displaying the snapshot at readIdx
-		PrepareCommandList();
-		RecordGraphicsCommands(readIdx);
-		BuildImGui();
-		ExecuteGraphics();
-	}
-
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
 	//
 	// Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
@@ -936,28 +892,71 @@ protected:
 	// to ensure the snapshot is ready, records and submits the scene draw, presents,
 	// signals graphicsFence, and CPU-waits on it.
 	virtual void Render() override {
-		Throttle();
-		t0 = std::chrono::high_resolution_clock::now();
+		frameCount++; // increment N for this next render
+		Throttle(); // apply fps cap if necessary
+		t0 = std::chrono::high_resolution_clock::now(); // debug time measurement start
 
 		if (physicsRunning) {
+			// swap which snapshot buffer we write to, which will also swap which snapshot 
+			// buffer the graphics reads from
 			snapshotWriteIdx ^= 1;
 
-			ComputePass();
-		
-			// Advance the compute frame counter and signal the fence.
-			++computeFrame;
-			computeFence.signal(computeCommandQueue, computeFrame);
-		}
+			// We're about to compute data for frame N: wait for the computations
+			// of frame N-1 to finish before reusing the allocator and readback buffer.			
+			cpuWaitForCompute(frameCount - 1);
 
-		GraphicsPass();
+
+			// CalculateAvgDensity reads from the particle readback buffers, which
+			// are not double buffered, so techically the GPU can write to them at any point.
+			// This means that we should only read from them when we know they can't be
+			// mid-write. This is exactly that point: the CPU has waited for the compute to
+			// finish, but has not yet dispatched any new GPU commands.
+			// BUG: placing this at certain points causes fps degradation
+			// but putting it at the very end of Render() caused the issue to go away
+			// specifically, it was the cpuWaitForCompute call above that took a long time
+			//
+			// an interesting debug finding: putting Sleep(2); here *also* causes the same issue!
+			// I think this is a case of the GPU going idle cause there's no commands going to it...
+			// nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw --format=csv -l 1
+			// yep :) fix: nvidia control panel -> manage 3d settings -> power management mode -> prefer maximum performance
+			CalculateAvgDensity();
+
+
+			// Safe to write computeCb now: the previous step has finished reading it.
+			UpdateComputeCb(lastDt); // update CB to reflect frame N
+
+			PrepareComputeCommandList();
+			// Record commands for compute frame N: physics step + snapshot copy
+			RecordComputeCommands(snapshotWriteIdx);
+			ExecuteCompute(); // dispatch the calculations for frame N			
+		}
+		// signal: when the compute queue reaches this point, the data for frame N is ready
+		// this signal dispatches even if there was no physics loop, since that means that the
+		// data for frame N is ready to begin with
+		computeFence.signal(computeCommandQueue, frameCount);
+
+		// When this call happens, the compute queue should be working on producing data for frame N.
+		// That means that right now the compute  queue is writing the data of frame N to the snapshot 
+		// buffer with index snapshotWriteIdx, we can read the data of frame N-1 from 1-snapshotWriteIdx
+		int readIdx = 1 - snapshotWriteIdx;
+
+		// GPU-stall the graphics queue until the compute queue has finished writing the snapshot
+		// we're about to read: frame N-1. Since the compute pass for frame N is not dispatched until frame
+		// N-1 is done computing, the wait under here is usually no-op, just a sanity check.
+		graphicsWaitForCompute(frameCount - 1);
+
+		// Record and submit graphics commands for displaying the snapshot at readIdx
+		PrepareCommandList();
+		RecordGraphicsCommands(readIdx);
+		BuildImGui();
+		ExecuteGraphics();
 
 		// Signal graphicsFence and CPU-wait: blocks until the graphics queue (including the
 		// GPU-side wait above and all subsequent draws) finishes, meaning that the graphics
 		// command queue has processed the commands that render frame N-1. After this the graphics
 		// allocator is safe to reset next frame, and render frame N.
-		++graphicsFrame;
-		graphicsFence.signal(commandQueue, graphicsFrame);
-		cpuWaitForGraphics(graphicsFrame);
+		graphicsFence.signal(commandQueue, frameCount - 1);
+		cpuWaitForGraphics(frameCount - 1);
 
 		// save debug timer value for display in ImGui
 		t1 = std::chrono::high_resolution_clock::now();
@@ -1386,19 +1385,14 @@ protected:
 		commandList->ResourceBarrier(3, barriers);
 	}
 
-	// Sets computeFrame = 1 and signals computeFence to 1 so the
+	// Sets frameCount = 1 and signals computeFence to 1 so the
 	// graphics queue's GPU-side wait is immediately satisfied on the first frame.
 	void WaitFirstFrame() {
-		// Signal computeFence to 1 from the direct queue (after the copy).
-		// Since the signal is submitted after ExecuteCommandLists, it fires after the copies complete.
-		// Both snapshot slots are now valid: treat this initial fill as "compute frame 1".
-		++computeFrame;
-		computeFence.signal(commandQueue, computeFrame);
-
-		// Drain the graphics queue so the GPU is idle before returning
-		++graphicsFrame;
-		graphicsFence.signal(commandQueue, graphicsFrame);
-		cpuWaitForGraphics(graphicsFrame);
+		frameCount = 1;
+		computeFence.signal(commandQueue, frameCount); // we're done calculating frame 1
+		cpuWaitForCompute(frameCount);
+		graphicsFence.signal(commandQueue, frameCount); // we're done rendering frame 1		
+		cpuWaitForGraphics(frameCount);
 
 		lastFrame = clock::now();
 	}
