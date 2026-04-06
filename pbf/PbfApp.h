@@ -65,7 +65,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 80, particlesY = 30, particlesZ = 80; // number of particles along each axis of the initial grid
+	const int particlesX = 80, particlesY = 50, particlesZ = 80; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -76,7 +76,7 @@ protected:
 	// cubic grid with a dense Morton code space.
 	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
 	const float particleRadius = particleSpacing * 0.4f;
-	const float hMultiplier = 3.25f; // h = particleSpacing * hMultiplier
+	const float hMultiplier = 3.5f; // h = particleSpacing * hMultiplier
 	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
@@ -126,6 +126,7 @@ protected:
 
 	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
 	com_ptr<ID3D12DescriptorHeap> descriptorHeap; // descriptor heap for shader-visible resources
+	com_ptr<ID3D12DescriptorHeap> snapshotStagingHeap; // CPU-only staging heap: snapshot SRVs used as CopyDescriptors source
 
 	// particle field buffers (default heap, UAV-accessible by compute shaders): one per attribute
 	// Index with ParticleField enum (PF_POSITION..PF_SCRATCH).
@@ -177,7 +178,7 @@ protected:
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
 	using clock = std::chrono::high_resolution_clock;
 	clock::time_point lastFrame; // tracks accumulated time toward next physics step
-	std::chrono::duration<double> targetPeriod{ 1.0 / 30.0 };
+	std::chrono::duration<double> targetPeriod{ 1.0 / 30.0 }; // 60 fps cap
 	clock::time_point t0, t1; // debug timer variabeles
 	float debugTimer = 0.0f;
 	float lastDt = 0.0f; // dt from last Update(), consumed by Render() for compute CB upload after GPU sync
@@ -293,9 +294,9 @@ protected:
 		// That's done by inserting transition type resource barriers to the command list.
 		D3D12_RESOURCE_BARRIER toCopyDest[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_VELOCITY].Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
 		};
 		commandList->ResourceBarrier(2, toCopyDest);
 		// copy commands: dst, offset, src, offset
@@ -704,16 +705,16 @@ protected:
 
 		// Before the particle draw, redirect descriptor heap slots 1-2 to the active snapshot.
 		// The particle VS fetches position (t0) and density (t1) from slots 1-2 in the heap.
-		// We copy the snapshot SRVs (slots 21+readIdx and 23+readIdx) into slots 1-2 so the
+		// We copy the snapshot SRVs from snapshotStagingHeap into slots 1-2 so the
 		// shader reads the latest complete snapshot without any root signature change.
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		device->CopyDescriptorsSimple(1,
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1,  sz),
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21 + readIdx, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		device->CopyDescriptorsSimple(1,
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2,  sz),
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 23 + readIdx, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), 2 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 		// Snapshot buffers live in COMMON. Transition them to SRV state for the draw, then back.
@@ -983,7 +984,7 @@ protected:
 			DX_API("Failed to create particle field buffer")
 				device->CreateCommittedResource(
 					&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+					D3D12_RESOURCE_STATE_COMMON, nullptr,
 					IID_PPV_ARGS(particleFields[f].ReleaseAndGetAddressOf()));
 			std::wstring name = std::wstring(fieldNames[f]) + L" Buffer";
 			particleFields[f]->SetName(name.c_str()); // for debugging
@@ -1077,7 +1078,7 @@ protected:
 		DX_API("Failed to create cell count buffer")
 			device->CreateCommittedResource(
 				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &cellCountDesc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
 				IID_PPV_ARGS(cellCountBuffer.ReleaseAndGetAddressOf()));
 		cellCountBuffer->SetName(L"Cell Count Buffer");
 
@@ -1089,7 +1090,7 @@ protected:
 		DX_API("Failed to create cell prefix sum buffer")
 			device->CreateCommittedResource(
 				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &prefixSumDesc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
 				IID_PPV_ARGS(cellPrefixSumBuffer.ReleaseAndGetAddressOf()));
 		cellPrefixSumBuffer->SetName(L"Cell Prefix Sum Buffer");
 	}
@@ -1133,7 +1134,7 @@ protected:
 			DX_API("Failed to create sorted field buffer")
 				device->CreateCommittedResource(
 					&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
-					D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+					D3D12_RESOURCE_STATE_COMMON, nullptr,
 					IID_PPV_ARGS(sortedFields[f].ReleaseAndGetAddressOf()));
 			std::wstring name = std::wstring(L"Sorted ") + fieldNames[f] + L" Buffer";
 			sortedFields[f]->SetName(name.c_str());
@@ -1149,7 +1150,7 @@ protected:
 		DX_API("Failed to create permutation buffer")
 			device->CreateCommittedResource(
 				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
 				IID_PPV_ARGS(permBuffer.ReleaseAndGetAddressOf()));
 		permBuffer->SetName(L"Permutation Buffer");
 	}
@@ -1249,10 +1250,10 @@ protected:
 		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		for (int i = 0; i < 2; i++) {
 			CD3DX12_CPU_DESCRIPTOR_HANDLE posHandle(
-				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21 + i, sz);
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), i, sz);       // slots 0,1
 			device->CreateShaderResourceView(snapshotPosition[i].Get(), &posSrvDesc, posHandle);
 			CD3DX12_CPU_DESCRIPTOR_HANDLE denHandle(
-				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 23 + i, sz);
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), 2 + i, sz);   // slots 2,3
 			device->CreateShaderResourceView(snapshotDensity[i].Get(), &denSrvDesc, denHandle);
 		}
 	}
@@ -1268,18 +1269,29 @@ protected:
 		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
 		//   slot 19:    SDF Texture3D SRV (t0) — sampled by the solid-obstacle collision compute shaders
 		//   slot 20:    permutation UAV (u16)  — old index -> sorted index, written by sortCS, read by permutateCS
-		//   slot 21:    snapshotPosition[0] SRV — source for CopyDescriptorsSimple into slot 1
-		//   slot 22:    snapshotPosition[1] SRV — source for CopyDescriptorsSimple into slot 1
-		//   slot 23:    snapshotDensity[0] SRV  — source for CopyDescriptorsSimple into slot 2
-		//   slot 24:    snapshotDensity[1] SRV  — source for CopyDescriptorsSimple into slot 2
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 25;
+		dhd.NumDescriptors = 21;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(descriptorHeap.GetAddressOf()));
+	}
+
+	void CreateSnapshotStagingHeap() {
+		// 4-slot CPU-only heap used exclusively as CopyDescriptors source.
+		// D3D12 forbids reading from SHADER_VISIBLE heaps on the CPU, so snapshot SRVs
+		// that need to be copied each frame live here instead of in descriptorHeap.
+		// Layout: [0]=snapshotPosition[0], [1]=snapshotPosition[1],
+		//         [2]=snapshotDensity[0],  [3]=snapshotDensity[1]
+		D3D12_DESCRIPTOR_HEAP_DESC dhd;
+		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // CPU-readable: required for CopyDescriptors source
+		dhd.NodeMask = 0;
+		dhd.NumDescriptors = 4;
+		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		DX_API("Failed to create snapshot staging descriptor heap")
+			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(snapshotStagingHeap.GetAddressOf()));
 	}
 
 	void CreateImGuiDescriptorHeap() {
@@ -1310,7 +1322,8 @@ protected:
 		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
 		// slot 20: permutation UAV (u16) -- old index -> sorted index
 		CreatePermUav();
-		// slots 21-24: snapshot position[0/1] and density[0/1] SRVs -- sources for CopyDescriptorsSimple
+		// snapshotStagingHeap slots 0-3: snapshot SRVs used as CopyDescriptors source each frame
+		CreateSnapshotStagingHeap();
 		CreateSnapshotSrvs();
 	}
 

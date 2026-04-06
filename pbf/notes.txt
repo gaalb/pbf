@@ -21,3 +21,9 @@ TODOS:
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
 -investigate whether we're actually double buffering  
+-double buffer the sorting, that is to say, instead of copying the sorted particles back to the original 
+ buffer, just re-bind the buffers, so that the sorted buffer becomes the original and vice versa
+-pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
+ so we could pre-compute them and just add them to the cell index
+-check bottleneck in nsight graphics
+-check if we can enforce fps cap better (it's a bit too far under the target)
