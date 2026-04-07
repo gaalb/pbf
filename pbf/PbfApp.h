@@ -65,7 +65,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 80, particlesY = 50, particlesZ = 80; // number of particles along each axis of the initial grid
+	const int particlesX = 80, particlesY = 40, particlesZ = 80; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -76,7 +76,7 @@ protected:
 	// cubic grid with a dense Morton code space.
 	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
 	const float particleRadius = particleSpacing * 0.4f;
-	const float hMultiplier = 3.5f; // h = particleSpacing * hMultiplier
+	const float hMultiplier = 3.25f; // h = particleSpacing * hMultiplier
 	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
@@ -100,12 +100,12 @@ protected:
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 4; // how many newton steps to take per frame
-	float epsilon = 5.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
+	float epsilon = 4.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
 	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
-	float sCorrK = 0.02f; // artificial pressure magnitude coefficient M&M: 0.1
+	float sCorrK = 0.01f; // artificial pressure magnitude coefficient M&M: 0.1
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
-	float adhesion = 0.05f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
+	float adhesion = 0.02f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
 	
 	// non-constant members
@@ -178,7 +178,8 @@ protected:
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
 	using clock = std::chrono::high_resolution_clock;
 	clock::time_point lastFrame; // tracks accumulated time toward next physics step
-	std::chrono::duration<double> targetPeriod{ 1.0 / 30.0 }; // 60 fps cap
+	const float targetFps = 60.0f;
+	std::chrono::duration<double> targetPeriod{ 1.0 / targetFps }; // 60 fps cap
 	clock::time_point t0, t1; // debug timer variabeles
 	float debugTimer = 0.0f;
 	float lastDt = 0.0f; // dt from last Update(), consumed by Render() for compute CB upload after GPU sync
@@ -186,7 +187,7 @@ protected:
 	uint64_t frameCount = 0;
 
 	bool fpsCapped = false;
-	bool physicsRunning = true; // toggled by spacebar: when false, compute passes are skipped each frame
+	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 	
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
@@ -743,19 +744,19 @@ protected:
 		ImGui::Begin("PBF Controls");
 		ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
-		ImGui::InputInt("Solver iterations [4]", &solverIterations, 1); // step 1 per click
-		ImGui::InputFloat("Epsilon (relaxation) [5.0]", &epsilon, 0.5f, 1.0f, "%.2f");
-		ImGui::InputFloat("Viscosity (XSPH) [0.01]", &viscosity, 0.001f, 0.01f, "%.4f");
-		ImGui::InputFloat("Artificial pressure [0.02]", &sCorrK, 0.005f, 0.05f, "%.4f");
-		ImGui::InputFloat("Vorticity epsilon [0.01]", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
-		ImGui::InputFloat("Adhesion [0.05]", &adhesion, 0.01f, 0.1f, "%.3f");
+		ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
+		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
+		ImGui::InputFloat("Viscosity (XSPH)", &viscosity, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
+		ImGui::InputFloat("Vorticity epsilon", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::SameLine();
 		ImGui::Checkbox("FPS cap", &fpsCapped);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
-		ImGui::Text("%d particles, %u cells, rho0 = %.2f", numParticles, gridDim*gridDim*gridDim, rho0);
+		ImGui::Text("%d particles, %u cells", numParticles, gridDim*gridDim*gridDim);
 		ImGui::Text("%.1f FPS, render: %.2f ms", ImGui::GetIO().Framerate, debugTimer);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 		ImGui::Separator();
@@ -952,10 +953,20 @@ protected:
 	}
 
 	// This function cannot be called more than once every targetPeriod time: rate limit
+	// a better way of doing this would be a fixed timestep accumulation, where we decouple
+	// physics dt from render dt entirely, accumulate wall-clock time, and step physics at a 
+	// fixed interval
 	void Throttle() {
 		if (fpsCapped) {
-			auto elapsed = clock::now() - lastFrame;
-			if (elapsed < targetPeriod) std::this_thread::sleep_for(targetPeriod - elapsed);
+			auto deadline = lastFrame + targetPeriod;
+			auto remaining = deadline - clock::now();
+
+			// Sleep for all but the last ~1ms to avoid overshooting
+			if (remaining > std::chrono::milliseconds(1))
+				std::this_thread::sleep_for(remaining - std::chrono::milliseconds(1));
+
+			// Spin-wait the remainder for precision
+			while (clock::now() < deadline) {}
 		}
 		lastFrame = clock::now();
 	}
