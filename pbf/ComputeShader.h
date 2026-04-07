@@ -7,16 +7,24 @@
 
 // Encapsulates a single compute shader: its PSO, root signature, descriptor table bindings,
 // and the resource lists used to insert UAV barriers before or after dispatch.
-// Follows the Egg GG_CLASS pattern: store as ComputeShader::P (shared_ptr), create via ComputeShader::Create(...)
+// As per the Egg GG_CLASS patters: store as ComputeShader::P (shared_ptr), create via ComputeShader::Create(...)
 GG_CLASS(ComputeShader)
     com_ptr<ID3D12PipelineState> pso;
     com_ptr<ID3D12RootSignature> rootSig;
 
 public:
+    // inputs and outputs are raw pointers to com_ptrs pointing to the
+    // actual com_ptrs used by PbfApp. The reasoning behind the double
+    // indirectio is so that PbfApp can play around with what resources  
+    // the com_ptrs point to during double buffering:
+    // for (UINT f = 0; f < PF_COUNT; f++)	std::swap(particleFields[f], sortedFields[f]);
+    // This way, when we call functions of ComputeShader that want to
+    // access the inputs/outputs, we re-query the com_ptrs in the indirection,
+    // rather than pointing to the same underlying object, which would
+    // be the case if we just stored ID3D12Resource* pointers.
+    // 
     // Resources read by this shader. Used by barrier_then_dispatch to flush
     // prior writes before the dispatch begins.
-    // Stored as pointers-to-com_ptr so that swapping the owning com_ptrs (double-buffering)
-    // automatically updates the resource pointers resolved here at record time.
     std::vector<com_ptr<ID3D12Resource>*> inputs;
 
     // Resources written by this shader. Used by dispatch_then_barrier to flush
@@ -32,7 +40,8 @@ public:
         // Pointer to the handle member in PbfApp, resolved at record time via *handlePtr.
         // This lets the caller swap the handle value (e.g. particleFieldsHandle <-> sortedFieldsHandle)
         // between dispatches to re-route subsequent commands to different descriptor ranges,
-        // without modifying the descriptor heap or rebuilding the pipeline.
+        // without modifying the descriptor heap or rebuilding the pipeline, same way
+        // as above described with the input/outputs
         D3D12_GPU_DESCRIPTOR_HANDLE* handlePtr;
     };
     std::vector<TableBinding> tableBindings;

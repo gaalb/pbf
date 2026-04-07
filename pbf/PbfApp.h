@@ -321,107 +321,115 @@ protected:
 	void BuildComputePipelines() {
 		D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
 
-		// aliases for a tiny bit of verbosity
 		using std::vector;
 		using TableBinding = ComputeShader::TableBinding;
-
 		using P = com_ptr<ID3D12Resource>*;
-
+		
+		// regarding std::addressof (reminder for myself because I had a lot of headache due to this:
+		// since we're swapping which ID3D12Resource certain com_ptrs point to:
+		// for (UINT f = 0; f < PF_COUNT; f++)	std::swap(particleFields[f], sortedFields[f]);
+		// we're passing com_ptr<ID3D12Resource>* pointers (pointer to a com_ptr to a ID3DResource)
+		// because that allows the outer indirection to correctly re-assess the given
+		// com_ptr under a certain label each time we run a shader
+		// however, com_ptr<ID3D12Resource>* p = &comptr wouldn't work, only addressof(comptr)!
+		// this is because the operator&() overload actually releases the internal pointer
+		// in comptr, and so it would leave the com_ptrs here in PbfApp.h as null!
 		applyForcesShader = ComputeShader::Create(device.Get(), "Shaders/applyForcesCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY] },
-			vector<P>{ &particleFields[PF_VELOCITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
 
 		collisionVelocityShader = ComputeShader::Create(device.Get(), "Shaders/collisionVelocityCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &sdfHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY] },
-			vector<P>{ &particleFields[PF_VELOCITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sdfHandle } },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
 
 		predictPositionShader = ComputeShader::Create(device.Get(), "Shaders/predictPositionCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY] },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &sdfHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION] },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sdfHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_SCRATCH] },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		updateVelocityShader = ComputeShader::Create(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_PREDICTED_POSITION] },
-			vector<P>{ &particleFields[PF_VELOCITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_PREDICTED_POSITION]) },
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
 
 		velocityFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/velocityFromScratchCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_SCRATCH] },
-			vector<P>{ &particleFields[PF_VELOCITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) },
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
 
 		updatePositionShader = ComputeShader::Create(device.Get(), "Shaders/updatePositionCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION] },
-			vector<P>{ &particleFields[PF_POSITION] });
+			vector<TableBinding>{ {1, & particleFieldsHandle} },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]) });
 
 		clearGridShader = ComputeShader::Create(device.Get(), "Shaders/clearGridCS.cso", cbv,
-			vector<TableBinding>{ {1, &gridHandle} },
-			vector<P>{ &cellCountBuffer },
-			vector<P>{ &cellCountBuffer });
+			vector<TableBinding>{ {1, & gridHandle} },
+			vector<P>{ std::addressof(cellCountBuffer) },
+			vector<P>{ std::addressof(cellCountBuffer) });
 
 		prefixSumShader = ComputeShader::Create(device.Get(), "Shaders/prefixSumCS.cso", cbv,
-			vector<TableBinding>{ {1, &gridHandle} },
-			vector<P>{ &cellCountBuffer },
-			vector<P>{ &cellPrefixSumBuffer });
+			vector<TableBinding>{ {1, & gridHandle} },
+			vector<P>{ std::addressof(cellCountBuffer) },
+			vector<P>{ std::addressof(cellPrefixSumBuffer) });
 
 		countGridShader = ComputeShader::Create(device.Get(), "Shaders/countGridCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION], &cellCountBuffer },
-			vector<P>{ &cellCountBuffer });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellCountBuffer) },
+			vector<P>{ std::addressof(cellCountBuffer) });
 
 		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION], &cellCountBuffer, &cellPrefixSumBuffer },
-			vector<P>{ &particleFields[PF_LAMBDA], &particleFields[PF_DENSITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_LAMBDA]), std::addressof(particleFields[PF_DENSITY]) });
 
 		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION], &particleFields[PF_LAMBDA], &cellCountBuffer, &cellPrefixSumBuffer },
-			vector<P>{ &particleFields[PF_SCRATCH] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(particleFields[PF_LAMBDA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
 
 		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY], &cellCountBuffer, &cellPrefixSumBuffer },
-			vector<P>{ &particleFields[PF_OMEGA] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_OMEGA]) });
 
 		confinementShader = ComputeShader::Create(device.Get(), "Shaders/confinementCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_OMEGA], &particleFields[PF_VELOCITY], &cellCountBuffer, &cellPrefixSumBuffer },
-			vector<P>{ &particleFields[PF_VELOCITY] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_OMEGA]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer),
+			std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
 
 		viscosityShader = ComputeShader::Create(device.Get(), "Shaders/viscosityCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY], &cellCountBuffer, &cellPrefixSumBuffer },
-			vector<P>{ &particleFields[PF_SCRATCH] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
 
 		sortShader = ComputeShader::Create(device.Get(), "Shaders/sortCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle}, {3, &permHandle} },
-			vector<P>{ &particleFields[PF_PREDICTED_POSITION], &cellPrefixSumBuffer, &cellCountBuffer },
-			vector<P>{ &permBuffer, &cellCountBuffer });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle }, { 3, &permHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellPrefixSumBuffer), std::addressof(cellCountBuffer) },
+			vector<P>{ std::addressof(permBuffer), std::addressof(cellCountBuffer) });
 
 		permutateShader = ComputeShader::Create(device.Get(), "Shaders/permutateCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &sortedFieldsHandle}, {3, &permHandle} },
-			vector<P>{ &particleFields[PF_POSITION], &particleFields[PF_VELOCITY],
-			  &particleFields[PF_PREDICTED_POSITION], &particleFields[PF_LAMBDA],
-			  &particleFields[PF_DENSITY], &particleFields[PF_OMEGA],
-			  &particleFields[PF_SCRATCH], &permBuffer },
-			vector<P>{ &sortedFields[PF_POSITION], &sortedFields[PF_VELOCITY],
-			  &sortedFields[PF_PREDICTED_POSITION], &sortedFields[PF_LAMBDA],
-			  &sortedFields[PF_DENSITY], &sortedFields[PF_OMEGA],
-			  &sortedFields[PF_SCRATCH] });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sortedFieldsHandle }, { 3, &permHandle } },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]),
+			std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(particleFields[PF_LAMBDA]),
+			std::addressof(particleFields[PF_DENSITY]), std::addressof(particleFields[PF_OMEGA]),
+			std::addressof(particleFields[PF_SCRATCH]), std::addressof(permBuffer) },
+			vector<P>{ std::addressof(sortedFields[PF_POSITION]), std::addressof(sortedFields[PF_VELOCITY]),
+			std::addressof(sortedFields[PF_PREDICTED_POSITION]), std::addressof(sortedFields[PF_LAMBDA]),
+			std::addressof(sortedFields[PF_DENSITY]), std::addressof(sortedFields[PF_OMEGA]),
+			std::addressof(sortedFields[PF_SCRATCH]) });
 	}
 
 	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
@@ -590,9 +598,8 @@ protected:
 		// the handle values here correctly splits the command list into pre-sort and post-sort halves).
 		// The com_ptr swap keeps the inputs/outputs barrier resource pointers consistent with
 		// whichever physical buffer is now playing the "particle fields" role.
-		std::swap(particleFieldsHandle.ptr, sortedFieldsHandle.ptr);
-		for (UINT f = 0; f < PF_COUNT; f++)
-			std::swap(particleFields[f], sortedFields[f]);
+		std::swap(particleFieldsHandle, sortedFieldsHandle);
+		for (UINT f = 0; f < PF_COUNT; f++)	std::swap(particleFields[f], sortedFields[f]);
 	}
 
 	// writeIdx: which snapshot slot to write to this step (caller sets and flips).
@@ -1431,9 +1438,6 @@ public:
 		UploadAll();
 		BuildGraphicsPipelines();
 		BuildComputePipelines();
-		for (UINT f = 0; f < PF_COUNT; f++) {
-			Egg::Utility::WDebugf(L"particleFields[%u] resource=%p\n", f, particleFields[f].Get());
-		}
 	}
 
 	// Call once after CreateResources + LoadAssets, from main.cpp where the HWND is available.

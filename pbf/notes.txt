@@ -27,3 +27,4 @@ TODOS:
  so we could pre-compute them and just add them to the cell index
 -check bottleneck in nsight graphics
 -check if we can enforce fps cap better (it's a bit too far under the target)
+-double buffer in the sorting might be slower than copying?
