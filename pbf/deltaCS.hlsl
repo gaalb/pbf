@@ -15,9 +15,9 @@
 
 #define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
 
-#include "SphKernels.hlsli" // SpikyGrad, Poly6
-
 #include "ComputeCb.hlsli"
+
+#include "SphKernels.hlsli" // SpikyGrad, Poly6
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
 

@@ -41,9 +41,8 @@ float Poly6(float3 r, float h)
     float h2 = h * h;
     if (r2 > h2)
         return 0.0;
-    float coeff = 315.0 / (64.0 * 3.14159265 * pow(h, 9.0));
     float diff = h2 - r2;
-    return coeff * diff * diff * diff;
+    return poly6Coeff * diff * diff * diff;
 }
 
 
@@ -63,12 +62,11 @@ float3 SpikyGrad(float3 r, float h)
     if (rLen > h || rLen < EPSILON)
         return float3(0.0, 0.0, 0.0);
 
-    float coeff = 45.0 / (3.14159265 * pow(h, 6.0));
     float diff = h - rLen;
     float3 rHat = r / rLen; // unit vector r
 
     // Negative: gradient points from i toward j (toward the neighbor)
-    return -coeff * diff * diff * rHat;
+    return -spikyGradCoeff * diff * diff * rHat;
 }
 
 #endif // SPH_KERNELS_HLSLI

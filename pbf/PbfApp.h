@@ -841,6 +841,8 @@ protected:
 		computeCb->sdfMax = Float4(smax, 0.0f);
 		computeCb->gridMin = gridMin;
 		computeCb->gridMax = gridMax;
+		computeCb->poly6Coeff = 315.0f / (64.0f * 3.14159265358979323846f * powf(h, 9.0f));
+		computeCb->spikyGradCoeff = 45.0f / (3.14159265358979323846f * powf(h, 6.0f));
 		computeCb.Upload();
 	}
 

@@ -45,7 +45,8 @@ __declspec(align(16)) struct ComputeCb {
 	UINT fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
 	float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	float pushRadius; // offset 84 (4 bytes): SDF push-out target distance (particleSpacing * pushRadiusMult, set on CPU)
-	float _pad[2]; // offsets 88, 92: padding to align solidInvTransform to 16-byte boundary
+	float poly6Coeff;    // offset 88: precomputed 315 / (64 * PI * h^9)
+	float spikyGradCoeff; // offset 92: precomputed 45 / (PI * h^6)
 	Float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform; updated each frame
 	Float4 sdfMin; // offset 160 (16 bytes): object-space SDF AABB min (xyz = min corner, w unused)
 	Float4 sdfMax; // offset 176 (16 bytes): object-space SDF AABB max (xyz = max corner, w unused)

@@ -17,9 +17,9 @@
 // Out: lambda, density
 #define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
 
-#include "SphKernels.hlsli" // Poly6, SpikyGrad
-
 #include "ComputeCb.hlsli"
+
+#include "SphKernels.hlsli" // Poly6, SpikyGrad
 
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
 
