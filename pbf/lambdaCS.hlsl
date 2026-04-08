@@ -63,14 +63,16 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
             // r points from neighbor j toward particle i (r_ij = p_i - p_j)
             float3 r = pi - predictedPosition[j];
+            
+            float r2 = dot(r, r);
 
             // Density: every particle j including i itself contributes.
-            rho += Poly6(r, h);
+            rho += Poly6(r, r2, h);
 
             if (j != i)
             {
                 // k=j case: grad_pj(C_i) = -(1/rho0) * grad_W_spiky(r_ij, h)
-                float3 gradW = SpikyGrad(r, h);
+                float3 gradW = SpikyGrad(r, r2, h);
                 float3 gradJ = -(1.0 / rho0) * gradW;
                 gradSqSum += dot(gradJ, gradJ); // add |grad_pj(C_i)|^2 to denominator
 

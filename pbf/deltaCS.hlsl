@@ -41,7 +41,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // Precompute the s_corr denominator, same for every (i,j) pair.
     // Poly6 only uses the squared magnitude so the direction does not matter.
-    float poly6AtDeltaQ = Poly6(float3(sCorrDeltaQ, 0, 0), h);
+    float poly6AtDeltaQ = Poly6(float3(sCorrDeltaQ, 0, 0), sCorrDeltaQ*sCorrDeltaQ, h);
 
     float3 deltaP = float3(0, 0, 0);
 
@@ -59,6 +59,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
             // r_ij points from neighbor j toward particle i
             float3 r = pi - predictedPosition[j];
+            
+            float r2 = dot(r, r);
 
             // Overlapping particles (r ~ 0): SpikyGrad returns zero so they'd
             // be stuck forever. Skip the normal sCorr + SpikyGrad computation
@@ -66,7 +68,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // instead add a small direct repulsive nudge in a pseudo-random
             // direction. On subsequent solver iterations, even a tiny separation
             // lets the normal gradient take over.
-             if (length(r) < EPSILON) {
+             if (r2 < EPSILON*EPSILON) {
                 deltaP += overlapJitter(i, j) * (h * 0.001);
                 continue;
              }
@@ -76,7 +78,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
             // that counteracts this without disturbing the bulk behavior.
             // s_corr = -k * (W(r, h) / W(delta_q, h))^n
-            float wRatio = Poly6(r, h) / poly6AtDeltaQ;
+            float wRatio = Poly6(r, r2, h) / poly6AtDeltaQ;
             float sCorr = -sCorrK * pow(wRatio, sCorrN); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
 
             // Eq. 12 + 13: position correction with artificial pressure included..
@@ -88,7 +90,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // particle counts are low and density is even lower, this mild attraction
             // creates a coherent surface instead of the violent clumping (tensile instability)
             // that occurs without s_corr. Raising sCorrK increases this surface cohesion.
-            deltaP += (lambdaI + lambda[j] + sCorr) * SpikyGrad(r, h);
+            deltaP += (lambdaI + lambda[j] + sCorr) * SpikyGrad(r, r2, h);
         }
     }
     deltaP /= rho0;

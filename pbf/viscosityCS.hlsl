@@ -55,6 +55,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
 
             float3 r = pi - position[j];
+            
+            float r2 = dot(r, r);
+            
             float3 vj = velocity[j];
 
             // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity.
@@ -67,7 +70,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // The assumption is that PBF keeps rho_j ≈ rho0 for all j (incompressibility),
             // making 1/rho_j approximately uniform. Under that assumption it too is absorbed
             // into c, and the formula reduces to what we compute here.
-            xsphSum += (vj - vi) * Poly6(r, h);
+            xsphSum += (vj - vi) * Poly6(r, r2, h);
         }
     }
 

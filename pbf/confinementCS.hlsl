@@ -56,12 +56,14 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
             // r points from neighbor j toward particle i
             float3 r = pi - position[j];
+            
+            float r2 = dot(r, r);
 
             // |omega_j|: scalar vorticity magnitude of neighbor j, written by vorticityCS
             float omegaJLen = length(omega[j]);
 
             // gradient of the spiky kernel at r_ij, with respect to p_i
-            float3 gradW = SpikyGrad(r, h);
+            float3 gradW = SpikyGrad(r, r2, h);
 
             // Accumulate eta_i = sum_j |omega_j| * grad_{p_i} W(r_ij, h).
             // This is an SPH estimate of grad(|omega|) at p_i -- but note what is being omitted:

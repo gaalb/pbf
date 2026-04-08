@@ -50,11 +50,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
 
             float3 r = pi - position[j];
+            
+            float r2 = dot(r, r);
 
             // The curl estimator uses the gradient of W with respect to p_j, not p_i.
             // grad_{p_j} W(p_i - p_j, h) = -grad_{p_i} W(p_i - p_j, h) = -SpikyGrad(r, h)
             // so the sign is negated compared to using SpikyGrad directly.
-            omegaAccum += cross(velocity[j] - vi, -SpikyGrad(r, h));
+            omegaAccum += cross(velocity[j] - vi, -SpikyGrad(r, r2, h));
         }
     }
 

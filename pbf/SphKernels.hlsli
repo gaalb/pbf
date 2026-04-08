@@ -35,9 +35,8 @@ float3 overlapJitter(uint i, uint j)
 }
 
 // Poly6 kernel
-float Poly6(float3 r, float h)
+float Poly6(float3 r, float r2, float h)
 {
-    float r2 = dot(r, r);
     float h2 = h * h;
     if (r2 > h2)
         return 0.0;
@@ -53,9 +52,9 @@ float Poly6(float3 r, float h)
 //
 // with r = (pi - pj) as a vector
 // grad(W_spiky(r, h)) = -45/=(pi*h^6)*(h-length(r))^2 * normalized(r)
-float3 SpikyGrad(float3 r, float h)
+float3 SpikyGrad(float3 r, float r2, float h)
 {
-    float rLen = length(r);
+    float rLen = sqrt(r2);
 
     // Guard: outside support radius contributes nothing.
     // rLen < EPSILON handles j == i (r = 0) to avoid divide-by-zero.
