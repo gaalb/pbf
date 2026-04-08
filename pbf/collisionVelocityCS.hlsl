@@ -28,6 +28,7 @@
         "addressV = TEXTURE_ADDRESS_CLAMP, " \
         "addressW = TEXTURE_ADDRESS_CLAMP)"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SolidSdf.hlsli"
 
@@ -35,7 +36,7 @@ RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
 
 [RootSignature(CollisionVelocityRootSig)]
-[numthreads(256, 1, 1)]
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;

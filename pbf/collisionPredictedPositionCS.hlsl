@@ -22,13 +22,14 @@
         "addressV = TEXTURE_ADDRESS_CLAMP, " \
         "addressW = TEXTURE_ADDRESS_CLAMP)"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SolidSdf.hlsli"
 
 RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(CollisionPositionRootSig)]
-[numthreads(256, 1, 1)]
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;

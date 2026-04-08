@@ -16,6 +16,7 @@
 #include "SolidObstacle.h"
 #include <immintrin.h>
 #include <thread>
+#include "SharedConfig.hlsli"
 
 using namespace Egg::Math;
 
@@ -564,10 +565,10 @@ protected:
 	}
 
 	void SortParticles() {
-		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
-		UINT numGroups = (numParticles + 255) / 256;
-		// ceil(numCells / 256) groups cover all cells; the shader discards extra threads
-		UINT numCellGroups = (numCells + 255) / 256;
+		// ceil(numParticles / THREAD_GROUP_SIZE) groups cover all particles; the shader discards extra threads
+		UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
+		// ceil(numCells / THREAD_GROUP_SIZE) groups cover all cells; the shader discards extra threads
+		UINT numCellGroups = (numCells + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
 
 		// zero the cell count
 		clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
@@ -605,8 +606,8 @@ protected:
 
 	// writeIdx: which snapshot slot to write to this step (caller sets and flips).
 	void RecordComputeCommands(int writeIdx) {
-		// ceil(numParticles / 256) groups cover all particles; the shader discards extra threads
-		UINT numGroups = (numParticles + 255) / 256;
+		// ceil(numParticles / THREAD_GROUP_SIZE) groups cover all particles; the shader discards extra threads
+		UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
 
 		// apply gravity + external forces to velocity
 		applyForcesShader->dispatch_then_barrier(computeList.Get(), numGroups);

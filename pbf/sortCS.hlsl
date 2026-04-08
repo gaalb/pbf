@@ -10,8 +10,8 @@
 
 #define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u16, numDescriptors = 1))"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
-
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 // Only predictedPosition (u2) is read from the particle fields table; the
@@ -26,7 +26,7 @@ RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 RWStructuredBuffer<uint> perm : register(u16);
 
 [RootSignature(SortRootSig)]
-[numthreads(256, 1, 1)]
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;

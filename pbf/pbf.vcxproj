@@ -204,6 +204,7 @@
   <ItemGroup>
     <None Include="ComputeCb.hlsli" />
     <None Include="GridUtils.hlsli" />
+    <None Include="SharedConfig.hlsli" />
     <None Include="SolidSdf.hlsli" />
     <None Include="SphKernels.hlsli" />
   </ItemGroup>

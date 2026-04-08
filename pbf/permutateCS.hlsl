@@ -11,6 +11,7 @@
 
 #define GatherRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u9, numDescriptors = 7)), DescriptorTable(UAV(u16, numDescriptors = 1))"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
 // Particle field buffers (read)
@@ -35,7 +36,7 @@ RWStructuredBuffer<float3> sortedScratch           : register(u15);
 RWStructuredBuffer<uint> perm : register(u16);
 
 [RootSignature(GatherRootSig)]
-[numthreads(256, 1, 1)]
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;

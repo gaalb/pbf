@@ -168,6 +168,9 @@
     <None Include="SolidSdf.hlsli">
       <Filter>Shaders\Include</Filter>
     </None>
+    <None Include="SharedConfig.hlsli">
+      <Filter>Shaders\Include</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Text Include="notes.txt">

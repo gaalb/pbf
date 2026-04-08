@@ -12,8 +12,8 @@
 
 #define PrefixSumRootSig "CBV(b0), DescriptorTable(UAV(u7, numDescriptors = 2))"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
-
 #include "GridUtils.hlsli" // gridDim()
 
 RWStructuredBuffer<uint> cellCount : register(u7);

@@ -15,10 +15,9 @@
 
 #define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
 
+#include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
-
 #include "SphKernels.hlsli" // Poly6
-
 #include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
 
 RWStructuredBuffer<float3> position : register(u0);
@@ -28,7 +27,7 @@ RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 
 [RootSignature(ViscosityRootSig)]
-[numthreads(256, 1, 1)]
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;
