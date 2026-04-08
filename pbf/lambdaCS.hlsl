@@ -55,10 +55,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     {
         uint ci = nCells.indices[c];
         uint count = cellCount[ci];
+        int prefixSum = cellPrefixSum[ci];
 
         for (uint s = 0; s < count; s++)
         {
-            uint j = cellPrefixSum[ci] + s;
+            uint j = prefixSum + s;
 
             // r points from neighbor j toward particle i (r_ij = p_i - p_j)
             float3 r = pi - predictedPosition[j];

@@ -49,10 +49,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     {
         uint ci = nCells.indices[c];
         uint count = cellCount[ci];
-
+        uint prefixSum = cellPrefixSum[ci];
+        
         for (uint s = 0; s < count; s++)
         {
-            uint j = cellPrefixSum[ci] + s;
+            uint j = prefixSum + s;
             if (j == i)
                 continue;
 
