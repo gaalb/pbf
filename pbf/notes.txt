@@ -2,32 +2,40 @@
 ---------------------------------------------------------------------------------------
 TODOS:
 -investigate brownian motion: probably just a feature of pbf...
--morton codes
-	-implemented, but no efficiency gain?
+-morton codes implemented, but no efficiency gain?
 -liquid surface rendering
--merge fields in the particle struct that never live together: probably not a lot to gain
 -adaptive pbf article imrovements
--better spatial hash, multi level memory article
 -better sorting, eventually radix sort
--separate the simulation domain and the bounding box
+	-this is really just a parallel prefix sum
 -completely disjoin the graphics fps from the simulation timestep:
 	-make it possible to have several physics steps per graphics frame
 	-make it possible for several graphics frames to pass without a physics step
 -cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?
--could we achieve a speedup by not having a separate copy pass where we copy the sorted particles
- to the original, and instead just re-binding the buffers?
+-maybe merge whatever shaders can be merged: fewer UAV barriers
 -make the descriptor heap's layout defined in 1 place, such that if I change
  descriptor layout, I don't have to change it in several places, just 1
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
 -investigate whether we're actually double buffering  
--double buffer the sorting, that is to say, instead of copying the sorted particles back to the original 
- buffer, just re-bind the buffers, so that the sorted buffer becomes the original and vice versa
 -pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
  so we could pre-compute them and just add them to the cell index
 -check bottleneck in nsight graphics
 -check if we can enforce fps cap better (it's a bit too far under the target)
 -double buffer in the sorting might be slower than copying?
+-notes on GSM: I though I could improve the speed of particleData[idx] type lookups by
+ storing thread group sharing particles' data in GSM for quicker lookup in the neighbor loop
+ This didn't lead to efficiency gains at all, so I supposed that the ratio of particles
+ in the same thread group but not in the same neighborhood was very small, and could be improved
+ by cell based particle lookup, the plan for which is down below. This not only didn't help,
+ but dropped efficiency by a lot.
+-the above makes me wonder: the first GSM implementation (GSM_lambdaCS.hlsl) should've provided
+ a speedup, because particles in the same thread group should be somewhat adjacent spatially
+ due to the Morton Code indexing. However, they didn't, and now that I think about it, the Morton
+ codes' introduction didn't provide a speedup at all (almost identical to row-major). Are we even
+ using Morton codes?
+-we could try making the sort quicker to be able to make a finer grid? would that do anything?
+ we could, for example, skip some neighbor checks 
+
 
 Cell-Centric Dispatch Optimization Plan (failed shaders in deltaCS and lambdaCS)
 ========================================
