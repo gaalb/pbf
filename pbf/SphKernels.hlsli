@@ -54,12 +54,12 @@ float Poly6(float3 r, float r2, float h)
 // grad(W_spiky(r, h)) = -45/=(pi*h^6)*(h-length(r))^2 * normalized(r)
 float3 SpikyGrad(float3 r, float r2, float h)
 {
-    float rLen = sqrt(r2);
-
     // Guard: outside support radius contributes nothing.
     // rLen < EPSILON handles j == i (r = 0) to avoid divide-by-zero.
-    if (rLen > h || rLen < EPSILON)
-        return float3(0.0, 0.0, 0.0);
+    if (r2 > h*h || r2 < EPSILON * EPSILON)
+        return float3(0.0, 0.0, 0.0);    
+    
+    float rLen = sqrt(r2);
 
     float diff = h - rLen;
     float3 rHat = r / rLen; // unit vector r
