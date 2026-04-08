@@ -96,8 +96,8 @@ protected:
 	const float boxExtent = gridDim * h; // box side length = 28.0
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = Float3(-10.0f, gridMin.y, -10.0f); // adjustable collision boundary
-	Float3 boxMax = Float3(10.0f, gridMax.y, 10.0f); // adjustable collision boundary
+	Float3 boxMin = gridMin; // adjustable collision boundary
+	Float3 boxMax = gridMax; // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 4; // how many newton steps to take per frame

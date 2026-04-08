@@ -28,3 +28,89 @@ TODOS:
 -check bottleneck in nsight graphics
 -check if we can enforce fps cap better (it's a bit too far under the target)
 -double buffer in the sorting might be slower than copying?
+
+Cell-Centric Dispatch Optimization Plan (failed shaders in deltaCS and lambdaCS)
+========================================
+
+PROBLEM
+-------
+Current performance: 70-80 FPS at 25,0000 particles.
+Target: 60 FPS at 1,000,000 particles (~4 scale-up).
+
+Nsight profiling identifies lambdaCS and deltaCS as the dominant bottlenecks.
+These shaders run 4 times per frame (solver iterations) and account for the
+vast majority of GPU time. The top stall reasons are LGSB and NOTSEL on
+scattered reads of predictedPosition[j] in the inner neighbor loop.
+
+POSSIBLE ROOT CAUSE
+----------
+The current dispatch is particle-centric: N threads for N particles, split
+into groups of 256 by particle index. Each thread independently enumerates
+27 neighbor cells, loops over their particles, and reads predictedPosition[j]
+from VRAM, or cache when possible.
+
+A group-shared memory (GSM) preload was attempted (see the currently unused
+GS_lambdaCS.hlsl and GS_deltaCS.hlsl as opposed to their counterparts
+lambdaCS.hlsl / deltaCS.hlsl), where each thread group loads its 256
+particles' positions into GSM. This resulted in a slight FPS LOSS.
+
+WHAT I WANT TO TRY: CELL-CENTRIC DISPATCH
+--------------------------------
+Instead of dispatching one thread per particle (grouped by arbitrary index),
+dispatch one thread group per spatial grid cell. All threads in a group
+are assigned to particles that live in the same cell.
+
+This enables cooperative loading of neighbor data into GSM:
+Phase 1 (cooperative load): All threads in the group cooperate to load every
+particle from the 27 neighbor cells into GSM. If we go with (for example)
+numThreads 128, then 128 threads is likely fewer than the number of particles
+in the surrounding 27 cells combined, so each thread will have to copy more
+than 1 particle's data. With a strided loop, for example. This is a 
+sequential, cache-friendly sweep through the sorted buffer (each cell's 
+particles are contiguous after the counting sort). One 
+GroupMemoryBarrierWithGroupSync follows.
+ 
+Phase 2 (compute): Each thread that isn't associated with a particle
+quits, and the rest do what they already do, except they can now read
+neighpor positions from the extremely fast GSM instead of VRAM.
+
+DISPATCH MECHANICS
+------------------
+Dispatch over all 32K cells (gridDim^3 = 32^3). Empty cells (cellCount == 0)
+return immediately from the shader. 
+Each thread group g handles cell C_g = g (direct mapping, since we dispatch
+over all cell indices). Thread t in the group handles particle at index:
+  cellPrefixSum[C_g] + t    (if t < cellCount[C_g])
+
+THREAD COUNT PER GROUP
+----------------------
+At rest density, each cell holds approximately:
+  (h / particleSpacing)^3 = hMultiplier^3 = 3.25^3 ~ 34 particles
+
+During solver iterations, density overshoots are common. Cells can temporarily
+hold 1.5-2x rest density, so ~50-70 particles. numthreads(128, 1, 1) provides
+enough headroom. Excess threads (t >= cellCount) return early.
+
+numthreads must be a multiple of 32 (warp size). 128 is the planned value.
+
+GSM BUDGET
+----------
+The GSM must hold all particles from the 27 neighbor cells, not just the
+cell's own particles. At rest density: 34 * 27 ~ 918 particles.
+Leaving room for overshoots, let's go with 2048 particle slots, so
+gs_positions can be 2048 float3, should fit in memory limit (double
+check me please).
+Later on we might make this a float4, and add lambda in w.
+The GSM arrays are independent of UAV buffer types -- data is packed during
+the cooperative loading phase from separate float3 and float UAVs.
+
+PHILOSOPHY
+----------
+- Preserve algorithmic and physical correctness. Same math, same iterations,
+  same kernel functions. Only the memory access pattern changes.
+- Incremental approach. Start with lambdaCS + predictedPosition only, measure
+  the impact, then I might ask you to extend to deltaCS and full float4 packing.
+- Keep it simple. Dispatch all cells rather than compacting. Use fixed
+  numthreads rather than variable. Accept minor waste in exchange for
+  implementation clarity.
+
