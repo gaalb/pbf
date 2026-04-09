@@ -22,5 +22,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
+#ifdef JACOBI_STYLE
     predictedPosition[i] = scratch[i];
+#endif
 }

@@ -37,6 +37,9 @@
     <Filter Include="Shaders\Compute\lambdaCS">
       <UniqueIdentifier>{cad448eb-03f6-482f-bf08-ff689e7b5668}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\prefixSum">
+      <UniqueIdentifier>{fc9cc854-9c2d-4d87-8c88-ff7e8c880feb}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -170,13 +173,13 @@
       <Filter>Shaders\Compute\lambdaCS</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass1CS.hlsl">
-      <Filter>Shaders\Compute</Filter>
+      <Filter>Shaders\Compute\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass2CS.hlsl">
-      <Filter>Shaders\Compute</Filter>
+      <Filter>Shaders\Compute\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass3CS.hlsl">
-      <Filter>Shaders\Compute</Filter>
+      <Filter>Shaders\Compute\prefixSum</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

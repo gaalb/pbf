@@ -35,5 +35,11 @@
 // Grid world-space half-extent: GRID_DIM cells of width H/CELL_PER_H on each side.
 #define BOX_HALF_EXTENT GRID_DIM * CELL_SIZE / 2.0f
 
-
+// When defined, deltaCS and viscosityCS write their results to the scratch field and
+// separate "from scratch" passes copy back — a strict Jacobi update where every thread
+// sees a consistent snapshot from the previous iteration.
+// When commented out, each shader writes directly to the target field (predictedPosition
+// or velocity), accepting that some threads may read their neighbors' already-updated
+// values (Gauss-Seidel ordering).
+#define JACOBI_STYLE
 

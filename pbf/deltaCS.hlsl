@@ -96,5 +96,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     deltaP /= RHO0;
 
     // Update the predicted position (collision response is handled by collisionCS)
+#ifdef JACOBI_STYLE
     scratch[i] = pi + deltaP;
+#else
+    predictedPosition[i] = pi + deltaP;
+#endif
 }
