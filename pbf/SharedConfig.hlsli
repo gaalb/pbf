@@ -1,5 +1,5 @@
 #define THREAD_GROUP_SIZE 256
-#define CELL_PER_H 3
+#define CELL_PER_H 2
 
 // Compile-time simulation constants shared between HLSL and C++.
 // These never change at runtime, so keeping them as preprocessor defines
@@ -22,7 +22,7 @@
 #define SCORR_N           3.0f
 
 // Grid dimensions: gridDim cells per axis, each of width H/CELL_PER_H.
-#define GRID_DIM          64
+#define GRID_DIM          64 // blelloch scan limitation: currently can't be bigger than 64 
 
 // SPH kernel normalization coefficients, precomputed from H.
 #define PBF_PI            3.14159265358979323846f

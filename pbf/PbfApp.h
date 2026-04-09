@@ -66,7 +66,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 50, particlesY = 50, particlesZ = 50; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 30, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 5, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -136,20 +136,28 @@ protected:
 	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
 	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
 	com_ptr<ID3D12Resource> permBuffer; // default heap: uint per particle, maps old index -> sorted index (computed by sortCS, applied by permutateCS)
+	com_ptr<ID3D12Resource> groupSumBuffer; // default heap: per-group totals scratch for the Blelloch 3-pass prefix sum (numCells / (2*THREAD_GROUP_SIZE) uints)
+
 
 	// One ComputeShader per pass. Each holds its own PSO, root signature, descriptor
 	// table bindings, and input/output resource lists for UAV barrier insertion.
 	// GPU descriptor handles for the descriptor table ranges, computed once in CacheDescriptorHandles.
-	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // UAV(u0..u6): particle field buffers
-	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // UAV(u7..u8): cellCount, cellPrefixSum
-	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // UAV(u9..u15): sorted particle field buffers
-	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // UAV(u16): permutation buffer (slot 20)
+	// TODO: comments, updated after new sort
+	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // particle field buffers
+	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // cellCount, cellPrefixSum
+	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // sorted particle field buffers
+	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // permutation buffer (slot 20)
+	CD3DX12_GPU_DESCRIPTOR_HANDLE cellPrefixSumHandle; // cellPrefixSum alone (slot 11), used by prefix sum pass 3
+	CD3DX12_GPU_DESCRIPTOR_HANDLE groupSumHandle; // group totals scratch (slot 21), used by all three prefix sum passes
 	ComputeShader::P applyForcesShader;  // apply gravity and external forces to velocity
 	ComputeShader::P collisionVelocityShader;  // zero wall-directed velocity, apply adhesion
 	ComputeShader::P predictPositionShader; // p* = position + velocity * dt
 	ComputeShader::P collisionPredictedPositionShader; // clamp p* to box; runs pre-sort and every solver iteration
 	ComputeShader::P clearGridShader; // zero cellCount array
 	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
+	ComputeShader::P prefixSumPass1Shader; // Blelloch pass 1: intra-group exclusive scan + save group totals
+	ComputeShader::P prefixSumPass2Shader; // Blelloch pass 2: exclusive scan of the group totals
+	ComputeShader::P prefixSumPass3Shader; // Blelloch pass 3: add global group offsets to intra-group sums
 	ComputeShader::P prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
 	ComputeShader::P sortShader; // each particle computes its sorted destination index -> perm[]
 	ComputeShader::P permutateShader; // applies perm[] to scatter all particle fields to sorted positions
@@ -379,9 +387,23 @@ protected:
 			vector<P>{ std::addressof(cellCountBuffer) },
 			vector<P>{ std::addressof(cellCountBuffer) });
 
-		prefixSumShader = ComputeShader::Create(device.Get(), "Shaders/prefixSumCS.cso", cbv,
-			vector<TableBinding>{ {1, & gridHandle} },
+		// Three-pass Blelloch parallel prefix sum
+		// pass 1: intra-group exclusive scan + per-group totals -> cellPrefixSum (local) + groupSums
+		// pass 2: exclusive scan of groupSums in-place -> global offsets per group
+		// pass 3: add global offsets to cellPrefixSum -> final global exclusive prefix sum
+		prefixSumPass1Shader = ComputeShader::Create(device.Get(), "Shaders/prefixSumPass1CS.cso", cbv,
+			vector<TableBinding>{ {1, & gridHandle}, { 2, &groupSumHandle } },
 			vector<P>{ std::addressof(cellCountBuffer) },
+			vector<P>{ std::addressof(cellPrefixSumBuffer), std::addressof(groupSumBuffer) });
+
+		prefixSumPass2Shader = ComputeShader::Create(device.Get(), "Shaders/prefixSumPass2CS.cso", cbv,
+			vector<TableBinding>{ {1, & groupSumHandle} },
+			vector<P>{ std::addressof(groupSumBuffer) },
+			vector<P>{ std::addressof(groupSumBuffer) });
+
+		prefixSumPass3Shader = ComputeShader::Create(device.Get(), "Shaders/prefixSumPass3CS.cso", cbv,
+			vector<TableBinding>{ {1, & cellPrefixSumHandle}, { 2, &groupSumHandle } },
+			vector<P>{ std::addressof(groupSumBuffer), std::addressof(cellPrefixSumBuffer) },
 			vector<P>{ std::addressof(cellPrefixSumBuffer) });
 
 		countGridShader = ComputeShader::Create(device.Get(), "Shaders/countGridCS.cso", cbv,
@@ -576,11 +598,15 @@ protected:
 		// are in that cell
 		countGridShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
-		// exclusive prefix sum of cellCount -> cellPrefixSum
-		// tells us where each cell's particle run starts in the sorted buffer,
-		// meaning that after this call, the ith element in cellPrefixSum tells
-		// us where the ith cell's range begins in the particle buffer
-		prefixSumShader->dispatch_then_barrier(computeList.Get(), 1);
+		// Parallel exclusive prefix sum of cellCount -> cellPrefixSum via the Blelloch algorithm.
+		// Three passes are required because the full array (32768 cells) doesn't fit in one
+		// thread group's shared memory; each group processes 512 cells independently, then
+		// a second pass scans the 64 group totals, and a third pass propagates them back.
+		// After the three passes, cellPrefixSum[i] = sum of cellCount[0..i-1] for all i.
+		UINT numPass1Groups = numCells / (2 * THREAD_GROUP_SIZE); // = 64 for gridDim=32
+		prefixSumPass1Shader->dispatch_then_barrier(computeList.Get(), numPass1Groups); // local Blelloch + group totals
+		prefixSumPass2Shader->dispatch_then_barrier(computeList.Get(), 1);              // scan group totals into global offsets
+		prefixSumPass3Shader->dispatch_then_barrier(computeList.Get(), numPass1Groups); // add global offsets to local sums
 
 		// zero cell counts again so sortCS can use them as per-cell atomic counters
 		clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
@@ -1083,6 +1109,21 @@ protected:
 				D3D12_RESOURCE_STATE_COMMON, nullptr,
 				IID_PPV_ARGS(cellPrefixSumBuffer.ReleaseAndGetAddressOf()));
 		cellPrefixSumBuffer->SetName(L"Cell Prefix Sum Buffer");
+
+		// groupSumBuffer: one uint per pass-1 group, holds each group's particle total.
+		// Pass 1 writes these; pass 2 scans them in-place into global exclusive offsets;
+		// pass 3 reads them to finalise cellPrefixSum.
+		// Number of groups = numCells / (2 * THREAD_GROUP_SIZE) = 32768 / 512 = 64.
+		const UINT numPass1Groups = numCells / (2 * THREAD_GROUP_SIZE);
+		const UINT64 groupSumSize = numPass1Groups * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC groupSumDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			groupSumSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create group sum buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &groupSumDesc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				IID_PPV_ARGS(groupSumBuffer.ReleaseAndGetAddressOf()));
+		groupSumBuffer->SetName(L"Prefix Sum Group Sum Buffer");
 	}
 
 	void CreateGridUavs() {
@@ -1108,9 +1149,22 @@ protected:
 		prefixSumUavDesc.Buffer.NumElements = numCells;
 		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumHandle(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumCpuHandle(
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 11, descriptorSize);
-		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumHandle);
+		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumCpuHandle);
+
+		// groupSum UAV (slot 21, u9) — scratch buffer for the Blelloch 3-pass parallel prefix sum
+		const UINT numPass1Groups = numCells / (2 * THREAD_GROUP_SIZE);
+		D3D12_UNORDERED_ACCESS_VIEW_DESC groupSumUavDesc = {};
+		groupSumUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		groupSumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		groupSumUavDesc.Buffer.FirstElement = 0;
+		groupSumUavDesc.Buffer.NumElements = numPass1Groups;
+		groupSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		groupSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE groupSumCpuHandle(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21, descriptorSize);
+		device->CreateUnorderedAccessView(groupSumBuffer.Get(), nullptr, &groupSumUavDesc, groupSumCpuHandle);
 	}
 
 	void CreateSortBuffers() {
@@ -1250,19 +1304,20 @@ protected:
 
 	void CreateDescriptorHeap() {
 		// descriptor heap layout (SoA):
-		//   slot 0:     cubemap SRV (t0)           — sampled by the background pixel shader
-		//   slot 1:     position SRV (t0)          — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
-		//   slot 2:     density SRV (t1)           — read by particle VS; same
-		//   slots 3-9:  particle field UAVs (u0..u6) — compute shader read/write
-		//   slot 10:    cellCount UAV (u7)          — per-cell particle count for the spatial grid
-		//   slot 11:    cellPrefixSum UAV (u8)      — exclusive prefix sum for sort offsets and neighbor lookups
-		//   slots 12-18: sorted field UAVs (u9..u15) — scatter targets for spatial sorting
-		//   slot 19:    SDF Texture3D SRV (t0) — sampled by the solid-obstacle collision compute shaders
-		//   slot 20:    permutation UAV (u16)  — old index -> sorted index, written by sortCS, read by permutateCS
+		//   slot 0:      cubemap SRV (t0)             — sampled by the background pixel shader
+		//   slot 1:      position SRV (t0)            — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
+		//   slot 2:      density SRV (t1)             — read by particle VS; same
+		//   slots 3-9:   particle field UAVs (u0..u6) — compute shader read/write
+		//   slot 10:     cellCount UAV (u7)            — per-cell particle count for the spatial grid
+		//   slot 11:     cellPrefixSum UAV (u8)        — exclusive prefix sum for sort offsets and neighbor lookups
+		//   slots 12-18: sorted field UAVs (u9..u15)  — scatter targets for spatial sorting
+		//   slot 19:     SDF Texture3D SRV (t0)       — sampled by the solid-obstacle collision compute shaders
+		//   slot 20:     permutation UAV (u16)        — old index -> sorted index, written by sortCS, read by permutateCS
+		//   slot 21:     groupSum UAV (u9, scratch)   — per-group totals for the Blelloch 3-pass parallel prefix sum
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 21;
+		dhd.NumDescriptors = 22;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -1331,6 +1386,10 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, sz);  // slot 19 = SDF Texture3D SRV
 		permHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 20, sz);  // slot 20 = permutation UAV (u16)
+		cellPrefixSumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 11, sz);  // slot 11 = cellPrefixSum UAV (u8) alone, for prefix sum pass 3
+		groupSumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 21, sz);  // slot 21 = group sum UAV (u9), for all prefix sum passes
 	}
 
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.

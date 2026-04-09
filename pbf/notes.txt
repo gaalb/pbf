@@ -4,12 +4,8 @@ TODOS:
 -investigate brownian motion: probably just a feature of pbf...
 -morton codes implemented, but no efficiency gain?
 -liquid surface rendering
--whatever COULD be a preprocessor directive, instead of a constant buffer,
- SHOULD be a preprocessor directive, in SharedConfig.hlsli
- there's probably a LOT of these actually
 -adaptive pbf article imrovements
--better sorting, eventually radix sort
-	-this is really just a parallel prefix sum
+-notes explaining the blelloch scan
 -completely disjoin the graphics fps from the simulation timestep:
 	-make it possible to have several physics steps per graphics frame
 	-make it possible for several graphics frames to pass without a physics step

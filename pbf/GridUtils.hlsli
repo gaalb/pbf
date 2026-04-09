@@ -44,7 +44,6 @@ int3 posToCell(float3 pos)
     return clamp(int3((pos - GRID_MIN) / H * float(CELL_PER_H)), int3(0, 0, 0), int3(GRID_DIM - 1, GRID_DIM - 1, GRID_DIM - 1));
 }
 
-
 #ifdef USE_MORTON_CODES
 
 // Morton Codes preserve 3D spatial locality better than row-major: cells close in 3D tend to
@@ -125,6 +124,7 @@ struct NeighborCells {
 
 // Given a world-space position, returns the flat cell indices of all valid
 // (in-bounds) neighboring cells.
+// TODO: when GRID_DIM is large enough, drop the cells on the very corners
 NeighborCells NeighborCellIndices(float3 pos)
 {
     NeighborCells result;

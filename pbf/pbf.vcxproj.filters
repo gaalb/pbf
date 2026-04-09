@@ -94,9 +94,6 @@
     <FxCompile Include="positionFromScratchCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
-    <FxCompile Include="prefixSumCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="updatePositionCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -168,6 +165,15 @@
     </FxCompile>
     <FxCompile Include="lambdaCS.hlsl">
       <Filter>Shaders\Compute\lambdaCS</Filter>
+    </FxCompile>
+    <FxCompile Include="prefixSumPass1CS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="prefixSumPass2CS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="prefixSumPass3CS.hlsl">
+      <Filter>Shaders\Compute</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
