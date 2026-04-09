@@ -14,6 +14,7 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 #include "SolidObstacle.h"
+#include "DescriptorLayout.h"
 #include <immintrin.h>
 #include <thread>
 #include "SharedConfig.hlsli"
@@ -42,31 +43,29 @@ using namespace Egg::Math;
 //
 // SetDevice / SetCommandQueue / SetSwapChain
 // CreateSwapChainResources
-// CreateResources                     -- allocate ALL GPU memory and ALL descriptors
-//   AsyncComputeApp::CreateResources  -- cmdAllocator, cmdList, computeQueue/Allocator/List, fences
+// CreateResources 
+//   AsyncComputeApp::CreateResources  
 //   constant buffers + camera
-//   CreateParticleBuffers             -- 7 default-heap UAV buffers
-//   CreateUploadBuffers               -- 2 upload-heap staging buffers (position, velocity)
-//   CreateGridBuffers                 -- cellCount + cellPrefixSum
-//   CreateSortBuffers                 -- 7 sorted field buffers
-//   CreateDensityReadbackBuffer       -- readback buffer
-//   CreateTextureResources            -- envTexture + SolidObstacle (mesh, SDF allocation)
-//   CreateImGuiDescriptorHeap         -- 1-slot SRV heap for ImGui font
-//   CreateDescriptorHeap              -- 25-slot main descriptor heap
-//   CreateAllDescriptors              -- ALL 25 descriptor slots filled here
-//     slot 0: cubemap SRV, slots 1-2: particle SRVs, slots 3-9: particle UAVs,
-//     slots 10-11: grid UAVs, slots 12-18: sort UAVs, slot 19: SDF SRV,
-//     slot 20: perm UAV, slots 21-24: snapshot SRVs
-//   CacheDescriptorHandles            -- GPU handles for compute shader binding
-// LoadAssets                          -- upload data to GPU and build pipelines
-//   UploadAll                         -- single batched command list: cubemap + particles + SDF
-//   BuildGraphicsPipelines            -- background mesh, particle mesh, solid transform
-//   BuildComputePipelines             -- all compute shader PSOs
+//   CreateParticleBuffers             
+//   CreateUploadBuffers              
+//   CreateGridBuffers                 
+//   CreateSortBuffers                 
+//   CreateDensityReadbackBuffer       
+//   CreateTextureResources           
+//   CreateImGuiDescriptorHeap        
+//   CreateDescriptorHeap              
+//   CreateSnapshotStagingHeap
+//   CreateAllDescriptors              
+//   CacheDescriptorHandles            
+// LoadAssets                          
+//   UploadAll                        
+//   BuildGraphicsPipelines            
+//   BuildComputePipelines             
 // InitImGui
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 30, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 5, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -146,9 +145,9 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // particle field buffers
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridHandle; // cellCount, cellPrefixSum
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sortedFieldsHandle; // sorted particle field buffers
-	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // permutation buffer (slot 20)
-	CD3DX12_GPU_DESCRIPTOR_HANDLE cellPrefixSumHandle; // cellPrefixSum alone (slot 11), used by prefix sum pass 3
-	CD3DX12_GPU_DESCRIPTOR_HANDLE groupSumHandle; // group totals scratch (slot 21), used by all three prefix sum passes
+	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // permutation buffer 
+	CD3DX12_GPU_DESCRIPTOR_HANDLE cellPrefixSumHandle; // cellPrefixSum alone, used by prefix sum pass 3
+	CD3DX12_GPU_DESCRIPTOR_HANDLE groupSumHandle; // group totals scratch, used by all three prefix sum passes
 	ComputeShader::P applyForcesShader;  // apply gravity and external forces to velocity
 	ComputeShader::P collisionVelocityShader;  // zero wall-directed velocity, apply adhesion
 	ComputeShader::P predictPositionShader; // p* = position + velocity * dt
@@ -241,8 +240,9 @@ protected:
 		bgMaterial->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// bind the per-frame constant buffer (root parameter 0)
 		bgMaterial->SetConstantBuffer(perFrameCb);
-		// bind the SRV heap containing the cubemap (root parameter 1, starting at descriptor index 0)
-		bgMaterial->SetSrvHeap(1, descriptorHeap, 0);
+		// bind the SRV heap containing the cubemap (root parameter 1, starting at the cubemap slot)
+		UINT bgDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		bgMaterial->SetSrvHeap(1, descriptorHeap, HeapSlot::CUBEMAP_SRV * bgDescriptorSize);
 
 		// The fullscreen quad from Egg's prefab library - 2 triangles covering the entire screen
 		// the geometry of a mesh is what handles raw vertex data
@@ -494,7 +494,7 @@ protected:
 		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index,
 		// so we must multiply the slot index by the descriptor increment size to get the correct byte offset
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		material->SetSrvHeap(1, descriptorHeap, 1 * descriptorSize); // slot 1 = start of position+density SRV table
+		material->SetSrvHeap(1, descriptorHeap, HeapSlot::PARTICLE_POS_SRV * descriptorSize);
 
 		// NullGeometry: no vertex buffer - the VS fetches positions from the structured buffer using SV_VertexID
 		// numParticles tells DrawInstanced how many vertices (and therefore SV_VertexID values) to generate
@@ -722,12 +722,12 @@ protected:
 		// shader reads the latest complete snapshot without any root signature change.
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		device->CopyDescriptorsSimple(1,
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, sz),
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), readIdx, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_POS_SRV, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_POS_0 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		device->CopyDescriptorsSimple(1,
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, sz),
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), 2 + readIdx, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEN_SRV, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_DEN_0 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 		// Snapshot buffers live in COMMON. Transition them to SRV state for the draw, then back.
@@ -1048,7 +1048,7 @@ protected:
 		posSrvDesc.Buffer.StructureByteStride = sizeof(Float3); // how big is each element (particle) in bytes
 		posSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; // no special options, just a plain structured buffer view
 		CD3DX12_CPU_DESCRIPTOR_HANDLE posSrvHandle( // calculate the CPU handle for the SRV descriptor: start of heap + slot index * descriptor size
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_POS_SRV, descriptorSize);
 		device->CreateShaderResourceView(particleFields[PF_POSITION].Get(), &posSrvDesc, posSrvHandle); // create the SRV using the description we just filled out
 
 		// density SRV (slot 2, t1): read-only view for the vertex shader
@@ -1061,12 +1061,12 @@ protected:
 		denSrvDesc.Buffer.StructureByteStride = sizeof(float);
 		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE denSrvHandle(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 2, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEN_SRV, descriptorSize);
 		device->CreateShaderResourceView(particleFields[PF_DENSITY].Get(), &denSrvDesc, denSrvHandle);
 	}
 
 	void CreateParticleUavs() {
-		// create one UAV per particle field at slots 3..9 (u0..u6)
+		// create one UAV per particle field 
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		for (UINT f = 0; f < PF_COUNT; f++) {
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -1078,7 +1078,7 @@ protected:
 			uavDesc.Buffer.CounterOffsetInBytes = 0;
 			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 3 + f, descriptorSize);
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_FIELDS + f, descriptorSize);
 			device->CreateUnorderedAccessView(particleFields[f].Get(), nullptr, &uavDesc, handle);
 		}
 	}
@@ -1138,7 +1138,7 @@ protected:
 		cellCountUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		cellCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE cellCountHandle(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 10, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::CELL_COUNT, descriptorSize);
 		device->CreateUnorderedAccessView(cellCountBuffer.Get(), nullptr, &cellCountUavDesc, cellCountHandle);
 
 		// cellPrefixSum UAV (slot 11, u8)
@@ -1150,7 +1150,7 @@ protected:
 		prefixSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		prefixSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE prefixSumCpuHandle(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 11, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::CELL_PREFIX_SUM, descriptorSize);
 		device->CreateUnorderedAccessView(cellPrefixSumBuffer.Get(), nullptr, &prefixSumUavDesc, prefixSumCpuHandle);
 
 		// groupSum UAV (slot 21, u9) — scratch buffer for the Blelloch 3-pass parallel prefix sum
@@ -1163,7 +1163,7 @@ protected:
 		groupSumUavDesc.Buffer.StructureByteStride = sizeof(UINT);
 		groupSumUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE groupSumCpuHandle(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 21, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::GROUP_SUM_UAV, descriptorSize);
 		device->CreateUnorderedAccessView(groupSumBuffer.Get(), nullptr, &groupSumUavDesc, groupSumCpuHandle);
 	}
 
@@ -1200,7 +1200,7 @@ protected:
 	}
 
 	void CreateSortUavs() {
-		// create one UAV per sorted field at slots 12..18 (u9..u15)
+		// create one UAV per sorted field
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		for (UINT f = 0; f < PF_COUNT; f++) {
 			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -1212,13 +1212,13 @@ protected:
 			uavDesc.Buffer.CounterOffsetInBytes = 0;
 			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 			CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 12 + f, descriptorSize);
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::SORTED_FIELDS + f, descriptorSize);
 			device->CreateUnorderedAccessView(sortedFields[f].Get(), nullptr, &uavDesc, handle);
 		}
 	}
 
 	void CreatePermUav() {
-		// create perm UAV at slot 20 (u16)
+		// create perm UAV at slot 20
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 		uavDesc.Format = DXGI_FORMAT_UNKNOWN;
@@ -1229,7 +1229,7 @@ protected:
 		uavDesc.Buffer.CounterOffsetInBytes = 0;
 		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), 20, descriptorSize);
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PERM_UAV, descriptorSize);
 		device->CreateUnorderedAccessView(permBuffer.Get(), nullptr, &uavDesc, handle);
 	}
 
@@ -1294,30 +1294,30 @@ protected:
 		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		for (int i = 0; i < 2; i++) {
 			CD3DX12_CPU_DESCRIPTOR_HANDLE posHandle(
-				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), i, sz);       // slots 0,1
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_POS_0 + i, sz);
 			device->CreateShaderResourceView(snapshotPosition[i].Get(), &posSrvDesc, posHandle);
 			CD3DX12_CPU_DESCRIPTOR_HANDLE denHandle(
-				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), 2 + i, sz);   // slots 2,3
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_DEN_0 + i, sz);
 			device->CreateShaderResourceView(snapshotDensity[i].Get(), &denSrvDesc, denHandle);
 		}
 	}
 
 	void CreateDescriptorHeap() {
 		// descriptor heap layout (SoA):
-		//   slot 0:      cubemap SRV (t0)             — sampled by the background pixel shader
-		//   slot 1:      position SRV (t0)            — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
-		//   slot 2:      density SRV (t1)             — read by particle VS; same
-		//   slots 3-9:   particle field UAVs (u0..u6) — compute shader read/write
-		//   slot 10:     cellCount UAV (u7)            — per-cell particle count for the spatial grid
-		//   slot 11:     cellPrefixSum UAV (u8)        — exclusive prefix sum for sort offsets and neighbor lookups
-		//   slots 12-18: sorted field UAVs (u9..u15)  — scatter targets for spatial sorting
-		//   slot 19:     SDF Texture3D SRV (t0)       — sampled by the solid-obstacle collision compute shaders
-		//   slot 20:     permutation UAV (u16)        — old index -> sorted index, written by sortCS, read by permutateCS
-		//   slot 21:     groupSum UAV (u9, scratch)   — per-group totals for the Blelloch 3-pass parallel prefix sum
+		//   slot 0:      cubemap SRV  — sampled by the background pixel shader
+		//   slot 1:      position SRV — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
+		//   slot 2:      density SRV  — read by particle VS; same
+		//   slots 3-9:   particle field UAVs — compute shader read/write
+		//   slot 10:     cellCount UAV — per-cell particle count for the spatial grid
+		//   slot 11:     cellPrefixSum UAV — exclusive prefix sum for sort offsets and neighbor lookups
+		//   slots 12-18: sorted field UAVs — scatter targets for spatial sorting
+		//   slot 19:     SDF Texture3D SRV — sampled by the solid-obstacle collision compute shaders
+		//   slot 20:     permutation UAV — old index -> sorted index, written by sortCS, read by permutateCS
+		//   slot 21:     groupSum UAV — per-group totals for the Blelloch 3-pass parallel prefix sum
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
-		dhd.NumDescriptors = 22;
+		dhd.NumDescriptors = HeapSlot::TOTAL;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; // heap type that holds CBVs, SRVs, and UAVs
 
 		DX_API("Failed to create descriptor heap")
@@ -1333,7 +1333,7 @@ protected:
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // CPU-readable: required for CopyDescriptors source
 		dhd.NodeMask = 0;
-		dhd.NumDescriptors = 4;
+		dhd.NumDescriptors = StagingSlot::TOTAL;
 		dhd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		DX_API("Failed to create snapshot staging descriptor heap")
 			device->CreateDescriptorHeap(&dhd, IID_PPV_ARGS(snapshotStagingHeap.GetAddressOf()));
@@ -1354,21 +1354,19 @@ protected:
 	// so the heap layout is visible in one place.
 	void CreateAllDescriptors() {
 		// slot 0: cubemap SRV (t0) -- sampled by the background pixel shader
-		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), 0);
+		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), HeapSlot::CUBEMAP_SRV);
 		// slots 1-2: particle position + density SRVs -- redirected to active snapshot each frame via CopyDescriptorsSimple
 		CreateParticleSrvs();
-		// slots 3-9: particle field UAVs (u0..u6) -- compute shader read/write
+		// slots 3-9: particle field UAVs -- compute shader read/write
 		CreateParticleUavs();
-		// slots 10-11: grid UAVs (u7..u8) -- per-cell particle count and prefix sum
+		// slots 10-11: grid UAVs -- per-cell particle count and prefix sum
 		CreateGridUavs();
-		// slots 12-18: sorted field UAVs (u9..u15) -- scatter targets for spatial sorting
+		// slots 12-18: sorted field UAVs -- scatter targets for spatial sorting
 		CreateSortUavs();
-		// slot 19: SDF Texture3D SRV (t0) -- sampled by solid-obstacle collision compute shaders
-		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), 19);
-		// slot 20: permutation UAV (u16) -- old index -> sorted index
+		// slot 19: SDF Texture3D SRV -- sampled by solid-obstacle collision compute shaders
+		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), HeapSlot::SDF_SRV);
+		// slot 20: permutation UAV -- old index -> sorted index
 		CreatePermUav();
-		// snapshotStagingHeap slots 0-3: snapshot SRVs used as CopyDescriptors source each frame
-		CreateSnapshotStagingHeap();
 		CreateSnapshotSrvs();
 	}
 
@@ -1377,19 +1375,19 @@ protected:
 	void CacheDescriptorHandles() {
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		particleFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 3, sz);   // slot 3  = particle field UAVs (u0..u6)
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_FIELDS, sz);
 		gridHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 10, sz);  // slot 10 = grid UAVs (u7..u8)
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::CELL_COUNT, sz);
 		sortedFieldsHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 12, sz);  // slot 12 = sorted field UAVs (u9..u15)
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::SORTED_FIELDS, sz);
 		sdfHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 19, sz);  // slot 19 = SDF Texture3D SRV
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::SDF_SRV, sz);
 		permHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 20, sz);  // slot 20 = permutation UAV (u16)
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::PERM_UAV, sz);
 		cellPrefixSumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 11, sz);  // slot 11 = cellPrefixSum UAV (u8) alone, for prefix sum pass 3
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::CELL_PREFIX_SUM, sz);
 		groupSumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 21, sz);  // slot 21 = group sum UAV (u9), for all prefix sum passes
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::GROUP_SUM_UAV, sz);
 	}
 
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
@@ -1491,6 +1489,7 @@ public:
 
 		CreateImGuiDescriptorHeap();
 		CreateDescriptorHeap();
+		CreateSnapshotStagingHeap();
 		CreateAllDescriptors();
 		CacheDescriptorHandles();
 	}

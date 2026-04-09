@@ -94,6 +94,7 @@
     <ClInclude Include="AsyncComputeApp.h" />
     <ClInclude Include="ComputeShader.h" />
     <ClInclude Include="ConstantBufferTypes.h" />
+    <ClInclude Include="DescriptorLayout.h" />
     <ClInclude Include="Fence.h" />
     <ClInclude Include="ParticleTypes.h" />
     <ClInclude Include="PbfApp.h" />
