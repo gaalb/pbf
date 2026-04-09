@@ -165,8 +165,7 @@ protected:
 	ComputeShader::P positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
 	ComputeShader::P updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
 	ComputeShader::P vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
-	ComputeShader::P confinementShader; // apply vorticity confinement force to velocity
-	ComputeShader::P viscosityShader;  // XSPH velocity smoothing, writes to scratch
+	ComputeShader::P confinementViscosityShader; // vorticity confinement + XSPH viscosity in one neighbor pass
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
@@ -426,15 +425,10 @@ protected:
 			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
 			vector<P>{ std::addressof(particleFields[PF_OMEGA]) });
 
-		confinementShader = ComputeShader::Create(device.Get(), "Shaders/confinementCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
-			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_OMEGA]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer),
-			std::addressof(cellPrefixSumBuffer) },
-			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
-
-		viscosityShader = ComputeShader::Create(device.Get(), "Shaders/viscosityCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
-			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+		confinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]),
+			std::addressof(particleFields[PF_OMEGA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
 			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
 
 		sortShader = ComputeShader::Create(device.Get(), "Shaders/sortCS.cso", cbv,
@@ -662,8 +656,7 @@ protected:
 
 		updateVelocityShader->dispatch_then_barrier(computeList.Get(), numGroups);    // v = (p* - x) / dt
 		vorticityShader->dispatch_then_barrier(computeList.Get(), numGroups);         // estimate curl(v) -> omega
-		confinementShader->dispatch_then_barrier(computeList.Get(), numGroups);       // vorticity confinement -> velocity
-		viscosityShader->dispatch_then_barrier(computeList.Get(), numGroups);         // XSPH viscosity -> scratch
+		confinementViscosityShader->dispatch_then_barrier(computeList.Get(), numGroups); // vorticity confinement + XSPH viscosity -> scratch
 		velocityFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> velocity
 		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups);    // position = predictedPosition
 

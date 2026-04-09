@@ -10,7 +10,6 @@ TODOS:
 	-make it possible to have several physics steps per graphics frame
 	-make it possible for several graphics frames to pass without a physics step
 -cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?
--maybe merge whatever shaders can be merged: fewer UAV barriers
 -make it possible to have several physics steps per graphics frame
 -make it possible for several graphics frames to pass without a physics step
 -investigate whether we're actually double buffering  
