@@ -1,18 +1,23 @@
+#include "SharedConfig.hlsli"
+#include "ComputeCb.hlsli"
+
 // Uncomment to use Morton code (Z-order curve) cell indexing instead of row-major.
 #define USE_MORTON_CODES
 
 // Spatial grid helper functions for neighbor lookups.
 //
-// The simulation box is subdivided into cells of side length h (the SPH kernel radius).
+// The simulation box is subdivided into cells of side length h/CELL_PER_H.
 // Each particle belongs to exactly one cell based on its position. To find all potential
-// neighbors of a particle, we check its own cell and the 26 surrounding cells (3x3x3 block).
-// Since cell size = h = the kernel support radius, this guarantees that every particle
-// within distance h is found in one of those 27 cells.
+// neighbors of a particle, we check its own cell and the surrounding cells in a
+// (2*CELL_PER_H+1)^3 block (±CELL_PER_H in each axis). Since a particle
+// up to h away is at most CELL_PER_H cells away per axis, this guarantees every
+// particle within the kernel support distance h is found in one of those checked cells.
 //
 // The grid dimensions are a power of two along each axis (equal on all three axes),
-// and the box is sized to exactly match: boxExtent = gridDim * h. This means boxMin
-// is exactly the grid origin — no centering offset is needed, and both boundaries
-// are symmetric by construction.
+// and the box is sized to exactly match: boxExtent = gridDim * (h/CELL_PER_H).
+// This means boxMin is exactly the grid origin — no centering offset is needed, and both
+// boundaries are symmetric by construction.
+// With CELL_PER_H=1 (default), this reduces to the original cell size = h.
 //
 // Two cell indexing schemes are available, selected by the USE_MORTON_CODES preprocessor
 // define. Both expose the same interface: gridDim(), posToCell(), cellIndex().
@@ -32,22 +37,28 @@
 
 
 // Computes the grid dimension (number of cells along each axis) from the
-// box size and cell size h. 
+// box size and cell size h/CELL_PER_H.
+// The box is gridDim*(h/CELL_PER_H) wide, so dividing by h gives gridDim/CELL_PER_H;
+// multiplying back by CELL_PER_H recovers the true cell count per axis.
+// The result is theoretically an exact integer, but floating-point division can produce
+// a value just below it (e.g. 31.9999997 instead of 32). int() truncates toward zero,
+// so without the +0.5 that would yield 31. Adding 0.5 before truncation rounds to the
+// nearest integer: int(31.9999997 + 0.5) = int(32.4999997) = 32.
 int gridDim()
 {
-    return int((gridMax.x - gridMin.x) / h + 0.5);
+    return int((gridMax.x - gridMin.x) / h * float(CELL_PER_H) + 0.5);
 }
 
-// Maps a world-space position to its 3D grid cell coordinates, i.e. taking the
-// SPH smoothing kernel radius "h" as a "unit", how far away from the grid origin
-// is the given position, measured in h units.
+// Maps a world-space position to its 3D grid cell coordinates.
+// Dividing (pos - gridMin) by h gives position in h-units; multiplying by CELL_PER_H
+// converts to cell-units where each cell is h/CELL_PER_H wide.
 // The grid origin is gridMin (the fixed simulation area corner), not boxMin, so that
 // the grid dimensions stay constant regardless of the adjustable bounding box.
 // Clamped to [0, gridDim-1] so particles exactly on the boundary don't index out of bounds.
 int3 posToCell(float3 pos)
 {
     int dim = gridDim();
-    return clamp(int3((pos - gridMin) / h), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
+    return clamp(int3((pos - gridMin) / h * float(CELL_PER_H)), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
 }
 
 
@@ -119,8 +130,14 @@ uint cellIndex(int3 cell)
 
 #endif // USE_MORTON_CODES
 
+// Maximum number of cells to check for neighbors: (2*CELL_PER_H+1)^3.
+// Each cell is h/CELL_PER_H wide, so a particle up to h away is at most
+// CELL_PER_H cells away per axis, requiring a (2i+1)^3 search volume.
+#define NEIGHBOR_CELL_COUNT \
+    ((2*CELL_PER_H+1)*(2*CELL_PER_H+1)*(2*CELL_PER_H+1))
+
 struct NeighborCells {
-    uint indices[27];
+    uint indices[NEIGHBOR_CELL_COUNT];
     uint count;
 };
 
@@ -132,9 +149,9 @@ NeighborCells NeighborCellIndices(float3 pos)
     result.count = 0;
     int3 myCell = posToCell(pos);
     int dim = gridDim();
-    for (int dz = -1; dz <= 1; dz++)
-    for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++)
+    for (int dz = -CELL_PER_H; dz <= CELL_PER_H; dz++)
+    for (int dy = -CELL_PER_H; dy <= CELL_PER_H; dy++)
+    for (int dx = -CELL_PER_H; dx <= CELL_PER_H; dx++)
     {
         int3 nc = myCell + int3(dx, dy, dz);
         if (nc.x < 0 || nc.x >= dim ||

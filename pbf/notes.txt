@@ -4,6 +4,9 @@ TODOS:
 -investigate brownian motion: probably just a feature of pbf...
 -morton codes implemented, but no efficiency gain?
 -liquid surface rendering
+-whatever COULD be a preprocessor directive, instead of a constant buffer,
+ SHOULD be a preprocessor directive, in SharedConfig.hlsli
+ there's probably a LOT of these actually
 -adaptive pbf article imrovements
 -better sorting, eventually radix sort
 	-this is really just a parallel prefix sum

@@ -66,8 +66,8 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 9, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int particlesX = 50, particlesY = 50, particlesZ = 50; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -91,9 +91,9 @@ protected:
 	// dimensions on all axes for a dense index space (no wasted codes). We choose a single gridDim
 	// for all three axes (cubic grid), such that the box has gridDim * h cells per axis.
 	// With gridDim = 32 and h = 0.875, the box is 28 units per side, centered at the origin.
-	const UINT gridDim = 32; // cells per axis (must be power of two)
+	const UINT gridDim = 64; // cells per axis (must be power of two)
 	const UINT numCells = gridDim * gridDim * gridDim; // total cells in the grid
-	const float boxExtent = gridDim * h; // box side length = 28.0
+	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
 	Float3 boxMin = gridMin; // adjustable collision boundary

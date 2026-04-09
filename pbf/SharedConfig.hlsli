@@ -1,1 +1,2 @@
 #define THREAD_GROUP_SIZE 256
+#define CELL_PER_H 3
