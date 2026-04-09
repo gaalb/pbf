@@ -26,33 +26,28 @@ __declspec(align(16)) struct SolidCb {
 	Float4x4 modelMat; // object-to-world transform for solidVS
 };
 
-// per-simulation-step data uploaded to all PBF compute shaders before each dispatch
-// must be 16-byte aligned, hence the not-so-didactic ordering under here, that avoids padding
+// Per-simulation-step data uploaded to all PBF compute shaders before each dispatch.
+// Fields that are compile-time constants (h, rho0, gridMin/Max, kernel coefficients,
+// push radius, sCorrDeltaQ/N) have been removed and are now #defines in SharedConfig.hlsli.
+// Only runtime-variable fields remain here.
+// Must be 16-byte aligned; fields ordered to avoid straddling 16-byte boundaries.
 __declspec(align(16)) struct ComputeCb {
-	float dt; // offset 0 (4 bytes): simulation timestep in seconds
-	UINT numParticles; // offset 4 (4 bytes): total particle count; used for bounds check in every compute shader
-	float h; // offset 8 (4 bytes): SPH smoothing radius
-	float rho0; // offset 12 (4 bytes): rest density, constraint target: rho_i / rho0 - 1 = 0
-	Float3 boxMin; // offset 16 (12 bytes): simulation box minimum corner (world space)
-	float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
-	Float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
-	float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
-	float sCorrK; // offset 48 (4 bytes): artificial pressure k
-	float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
-	float sCorrN; // offset 56 (4 bytes): artificial pressure n
-	float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
-	Float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
-	UINT fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
-	float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
-	float pushRadius; // offset 84 (4 bytes): SDF push-out target distance (particleSpacing * pushRadiusMult, set on CPU)
-	float poly6Coeff;    // offset 88: precomputed 315 / (64 * PI * h^9)
-	float spikyGradCoeff; // offset 92: precomputed 45 / (PI * h^6)
-	Float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform; updated each frame
-	Float4 sdfMin; // offset 160 (16 bytes): object-space SDF AABB min (xyz = min corner, w unused)
-	Float4 sdfMax; // offset 176 (16 bytes): object-space SDF AABB max (xyz = max corner, w unused)
-	Float3 gridMin; // offset 192 (12 bytes): fixed simulation area minimum corner (grid origin, world space)
-	float _pad2;   // offset 204 (4 bytes)
-	Float3 gridMax; // offset 208 (12 bytes): fixed simulation area maximum corner (world space)
-	float _pad3;   // offset 220 (4 bytes)
-	// total: 224 bytes
+	float dt;               // offset  0: simulation timestep in seconds
+	UINT numParticles;      // offset  4: total particle count; bounds check in every shader
+	float sCorrK;           // offset  8: artificial pressure magnitude coefficient
+	float vorticityEpsilon; // offset 12: vorticity confinement strength
+	Float3 boxMin;          // offset 16: simulation box minimum corner (adjustable, world space)
+	float epsilon;          // offset 28: constraint force mixing relaxation
+	Float3 boxMax;          // offset 32: simulation box maximum corner (adjustable, world space)
+	float viscosity;        // offset 44: XSPH viscosity coefficient
+	Float3 externalForce;   // offset 48: horizontal acceleration from arrow keys (m/s^2)
+	UINT fountainEnabled;   // offset 60: 1 = fountain jet active, 0 = off
+	float adhesion;         // offset 64: tangential velocity damping on wall contact
+	float _pad0;            // offset 68
+	float _pad1;            // offset 72
+	float _pad2;            // offset 76
+	Float4x4 solidInvTransform; // offset  80: world-to-object transform for SDF sampling
+	Float4 sdfMin;          // offset 144: object-space SDF AABB min (xyz = min corner, w unused)
+	Float4 sdfMax;          // offset 160: object-space SDF AABB max (xyz = max corner, w unused)
+	// total: 176 bytes
 };

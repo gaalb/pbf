@@ -18,7 +18,7 @@
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
+#include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
@@ -62,7 +62,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float omegaJLen = length(omega[j]);
 
             // gradient of the spiky kernel at r_ij, with respect to p_i
-            float3 gradW = SpikyGrad(r, r2, h);
+            float3 gradW = SpikyGrad(r, r2);
 
             // Accumulate eta_i = sum_j |omega_j| * grad_{p_i} W(r_ij, h).
             // This is an SPH estimate of grad(|omega|) at p_i -- but note what is being omitted:

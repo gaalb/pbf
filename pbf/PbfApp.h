@@ -67,7 +67,7 @@ class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
 	const int particlesX = 50, particlesY = 50, particlesZ = 50; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 0, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int offsetX = 0, offsetY = 5, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -75,15 +75,13 @@ protected:
 	// has a power of two number of cells along each axis. Fixing h (= particleSpacing * hMultiplier) 
 	// lets us define the box as exactly gridDim * h on each axis, giving a perfectly aligned 
 	// cubic grid with a dense Morton code space.
-	const float particleSpacing = 0.25f; // inter-particle distance (also determines rest density and display size)
-	const float particleRadius = particleSpacing * 0.4f;
-	const float hMultiplier = 3.25f; // h = particleSpacing * hMultiplier
-	const float h = particleSpacing * hMultiplier; // SPH smoothing radius = 0.875
+	const float particleSpacing = PARTICLE_SPACING; // inter-particle distance (also determines rest density and display size)
+	const float particleRadius = PUSH_RADIUS;
+	const float hMultiplier = H_MULTIPLIER; // h = particleSpacing * hMultiplier
+	const float h = H; // SPH smoothing radius
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
-	const float rho0 = 1.0f / powf(particleSpacing, 3.0f);
-	const float sCorrDeltaQ = 0.2f * h; // reference distance for artificial pressure (paper: 0.1...0.3 * h)
-	const float sCorrN = 3.0f; // exponent for artificial pressure (paper: 4)
+	const float rho0 = RHO0;
 	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
 	// Spatial grid: cubic, power-of-two cells per axis, box derived from grid.
@@ -91,7 +89,7 @@ protected:
 	// dimensions on all axes for a dense index space (no wasted codes). We choose a single gridDim
 	// for all three axes (cubic grid), such that the box has gridDim * h cells per axis.
 	// With gridDim = 32 and h = 0.875, the box is 28 units per side, centered at the origin.
-	const UINT gridDim = 64; // cells per axis (must be power of two)
+	const UINT gridDim = GRID_DIM; // cells per axis (must be power of two)
 	const UINT numCells = gridDim * gridDim * gridDim; // total cells in the grid
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
@@ -821,29 +819,20 @@ protected:
 	void UpdateComputeCb(float dt) {
 		computeCb->dt = dt;
 		computeCb->numParticles = numParticles;
-		computeCb->h = h;
-		computeCb->rho0 = rho0;
+		computeCb->sCorrK = sCorrK;
+		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb->boxMin = boxMin;
 		computeCb->epsilon = epsilon;
 		computeCb->boxMax = boxMax;
 		computeCb->viscosity = viscosity;
-		computeCb->sCorrK = sCorrK;
-		computeCb->sCorrDeltaQ = sCorrDeltaQ;
-		computeCb->sCorrN = sCorrN;
-		computeCb->vorticityEpsilon = vorticityEpsilon;
 		computeCb->externalForce = externalForce;
 		computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
 		computeCb->adhesion = adhesion;
-		computeCb->pushRadius = particleRadius; // push the particle out one radius' width to not clip visually
 		computeCb->solidInvTransform = solidObstacle->GetInvTransform();
 		Float3 smin = solidObstacle->GetSdfMin();
 		Float3 smax = solidObstacle->GetSdfMax();
 		computeCb->sdfMin = Float4(smin, 0.0f);
 		computeCb->sdfMax = Float4(smax, 0.0f);
-		computeCb->gridMin = gridMin;
-		computeCb->gridMax = gridMax;
-		computeCb->poly6Coeff = 315.0f / (64.0f * 3.14159265358979323846f * powf(h, 9.0f));
-		computeCb->spikyGradCoeff = 45.0f / (3.14159265358979323846f * powf(h, 6.0f));
 		computeCb.Upload();
 	}
 

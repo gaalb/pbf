@@ -12,7 +12,7 @@
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
+#include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
@@ -55,7 +55,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // The curl estimator uses the gradient of W with respect to p_j, not p_i.
             // grad_{p_j} W(p_i - p_j, h) = -grad_{p_i} W(p_i - p_j, h) = -SpikyGrad(r, h)
             // so the sign is negated compared to using SpikyGrad directly.
-            omegaAccum += cross(velocity[j] - vi, -SpikyGrad(r, r2, h));
+            omegaAccum += cross(velocity[j] - vi, -SpikyGrad(r, r2));
         }
     }
 

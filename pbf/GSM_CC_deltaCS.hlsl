@@ -46,15 +46,14 @@ NeighborCells NeighborCellIndicesByCell(int3 myCell)
 {
     NeighborCells result;
     result.count = 0;
-    int dim = gridDim();
     for (int dz = -1; dz <= 1; dz++)
         for (int dy = -1; dy <= 1; dy++)
             for (int dx = -1; dx <= 1; dx++)
             {
                 int3 nc = myCell + int3(dx, dy, dz);
-                if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
+                if (nc.x < 0 || nc.x >= GRID_DIM ||
+                    nc.y < 0 || nc.y >= GRID_DIM ||
+                    nc.z < 0 || nc.z >= GRID_DIM)
                     continue;
                 result.indices[result.count++] = cellIndex(nc);
             }
@@ -83,8 +82,7 @@ int3 cellToCoord(uint morton)
 // Decodes a flat row-major index back to 3D cell coordinates (inverse of cellIndex).
 int3 cellToCoord(uint idx)
 {
-    int dim = gridDim();
-    return int3(int(idx) % dim, (int(idx) / dim) % dim, int(idx) / (dim * dim));
+    return int3(int(idx) % GRID_DIM, (int(idx) / GRID_DIM) % GRID_DIM, int(idx) / (GRID_DIM * GRID_DIM));
 }
 
 #endif
@@ -144,7 +142,7 @@ void main(uint3 groupID : SV_GroupID, uint localIdx : SV_GroupIndex)
     float3 pi      = predictedPosition[i];
     float  lambdaI = lambda[i];
 
-    float  poly6AtDeltaQ = Poly6(float3(sCorrDeltaQ, 0, 0), sCorrDeltaQ * sCorrDeltaQ, h);
+    float  poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q * SCORR_DELTA_Q);
     float3 deltaP        = float3(0, 0, 0);
 
     // Iterate the same 27-cell list in the same order as the load phase so that
@@ -174,20 +172,20 @@ void main(uint3 groupID : SV_GroupID, uint localIdx : SV_GroupIndex)
             // Overlapping particles: normal gradient is zero, nudge apart instead.
             if (r2 < EPSILON * EPSILON)
             {
-                deltaP += overlapJitter(i, j) * (h * 0.001);
+                deltaP += overlapJitter(i, j) * (H * 0.001);
                 continue;
             }
 
             // Artificial pressure (Eq. 13): purely repulsive term to suppress tensile instability.
-            float wRatio = Poly6(r, r2, h) / poly6AtDeltaQ;
-            float sCorr  = -sCorrK * pow(wRatio, sCorrN);
+            float wRatio = Poly6(r, r2) / poly6AtDeltaQ;
+            float sCorr  = -sCorrK * pow(wRatio, SCORR_N);
 
             // Position correction (Eq. 12 + 13).
-            deltaP += (lambdaI + lambdaJ + sCorr) * SpikyGrad(r, r2, h);
+            deltaP += (lambdaI + lambdaJ + sCorr) * SpikyGrad(r, r2);
         }
         gsOff += count;
     }
-    deltaP /= rho0;
+    deltaP /= RHO0;
 
     scratch[i] = pi + deltaP;
 }

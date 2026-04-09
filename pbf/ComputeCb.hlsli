@@ -1,35 +1,33 @@
 #ifndef COMPUTE_CB_HLSLI
 #define COMPUTE_CB_HLSLI
 
+// Per-simulation-step data uploaded to all PBF compute shaders before each dispatch.
+// Fields that are compile-time constants (h, rho0, gridMin/Max, kernel coefficients,
+// push radius, sCorrDeltaQ/N) have been removed and are now #defines in SharedConfig.hlsli.
+// Only runtime-variable fields remain here.
+
 cbuffer ComputeCb : register(b0)
 {
-    float dt; // offset  0 (4 bytes): simulation timestep in seconds
-    uint numParticles; // offset  4 (4 bytes): total particle count
-    float h; // offset  8 (4 bytes): SPH smoothing radius
-    float rho0; // offset 12 (4 bytes): rest density
-    float3 boxMin; // offset 16 (12 bytes): simulation box minimum corner (world space)
-    float epsilon; // offset 28 (4 bytes): constraint force mixing relaxation
-    float3 boxMax; // offset 32 (12 bytes): simulation box maximum corner (world space)
-    float viscosity; // offset 44 (4 bytes): XSPH viscosity coefficient c
-    float sCorrK; // offset 48 (4 bytes): artificial pressure k
-    float sCorrDeltaQ; // offset 52 (4 bytes): artificial pressure deltaq
-    float sCorrN; // offset 56 (4 bytes): artificial pressure n
-    float vorticityEpsilon; // offset 60 (4 bytes): vorticity confinement strength coefficient
-    float3 externalForce; // offset 64 (12 bytes): horizontal force from arrow keys (acceleration, m/s^2)
-    uint fountainEnabled; // offset 76 (4 bytes): 1 = fountain jet active, 0 = off
-    float adhesion; // offset 80 (4 bytes): tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
-    float pushRadius; // offset 84 (4 bytes): SDF push-out target distance (particleSpacing * pushRadiusMult, set on CPU)
-    float poly6Coeff; // precomputed 315 / (64 * PI * h^9)
-    float spikyGradCoeff; // precomputed 45 / (PI * h^6)
-    float4x4 solidInvTransform; // offset 96 (64 bytes): world-to-object transform for SDF sampling
-    float3 sdfMin; // offset 160 (12 bytes): object-space SDF AABB min
-    float _pad0; // offset 172
-    float3 sdfMax; // offset 176 (12 bytes): object-space SDF AABB max
-    float _pad1; // offset 188
-    float3 gridMin; // offset 192 (12 bytes): fixed simulation area minimum corner (grid origin)
-    float _pad2; // offset 204
-    float3 gridMax; // offset 208 (12 bytes): fixed simulation area maximum corner
-    float _pad3; // offset 220
+    float dt;               // offset  0: simulation timestep in seconds
+    uint numParticles;      // offset  4: total particle count; bounds check in every shader
+    float sCorrK;           // offset  8: artificial pressure magnitude coefficient
+    float vorticityEpsilon; // offset 12: vorticity confinement strength
+    float3 boxMin;          // offset 16: simulation box minimum corner (adjustable, world space)
+    float epsilon;          // offset 28: constraint force mixing relaxation
+    float3 boxMax;          // offset 32: simulation box maximum corner (adjustable, world space)
+    float viscosity;        // offset 44: XSPH viscosity coefficient
+    float3 externalForce;   // offset 48: horizontal acceleration from arrow keys (m/s^2)
+    uint fountainEnabled;   // offset 60: 1 = fountain jet active, 0 = off
+    float adhesion;         // offset 64: tangential velocity damping on wall contact
+    float _pad0;            // offset 68
+    float _pad1;            // offset 72
+    float _pad2;            // offset 76
+    float4x4 solidInvTransform; // offset  80: world-to-object transform for SDF sampling
+    float3 sdfMin;          // offset 144: object-space SDF AABB minimum corner
+    float _padSdfMin;       // offset 156
+    float3 sdfMax;          // offset 160: object-space SDF AABB maximum corner
+    float _padSdfMax;       // offset 172
+    // total: 176 bytes
 };
 
 #endif

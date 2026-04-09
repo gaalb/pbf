@@ -18,7 +18,7 @@
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad, Poly6
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
+#include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 RWStructuredBuffer<float3> predictedPosition : register(u2);
 RWStructuredBuffer<float> lambda : register(u3);
@@ -40,7 +40,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // Precompute the s_corr denominator, same for every (i,j) pair.
     // Poly6 only uses the squared magnitude so the direction does not matter.
-    float poly6AtDeltaQ = Poly6(float3(sCorrDeltaQ, 0, 0), sCorrDeltaQ*sCorrDeltaQ, h);
+    float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q*SCORR_DELTA_Q);
 
     float3 deltaP = float3(0, 0, 0);
 
@@ -69,7 +69,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // direction. On subsequent solver iterations, even a tiny separation
             // lets the normal gradient take over.
              if (r2 < EPSILON*EPSILON) {
-                deltaP += overlapJitter(i, j) * (h * 0.001);
+                deltaP += overlapJitter(i, j) * (H * 0.001);
                 continue;
              }
 
@@ -78,8 +78,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
             // that counteracts this without disturbing the bulk behavior.
             // s_corr = -k * (W(r, h) / W(delta_q, h))^n
-            float wRatio = Poly6(r, r2, h) / poly6AtDeltaQ;
-            float sCorr = -sCorrK * pow(wRatio, sCorrN); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
+            float wRatio = Poly6(r, r2) / poly6AtDeltaQ;
+            float sCorr = -sCorrK * pow(wRatio, SCORR_N); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
 
             // Eq. 12 + 13: position correction with artificial pressure included..
             // SpikyGrad with r = p_i - p_j points from i toward j.
@@ -90,10 +90,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // particle counts are low and density is even lower, this mild attraction
             // creates a coherent surface instead of the violent clumping (tensile instability)
             // that occurs without s_corr. Raising sCorrK increases this surface cohesion.
-            deltaP += (lambdaI + lambda[j] + sCorr) * SpikyGrad(r, r2, h);
+            deltaP += (lambdaI + lambda[j] + sCorr) * SpikyGrad(r, r2);
         }
     }
-    deltaP /= rho0;
+    deltaP /= RHO0;
 
     // Update the predicted position (collision response is handled by collisionCS)
     scratch[i] = pi + deltaP;

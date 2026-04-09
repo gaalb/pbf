@@ -14,7 +14,7 @@
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
-#include "GridUtils.hlsli" // gridDim()
+#include "GridUtils.hlsli"
 
 RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
@@ -23,8 +23,7 @@ RWStructuredBuffer<uint> cellPrefixSum : register(u8);
 [numthreads(1, 1, 1)]
 void main()
 {
-    int dim = gridDim();
-    uint totalCells = dim * dim * dim;
+    uint totalCells = GRID_DIM * GRID_DIM * GRID_DIM;
 
     // prefix sum: for each cell i, store the running total so far (which is
     // the sum of cellCount[0] through cellCount[i-1]), then add cellCount[i] to the running

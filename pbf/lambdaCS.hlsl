@@ -20,7 +20,7 @@
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // Poly6, SpikyGrad
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
+#include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 RWStructuredBuffer<float3> predictedPosition : register(u2);
 RWStructuredBuffer<float> lambda : register(u3);
@@ -67,13 +67,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float r2 = dot(r, r);
 
             // Density: every particle j including i itself contributes.
-            rho += Poly6(r, r2, h);
+            rho += Poly6(r, r2);
 
             if (j != i)
             {
                 // k=j case: grad_pj(C_i) = -(1/rho0) * grad_W_spiky(r_ij, h)
-                float3 gradW = SpikyGrad(r, r2, h);
-                float3 gradJ = -(1.0 / rho0) * gradW;
+                float3 gradW = SpikyGrad(r, r2);
+                float3 gradJ = -(1.0 / RHO0) * gradW;
                 gradSqSum += dot(gradJ, gradJ); // add |grad_pj(C_i)|^2 to denominator
 
                 // Also accumulate gradW into gradI -- needed for the k=i term after the loop
@@ -85,11 +85,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // k=i case
     // grad_pi(C_i) = (1/rho0) * sum_{j != i}(grad_W_spiky(r_ij, h))
     // gradI now holds the raw sum; apply the 1/rho0 factor and add its squared magnitude.
-    gradI /= rho0;
+    gradI /= RHO0;
     gradSqSum += dot(gradI, gradI); // add |grad_pi(C_i)|^2 to denominator
 
     // Density constraint value
-    float C = rho / rho0 - 1.0; // 0 at rest density, > 0 if compressed, < 0 if sparse
+    float C = rho / RHO0 - 1.0; // 0 at rest density, > 0 if compressed, < 0 if sparse
 
     // Store density for visualization (read by rendering shaders)
     density[i] = rho;

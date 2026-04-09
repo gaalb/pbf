@@ -1,7 +1,7 @@
 // SPH kernel functions shared by lambdaCS and deltaCS.
 //
-// All kernels are parameterized by the smoothing radius h.
-// Particles farther than h apart do not interact — the kernels return 0.
+// All kernels are parameterized by the smoothing radius H (a compile-time constant
+// from SharedConfig.hlsli). Particles farther than H apart do not interact.
 // As per Muller 2013, we use two kernels:
 //   Poly6  — scalar, used for density estimation
 //   SpikyGrad — vector, used for constraint gradient (position correction)
@@ -11,13 +11,15 @@
 #ifndef SPH_KERNELS_HLSLI
 #define SPH_KERNELS_HLSLI
 
+#include "SharedConfig.hlsli"
+
 // Distance below which two particles are considered overlapping.
 static const float EPSILON = 1e-6;
 
 // When two particles overlap (r ~ 0), the spiky gradient is zero and they
 // can never separate. This function returns a pseudo-random unit vector
 // derived from the particle indices, giving overlapping particles a
-// consistent but unique direction to push apart. 
+// consistent but unique direction to push apart.
 // The 127.5 offset guarantees no component is ever exactly zero
 // (byte values are integers), so normalize() is always safe.
 float3 overlapJitter(uint i, uint j)
@@ -34,16 +36,14 @@ float3 overlapJitter(uint i, uint j)
     ));
 }
 
-// Poly6 kernel
-float Poly6(float3 r, float r2, float h)
+// Poly6 kernel: scalar density weight, falls off smoothly to 0 at distance H.
+float Poly6(float3 r, float r2)
 {
-    float h2 = h * h;
-    if (r2 > h2)
+    if (r2 > H * H)
         return 0.0;
-    float diff = h2 - r2;
-    return poly6Coeff * diff * diff * diff;
+    float diff = H * H - r2;
+    return POLY6_COEFF * diff * diff * diff;
 }
-
 
 // Spiky kernel gradient
 //
@@ -52,20 +52,19 @@ float Poly6(float3 r, float r2, float h)
 //
 // with r = (pi - pj) as a vector
 // grad(W_spiky(r, h)) = -45/=(pi*h^6)*(h-length(r))^2 * normalized(r)
-float3 SpikyGrad(float3 r, float r2, float h)
+float3 SpikyGrad(float3 r, float r2)
 {
     // Guard: outside support radius contributes nothing.
     // rLen < EPSILON handles j == i (r = 0) to avoid divide-by-zero.
-    if (r2 > h*h || r2 < EPSILON * EPSILON)
-        return float3(0.0, 0.0, 0.0);    
-    
-    float rLen = sqrt(r2);
+    if (r2 > H * H || r2 < EPSILON * EPSILON)
+        return float3(0.0, 0.0, 0.0);
 
-    float diff = h - rLen;
+    float rLen = sqrt(r2);
+    float diff = H - rLen;
     float3 rHat = r / rLen; // unit vector r
 
     // Negative: gradient points from i toward j (toward the neighbor)
-    return -spikyGradCoeff * diff * diff * rHat;
+    return -SPIKY_GRAD_COEFF * diff * diff * rHat;
 }
 
 #endif // SPH_KERNELS_HLSLI

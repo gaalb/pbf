@@ -1,64 +1,47 @@
 #include "SharedConfig.hlsli"
-#include "ComputeCb.hlsli"
 
 // Uncomment to use Morton code (Z-order curve) cell indexing instead of row-major.
 #define USE_MORTON_CODES
 
 // Spatial grid helper functions for neighbor lookups.
 //
-// The simulation box is subdivided into cells of side length h/CELL_PER_H.
+// The simulation box is subdivided into cells of side length H/CELL_PER_H.
 // Each particle belongs to exactly one cell based on its position. To find all potential
 // neighbors of a particle, we check its own cell and the surrounding cells in a
 // (2*CELL_PER_H+1)^3 block (±CELL_PER_H in each axis). Since a particle
-// up to h away is at most CELL_PER_H cells away per axis, this guarantees every
-// particle within the kernel support distance h is found in one of those checked cells.
+// up to H away is at most CELL_PER_H cells away per axis, this guarantees every
+// particle within the kernel support distance H is found in one of those checked cells.
 //
 // The grid dimensions are a power of two along each axis (equal on all three axes),
-// and the box is sized to exactly match: boxExtent = gridDim * (h/CELL_PER_H).
+// and the box is sized to exactly match: boxExtent = GRID_DIM * (H/CELL_PER_H).
 // This means boxMin is exactly the grid origin — no centering offset is needed, and both
 // boundaries are symmetric by construction.
-// With CELL_PER_H=1 (default), this reduces to the original cell size = h.
+// With CELL_PER_H=1 (default), this reduces to the original cell size = H.
 //
 // Two cell indexing schemes are available, selected by the USE_MORTON_CODES preprocessor
-// define. Both expose the same interface: gridDim(), posToCell(), cellIndex().
+// define. Both expose the same interface: posToCell(), cellIndex().
 //
 // Row-major (default):
-//   cellIndex = x + y * dim + z * dim * dim
+//   cellIndex = x + y * GRID_DIM + z * GRID_DIM * GRID_DIM
 //
 // Morton codes (Z-order curve, #define USE_MORTON_CODES before including):
 //   cellIndex = bit-interleave(x, y, z)
 
-//
-// Must be included after the cbuffer declaration, as these functions reference
-// gridMin, gridMax, and h from ComputeCb.
-
 #ifndef GRID_UTILS_HLSLI
 #define GRID_UTILS_HLSLI
 
-
-// Computes the grid dimension (number of cells along each axis) from the
-// box size and cell size h/CELL_PER_H.
-// The box is gridDim*(h/CELL_PER_H) wide, so dividing by h gives gridDim/CELL_PER_H;
-// multiplying back by CELL_PER_H recovers the true cell count per axis.
-// The result is theoretically an exact integer, but floating-point division can produce
-// a value just below it (e.g. 31.9999997 instead of 32). int() truncates toward zero,
-// so without the +0.5 that would yield 31. Adding 0.5 before truncation rounds to the
-// nearest integer: int(31.9999997 + 0.5) = int(32.4999997) = 32.
-int gridDim()
-{
-    return int((gridMax.x - gridMin.x) / h * float(CELL_PER_H) + 0.5);
-}
+// Compile-time grid origin and extent (world space), derived from GRID_DIM, H, CELL_PER_H.
+// These replace the former gridMin/gridMax fields that were in the constant buffer.
+static const float3 GRID_MIN = float3(-BOX_HALF_EXTENT, -BOX_HALF_EXTENT, -BOX_HALF_EXTENT);
+static const float3 GRID_MAX = float3( BOX_HALF_EXTENT,  BOX_HALF_EXTENT,  BOX_HALF_EXTENT);
 
 // Maps a world-space position to its 3D grid cell coordinates.
-// Dividing (pos - gridMin) by h gives position in h-units; multiplying by CELL_PER_H
-// converts to cell-units where each cell is h/CELL_PER_H wide.
-// The grid origin is gridMin (the fixed simulation area corner), not boxMin, so that
-// the grid dimensions stay constant regardless of the adjustable bounding box.
-// Clamped to [0, gridDim-1] so particles exactly on the boundary don't index out of bounds.
+// Dividing (pos - GRID_MIN) by H gives position in H-units; multiplying by CELL_PER_H
+// converts to cell-units where each cell is H/CELL_PER_H wide.
+// Clamped to [0, GRID_DIM-1] so particles exactly on the boundary don't index out of bounds.
 int3 posToCell(float3 pos)
 {
-    int dim = gridDim();
-    return clamp(int3((pos - gridMin) / h * float(CELL_PER_H)), int3(0, 0, 0), int3(dim - 1, dim - 1, dim - 1));
+    return clamp(int3((pos - GRID_MIN) / H * float(CELL_PER_H)), int3(0, 0, 0), int3(GRID_DIM - 1, GRID_DIM - 1, GRID_DIM - 1));
 }
 
 
@@ -68,14 +51,14 @@ int3 posToCell(float3 pos)
 // have close indices, so after the counting sort, particles in nearby cells end up
 // near each other in the buffer, improving GPU cache hit rates during the neighbor
 // loops in lambdaCS, deltaCS, vorticityCS, confinementCS, viscosityCS.
-// In order for this to produce a dense index space - meaning every integer from 0 
+// In order for this to produce a dense index space - meaning every integer from 0
 // to numCells-1 maps to exactly one cell with no gaps - we need the number of
 // reachable Morton Codes to equal the number of cells. A Morton code for a 3D cell
 // (x, y, z) is formed by bit-interleaving the three coordinates: z1 y1 x1 z0 y0 x0.
 // If each coordinate has a range that's a power of two, say, 32=2^5, each coordinate
 // fits exactly 5 bits without waste. This means that interleaving three 5-bit values
 // gives a 15-bit result in range 0..2^15-1, so each code maps to a valid cell in the
-// index range 0..32767. If gridDim isn't a power of two, let's say it's 30, then 
+// index range 0..32767. If gridDim isn't a power of two, let's say it's 30, then
 // each dimension still requires 5 bits but only uses 0..29, leaving 30 and 31 unused.
 // This means that when you interleave, combinations that include 30 or 31 for any of
 // the coordiantes don't map to any actual cells. The code still spans to 0..32767 but
@@ -84,7 +67,7 @@ int3 posToCell(float3 pos)
 // enough to cover the full code range. With power of two dimensions, that allocation size
 // equals gridDim^3 exactly without waste, but with a non power of two dimension, we'd
 // need to over-allocate to the next power of two, cubed, and only use gridDim^3 of them.
-// In addition, every cell lookup would need bounds checks to not look in the "holes", 
+// In addition, every cell lookup would need bounds checks to not look in the "holes",
 // becuase the holes containing invalid values aren't at the end of the index range, but
 // interspersed in the middle.
 
@@ -124,14 +107,13 @@ uint cellIndex(int3 cell)
 // Row-major layout: X changes fastest, then Y, then Z.
 uint cellIndex(int3 cell)
 {
-    int dim = gridDim();
-    return (uint)cell.x + (uint)cell.y * dim + (uint)cell.z * dim * dim;
+    return (uint)cell.x + (uint)cell.y * GRID_DIM + (uint)cell.z * GRID_DIM * GRID_DIM;
 }
 
 #endif // USE_MORTON_CODES
 
 // Maximum number of cells to check for neighbors: (2*CELL_PER_H+1)^3.
-// Each cell is h/CELL_PER_H wide, so a particle up to h away is at most
+// Each cell is H/CELL_PER_H wide, so a particle up to H away is at most
 // CELL_PER_H cells away per axis, requiring a (2i+1)^3 search volume.
 #define NEIGHBOR_CELL_COUNT \
     ((2*CELL_PER_H+1)*(2*CELL_PER_H+1)*(2*CELL_PER_H+1))
@@ -148,15 +130,14 @@ NeighborCells NeighborCellIndices(float3 pos)
     NeighborCells result;
     result.count = 0;
     int3 myCell = posToCell(pos);
-    int dim = gridDim();
     for (int dz = -CELL_PER_H; dz <= CELL_PER_H; dz++)
     for (int dy = -CELL_PER_H; dy <= CELL_PER_H; dy++)
     for (int dx = -CELL_PER_H; dx <= CELL_PER_H; dx++)
     {
         int3 nc = myCell + int3(dx, dy, dz);
-        if (nc.x < 0 || nc.x >= dim ||
-            nc.y < 0 || nc.y >= dim ||
-            nc.z < 0 || nc.z >= dim)
+        if (nc.x < 0 || nc.x >= GRID_DIM ||
+            nc.y < 0 || nc.y >= GRID_DIM ||
+            nc.z < 0 || nc.z >= GRID_DIM)
             continue;
         result.indices[result.count++] = cellIndex(nc);
     }

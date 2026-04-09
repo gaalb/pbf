@@ -18,7 +18,7 @@
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // Poly6
-#include "GridUtils.hlsli" // posToCell(), cellIndex(), gridDim()
+#include "GridUtils.hlsli" // posToCell(), cellIndex()
 
 RWStructuredBuffer<float3> position : register(u0);
 RWStructuredBuffer<float3> velocity : register(u1);
@@ -69,7 +69,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             // The assumption is that PBF keeps rho_j ≈ rho0 for all j (incompressibility),
             // making 1/rho_j approximately uniform. Under that assumption it too is absorbed
             // into c, and the formula reduces to what we compute here.
-            xsphSum += (vj - vi) * Poly6(r, r2, h);
+            xsphSum += (vj - vi) * Poly6(r, r2);
         }
     }
 
