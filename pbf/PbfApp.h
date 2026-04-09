@@ -148,9 +148,7 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // permutation buffer 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE cellPrefixSumHandle; // cellPrefixSum alone, used by prefix sum pass 3
 	CD3DX12_GPU_DESCRIPTOR_HANDLE groupSumHandle; // group totals scratch, used by all three prefix sum passes
-	ComputeShader::P applyForcesShader;  // apply gravity and external forces to velocity
-	ComputeShader::P collisionVelocityShader;  // zero wall-directed velocity, apply adhesion
-	ComputeShader::P predictPositionShader; // p* = position + velocity * dt
+	ComputeShader::P predictShader; // apply forces + velocity collision response + predict p* in one per-particle pass
 	ComputeShader::P collisionPredictedPositionShader; // clamp p* to box; runs pre-sort and every solver iteration
 	ComputeShader::P clearGridShader; // zero cellCount array
 	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
@@ -341,20 +339,10 @@ protected:
 		// however, com_ptr<ID3D12Resource>* p = &comptr wouldn't work, only addressof(comptr)!
 		// this is because the operator&() overload actually releases the internal pointer
 		// in comptr, and so it would leave the com_ptrs here in PbfApp.h as null!
-		applyForcesShader = ComputeShader::Create(device.Get(), "Shaders/applyForcesCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle} },
+		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &sdfHandle} },
 			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
-			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
-
-		collisionVelocityShader = ComputeShader::Create(device.Get(), "Shaders/collisionVelocityCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sdfHandle } },
-			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
-			vector<P>{ std::addressof(particleFields[PF_VELOCITY]) });
-
-		predictPositionShader = ComputeShader::Create(device.Get(), "Shaders/predictPositionCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle} },
-			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]) },
-			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
+			vector<P>{ std::addressof(particleFields[PF_VELOCITY]), std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
 			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sdfHandle } },
@@ -627,16 +615,8 @@ protected:
 		// ceil(numParticles / THREAD_GROUP_SIZE) groups cover all particles; the shader discards extra threads
 		UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
 
-		// apply gravity + external forces to velocity
-		applyForcesShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-		// Zero wall-directed velocity components and apply adhesion damping.
-		// Must run before predictPosition so the correction survives into p*;
-		// updateVelocityCS would overwrite any velocity edits made after prediction.
-		collisionVelocityShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-		// p* = position + velocity * dt  (velocity is now wall-corrected)
-		predictPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		// apply forces, wall-correct velocity, predict p* = position + v*dt
+		predictShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// Clamp p* to the simulation box before building the spatial grid.
 		collisionPredictedPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
