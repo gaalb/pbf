@@ -31,7 +31,32 @@ TODOS:
  using Morton codes?
 -we could try making the sort quicker to be able to make a finer grid? would that do anything?
  we could, for example, skip some neighbor checks 
-
+-another idea for trying to boost with GSM:
+ The reason that sorting particles by their cells' index helps is that the data of 
+ particles in the same cell is contiguous in memory. This, in theory would be even better with
+ the index being specifically Morton codes, since in addition to same-cell particles' data being
+ right next to each other in memory, the data of particles in the adjacent cells should also
+ be near in the memory, if not perfectly contiguous. The GSM was supposed to make use of this,
+ by supposing that, since in a thread group, the dispatched IDs are continuous, they would
+ first be iterating over particles in the same cell, then adjacent cells. Therefore, I assumed
+ that the threads in the group will overlap with the cells for a given thread's neighbors, which
+ it has to query in lambdaCS and deltaCS, which are the heaviest shaders. THerefore, we could
+ avoid cache misses by pre-loading all threads' particle's data into a group shared memory, then
+ have the threads in the group pick from those whenever possible.
+ The fact that this did not improve efficiency at all shows me that the Morton code's spatial
+ locality is not good enough. What if, we used a new indexing, that makes it more likely that
+ threads in a spatial neighborhood have the same thread group? Morton codes already TRY to 
+ achieve this, but we have some extra information the Morton code doesn't have: we know that
+ the thread groups will be dispatched in size of THREAD_GROUP_SIZE. We also know that cell size
+ is based on h, which is based on particleSpacing, connected by hMultiplier. So, we know that
+ in each cell we can be expect to find at resting density on average  (hMultiplier/CELL_PER_H)^3
+ particles. For now, H_MULTIPLIER = 3.25, CELL_PER_H = 2, meaning we find average 4.29 particles
+ in a cell. Meaning that the 256 particles will be spread to an average of 58.3 cells, round down 
+ to 58. So, could we index the cells in such a way that we can be sure that every 58 cells form a
+ block? Obviously, this will not help for particles on the very edge of a 58 cell block, but 
+ it should help for the majority.
+-or, even better, a cell-centric dispatch, but not with 1 thread group per cell, instead, 1 thread
+ group per *groups* of cells
 
 Cell-Centric Dispatch Optimization Plan (failed shaders in deltaCS and lambdaCS)
 ========================================
