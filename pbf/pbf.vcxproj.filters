@@ -205,6 +205,9 @@
     <FxCompile Include="dtcLodCS.hlsl">
       <Filter>Shaders\Compute\LOD</Filter>
     </FxCompile>
+    <FxCompile Include="setLodMaxCS.hlsl">
+      <Filter>Shaders\Compute\LOD</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">

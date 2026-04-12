@@ -66,7 +66,7 @@ class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
 	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 5, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -93,8 +93,8 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = gridMin; // adjustable collision boundary
-	Float3 boxMax = gridMax; // adjustable collision boundary
+	Float3 boxMin = Float3(-17.0f, -13.0f, -17.0f); // adjustable collision boundary
+	Float3 boxMax = Float3(17.0f, 20.0f, 17.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 5; // how many newton steps to take per frame
@@ -173,7 +173,8 @@ protected:
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 	ComputeShader::P clearLodReductionShader; // zero lodReduction accumulator before dtcReductionShader
 	ComputeShader::P lodReductionShader;  // compute per-frame DTC min/max via GPU atomics
-	ComputeShader::P lodShader; // assign per-particle LOD countdown from DTC range
+	ComputeShader::P lodShader;           // assign per-particle LOD countdown from DTC range
+	ComputeShader::P setLodMaxShader;     // fill all lod[i] = maxLOD (used when adaptivity is off)
 
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
 	SolidObstacle::P solidObstacle;
@@ -199,7 +200,8 @@ protected:
 	uint64_t frameCount = 0;
 
 	bool fpsCapped = false;
-	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
+	bool physicsRunning = false;  // toggled by spacebar: when false, compute passes are skipped each frame
+	bool adaptiveEnabled = true;  // when false: all particles run maxLOD iterations (no DTC computation)
 	
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
@@ -461,6 +463,11 @@ protected:
 			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodHandle }, { 3, &lodReductionHandle }},
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodBuffer)});
+
+		setLodMaxShader = ComputeShader::Create(device.Get(), "Shaders/setLodMaxCS.cso", cbv,
+			vector<TableBinding>{ {1, &lodHandle} },
+			vector<P>{},
+			vector<P>{ std::addressof(lodBuffer) });
 	}
 
 	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
@@ -650,10 +657,16 @@ protected:
 
 		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
-		// APBF LOD assignment: clear accumulators, reduce DTC min/max, assign per-particle LOD countdown
-		clearLodReductionShader->dispatch_then_barrier(computeList.Get(), 1);
-		lodReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
-		lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		// APBF LOD assignment
+		if (adaptiveEnabled) {
+			// DTC-based adaptive: reduce per-frame min/max camera distance, interpolate LOD
+			clearLodReductionShader->dispatch_then_barrier(computeList.Get(), 1);
+			lodReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
+			lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		} else {
+			// Non-adaptive: every particle runs the full solver (maxLOD iterations)
+			setLodMaxShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		}
 
 		// Snapshot LOD immediately after assignment — the solver loop decrements lodBuffer
 		// each iteration (positionFromScratchCS), so by the end of the loop all values
@@ -819,6 +832,8 @@ protected:
 		ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
 		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::SameLine();
+		ImGui::Checkbox("Adaptive", &adaptiveEnabled);
+		ImGui::SameLine();
 		ImGui::Checkbox("FPS cap", &fpsCapped);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
@@ -829,8 +844,8 @@ protected:
 		ImGui::Separator();
 		ImGui::Text("Dragonite");
 		ImGui::PushItemWidth(200);
-		ImGui::DragFloat3("Position",       &solidPosition.x, 0.1f);
-		ImGui::DragFloat3("Rotation (deg)", &solidEulerDeg.x, 1.0f);
+		ImGui::DragFloat3("Pos",       &solidPosition.x, 0.1f);
+		ImGui::DragFloat3("Rot (deg)", &solidEulerDeg.x, 1.0f);
 		ImGui::DragFloat ("Scale",          &solidScale,       0.01f, 0.01f, 100.0f);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		ImGui::Separator();
