@@ -172,7 +172,7 @@ protected:
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 	ComputeShader::P clearLodReductionShader; // zero lodReduction accumulator before dtcReductionShader
-	ComputeShader::P dtcReductionShader;  // compute per-frame DTC min/max via GPU atomics
+	ComputeShader::P lodReductionShader;  // compute per-frame DTC min/max via GPU atomics
 	ComputeShader::P lodShader; // assign per-particle LOD countdown from DTC range
 
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
@@ -452,12 +452,12 @@ protected:
 			vector<P>{},
 			vector<P>{ std::addressof(lodReductionBuffer) });
 
-		dtcReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
+		lodReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
 			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodReductionHandle } },
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodReductionBuffer) });
 
-		lodShader = ComputeShader::Create(device.Get(), "Shaders/lodCS.cso", cbv,
+		lodShader = ComputeShader::Create(device.Get(), "Shaders/dtcLodCS.cso", cbv,
 			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodHandle }, { 3, &lodReductionHandle }},
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodBuffer)});
@@ -652,7 +652,7 @@ protected:
 
 		// APBF LOD assignment: clear accumulators, reduce DTC min/max, assign per-particle LOD countdown
 		clearLodReductionShader->dispatch_then_barrier(computeList.Get(), 1);
-		dtcReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		lodReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 		lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 		// Snapshot LOD immediately after assignment — the solver loop decrements lodBuffer

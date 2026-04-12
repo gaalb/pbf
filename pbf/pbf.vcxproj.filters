@@ -202,7 +202,7 @@
     <FxCompile Include="dtcReductionCS.hlsl">
       <Filter>Shaders\Compute\LOD</Filter>
     </FxCompile>
-    <FxCompile Include="lodCS.hlsl">
+    <FxCompile Include="dtcLodCS.hlsl">
       <Filter>Shaders\Compute\LOD</Filter>
     </FxCompile>
   </ItemGroup>
