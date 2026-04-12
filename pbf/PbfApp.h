@@ -204,12 +204,15 @@ protected:
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
 	// Async compute: physics runs on the compute queue (from AsyncComputeApp), decoupled from vsync.
-	// Double-buffered snapshot buffers hold position and density for the graphics queue.
+	// Double-buffered snapshot buffers hold position, density, and LOD for the graphics queue.
 	// snapshotWriteIdx is the slot currently being written by the compute queue;
 	// the graphics queue always reads from the OTHER slot (1 - snapshotWriteIdx).
 	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (COMMON state, written by compute, read by direct)
 	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (COMMON state, written by compute, read by direct)
+	com_ptr<ID3D12Resource> snapshotLod[2];      // LOD snapshot double-buffer (COMMON state, written by compute, read by direct)
 	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
+
+	int shadingMode = SHADING_DENSITY; // current particle shading mode, driven by ImGui
 
 	// Allocate GPU resources for the cubemap texture and the solid obstacle (mesh + SDF).
 	// No GPU commands are recorded here; uploads happen later in UploadAll().
@@ -495,8 +498,8 @@ protected:
 		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// bind the per-frame constant buffer so the shader can access camera matrices
 		material->SetConstantBuffer(perFrameCb);
-		// bind the particle SRV table (slots 1-2 in srvHeap) to root parameter 1 so the VS
-		// can read position (t0) and density (t1).
+		// bind the particle SRV table (slots 1-3 in srvHeap) to root parameter 1 so the VS
+		// can read position (t0), density (t1), and LOD (t2).
 		// SetSrvHeap's third argument is a raw byte offset into the heap, not a descriptor slot index,
 		// so we must multiply the slot index by the descriptor increment size to get the correct byte offset
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -652,6 +655,26 @@ protected:
 		dtcReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 		lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
+		// Snapshot LOD immediately after assignment — the solver loop decrements lodBuffer
+		// each iteration (positionFromScratchCS), so by the end of the loop all values
+		// would be 0. We capture the initial per-particle LOD here, before any decrement.
+		{
+			D3D12_RESOURCE_BARRIER toLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
+				lodBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+			D3D12_RESOURCE_BARRIER toLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
+				snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+			computeList->ResourceBarrier(1, &toLodSrc);
+			computeList->ResourceBarrier(1, &toLodDest);
+			computeList->CopyBufferRegion(snapshotLod[writeIdx].Get(), 0,
+				lodBuffer.Get(), 0, (UINT64)numParticles * sizeof(UINT));
+			D3D12_RESOURCE_BARRIER fromLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
+				lodBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			D3D12_RESOURCE_BARRIER fromLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
+				snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+			computeList->ResourceBarrier(1, &fromLodSrc);
+			computeList->ResourceBarrier(1, &fromLodDest);
+		}
+
 		// constraint solver loop
 		// particles are now in grid-sorted order, and cellCount + cellPrefixSum describe
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
@@ -670,14 +693,15 @@ protected:
 		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups);    // position = predictedPosition
 
 		// Write snapshot: copy position and density into snapshot slot [writeIdx].
+		// (LOD was already snapshotted above, right after lodShader, before the solver decrements it.)
 		// Transition particle buffers to COPY_SOURCE, snapshot buffers to COPY_DEST.
-		D3D12_RESOURCE_BARRIER toCopySrc[2] = { // position, density particle buffer becomes source
+		D3D12_RESOURCE_BARRIER toCopySrc[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_POSITION].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
 		};
-		D3D12_RESOURCE_BARRIER snapshotToDest[2] = { // position, density snapshot buffer becomes destination
+		D3D12_RESOURCE_BARRIER snapshotToDest[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
@@ -718,9 +742,9 @@ protected:
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 		solidObstacle->Draw(commandList.Get());  // draw solid with depth test before particles
 
-		// Before the particle draw, redirect descriptor heap slots 1-2 to the active snapshot.
-		// The particle VS fetches position (t0) and density (t1) from slots 1-2 in the heap.
-		// We copy the snapshot SRVs from snapshotStagingHeap into slots 1-2 so the
+		// Before the particle draw, redirect descriptor heap slots 1-3 to the active snapshot.
+		// The particle VS fetches position (t0), density (t1), and LOD (t2) from slots 1-3 in the heap.
+		// We copy the snapshot SRVs from snapshotStagingHeap into slots 1-3 so the
 		// shader reads the latest complete snapshot without any root signature change.
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		device->CopyDescriptorsSimple(1,
@@ -731,29 +755,39 @@ protected:
 			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEN_SRV, sz),
 			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_DEN_0 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		device->CopyDescriptorsSimple(1,
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_LOD_SRV, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_LOD_0 + readIdx, sz),
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 		// Snapshot buffers live in COMMON. Transition them to SRV state for the draw, then back.
-		D3D12_RESOURCE_BARRIER toSrv[2] = {
+		D3D12_RESOURCE_BARRIER toSrv[3] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
 				D3D12_RESOURCE_STATE_COMMON,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
 				D3D12_RESOURCE_STATE_COMMON,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[readIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON,
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
 		};
-		commandList->ResourceBarrier(2, toSrv);
+		commandList->ResourceBarrier(3, toSrv);
 
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 
-		D3D12_RESOURCE_BARRIER toCommon[2] = {
+		D3D12_RESOURCE_BARRIER toCommon[3] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_COMMON),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_COMMON),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[readIdx].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+				D3D12_RESOURCE_STATE_COMMON),
 		};
-		commandList->ResourceBarrier(2, toCommon);
+		commandList->ResourceBarrier(3, toCommon);
 	}
 
 	void BuildImGui() {
@@ -771,6 +805,11 @@ protected:
 		ImGui::Begin("PBF Controls");
 		ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
+
+		// Shading mode combo. The order of items must match the ShadingMode:: constants.
+		static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD" };
+		ImGui::Combo("Shading", &shadingMode, shadingModeItems, IM_ARRAYSIZE(shadingModeItems));
+
 		ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
 		ImGui::InputInt("Min LOD", &minLOD, 1);
 		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
@@ -842,6 +881,9 @@ protected:
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
 		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, particleRadius); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
+		perFrameCb->shadingMode = (UINT)shadingMode;
+		perFrameCb->minLOD = (UINT)minLOD;
+		perFrameCb->maxLOD = (UINT)solverIterations;
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
 
@@ -1069,6 +1111,19 @@ protected:
 		CD3DX12_CPU_DESCRIPTOR_HANDLE denSrvHandle(
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEN_SRV, descriptorSize);
 		device->CreateShaderResourceView(particleFields[PF_DENSITY].Get(), &denSrvDesc, denSrvHandle);
+
+		// LOD SRV (slot 3, t2): read-only view for the vertex shader; overwritten each frame via CopyDescriptorsSimple
+		D3D12_SHADER_RESOURCE_VIEW_DESC lodSrvDesc = {};
+		lodSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		lodSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		lodSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		lodSrvDesc.Buffer.FirstElement = 0;
+		lodSrvDesc.Buffer.NumElements = numParticles;
+		lodSrvDesc.Buffer.StructureByteStride = sizeof(UINT);
+		lodSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE lodSrvHandle(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_LOD_SRV, descriptorSize);
+		device->CreateShaderResourceView(lodBuffer.Get(), &lodSrvDesc, lodSrvHandle);
 	}
 
 	void CreateParticleUavs() {
@@ -1318,8 +1373,10 @@ protected:
 		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 		const UINT64 posSize = (UINT64)numParticles * sizeof(Float3);
 		const UINT64 denSize = (UINT64)numParticles * sizeof(float);
+		const UINT64 lodSize = (UINT64)numParticles * sizeof(UINT);
 		const CD3DX12_RESOURCE_DESC posDesc = CD3DX12_RESOURCE_DESC::Buffer(posSize);
 		const CD3DX12_RESOURCE_DESC denDesc = CD3DX12_RESOURCE_DESC::Buffer(denSize);
+		const CD3DX12_RESOURCE_DESC lodDesc = CD3DX12_RESOURCE_DESC::Buffer(lodSize);
 		for (int i = 0; i < 2; i++) {
 			DX_API("Failed to create snapshot position buffer")
 				device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &posDesc,
@@ -1329,10 +1386,14 @@ protected:
 				device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &denDesc,
 					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(snapshotDensity[i].ReleaseAndGetAddressOf()));
 			snapshotDensity[i]->SetName(i == 0 ? L"Snapshot Density [0]" : L"Snapshot Density [1]");
+			DX_API("Failed to create snapshot LOD buffer")
+				device->CreateCommittedResource(&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &lodDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(snapshotLod[i].ReleaseAndGetAddressOf()));
+			snapshotLod[i]->SetName(i == 0 ? L"Snapshot LOD [0]" : L"Snapshot LOD [1]");
 		}
 	}
 
-	// Create SRV descriptors for all four snapshot buffers at heap slots 21-24.
+	// Create SRV descriptors for all six snapshot buffers in the staging heap.
 	void CreateSnapshotSrvs() {
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 		D3D12_SHADER_RESOURCE_VIEW_DESC posSrvDesc = {};
@@ -1351,6 +1412,14 @@ protected:
 		denSrvDesc.Buffer.NumElements = numParticles;
 		denSrvDesc.Buffer.StructureByteStride = sizeof(float);
 		denSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+		D3D12_SHADER_RESOURCE_VIEW_DESC lodSrvDesc = {};
+		lodSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		lodSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		lodSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		lodSrvDesc.Buffer.FirstElement = 0;
+		lodSrvDesc.Buffer.NumElements = numParticles;
+		lodSrvDesc.Buffer.StructureByteStride = sizeof(UINT);
+		lodSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		for (int i = 0; i < 2; i++) {
 			CD3DX12_CPU_DESCRIPTOR_HANDLE posHandle(
 				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_POS_0 + i, sz);
@@ -1358,21 +1427,25 @@ protected:
 			CD3DX12_CPU_DESCRIPTOR_HANDLE denHandle(
 				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_DEN_0 + i, sz);
 			device->CreateShaderResourceView(snapshotDensity[i].Get(), &denSrvDesc, denHandle);
+			CD3DX12_CPU_DESCRIPTOR_HANDLE lodHandle(
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_LOD_0 + i, sz);
+			device->CreateShaderResourceView(snapshotLod[i].Get(), &lodSrvDesc, lodHandle);
 		}
 	}
 
 	void CreateDescriptorHeap() {
-		// descriptor heap layout (SoA):
+		// descriptor heap layout (SoA): see DescriptorLayout.h for the authoritative slot listing
 		//   slot 0:      cubemap SRV  — sampled by the background pixel shader
-		//   slot 1:      position SRV — read by particle VS; CopyDescriptorsSimple redirects this to the active snapshot each frame
-		//   slot 2:      density SRV  — read by particle VS; same
-		//   slots 3-9:   particle field UAVs — compute shader read/write
-		//   slot 10:     cellCount UAV — per-cell particle count for the spatial grid
-		//   slot 11:     cellPrefixSum UAV — exclusive prefix sum for sort offsets and neighbor lookups
-		//   slots 12-18: sorted field UAVs — scatter targets for spatial sorting
-		//   slot 19:     SDF Texture3D SRV — sampled by the solid-obstacle collision compute shaders
-		//   slot 20:     permutation UAV — old index -> sorted index, written by sortCS, read by permutateCS
-		//   slot 21:     groupSum UAV — per-group totals for the Blelloch 3-pass parallel prefix sum
+		//   slots 1-3:   position/density/LOD SRVs — read by particle VS; redirected to active snapshot each frame
+		//   slots 4-10:  particle field UAVs — compute shader read/write
+		//   slot 11:     cellCount UAV — per-cell particle count for the spatial grid
+		//   slot 12:     cellPrefixSum UAV — exclusive prefix sum for sort offsets and neighbor lookups
+		//   slots 13-19: sorted field UAVs — scatter targets for spatial sorting
+		//   slot 20:     SDF Texture3D SRV — sampled by the solid-obstacle collision compute shaders
+		//   slot 21:     permutation UAV — old index -> sorted index, written by sortCS, read by permutateCS
+		//   slot 22:     groupSum UAV — per-group totals for the Blelloch 3-pass parallel prefix sum
+		//   slot 23:     LOD countdown UAV — per-particle uint, written by lodCS
+		//   slot 24:     LOD reduction UAV — 2 uints [minDTC, maxDTC]
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // GPU can see these descriptors
 		dhd.NodeMask = 0; // single GPU setup, so no node masking needed
@@ -1384,11 +1457,12 @@ protected:
 	}
 
 	void CreateSnapshotStagingHeap() {
-		// 4-slot CPU-only heap used exclusively as CopyDescriptors source.
+		// 6-slot CPU-only heap used exclusively as CopyDescriptors source.
 		// D3D12 forbids reading from SHADER_VISIBLE heaps on the CPU, so snapshot SRVs
 		// that need to be copied each frame live here instead of in descriptorHeap.
 		// Layout: [0]=snapshotPosition[0], [1]=snapshotPosition[1],
-		//         [2]=snapshotDensity[0],  [3]=snapshotDensity[1]
+		//         [2]=snapshotDensity[0],  [3]=snapshotDensity[1],
+		//         [4]=snapshotLod[0],      [5]=snapshotLod[1]
 		D3D12_DESCRIPTOR_HEAP_DESC dhd;
 		dhd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // CPU-readable: required for CopyDescriptors source
 		dhd.NodeMask = 0;
@@ -1424,9 +1498,9 @@ protected:
 		CreateSortUavs();
 		// slot 19: SDF Texture3D SRV -- sampled by solid-obstacle collision compute shaders
 		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), HeapSlot::SDF_SRV);
-		// slot 20: permutation UAV -- old index -> sorted index
+		// slot 21: permutation UAV -- old index -> sorted index
 		CreatePermUav();
-		// slots 22-23: LOD UAVs -- per-particle countdown and DTC reduction scratch
+		// slots 23-24: LOD UAVs -- per-particle countdown and DTC reduction scratch
 		CreateLodUavs();
 		CreateSnapshotSrvs();
 	}

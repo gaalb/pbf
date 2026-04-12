@@ -11,6 +11,14 @@ using namespace Egg::Math;
 // 2: the struct' fields must not pass a 16-byte boundary: assured by paddings
 
 
+// Shading mode indices, used by particlePS and set via ImGui.
+// Add new modes here and add a corresponding branch in particlePS.hlsl.
+namespace ShadingMode {
+	constexpr UINT UNICOLOR = 0; // flat blue base color
+	constexpr UINT DENSITY  = 1; // blue->green->red by density relative to rho0 (default)
+	constexpr UINT LOD      = 2; // blue->orange by LOD value (minLOD..maxLOD)
+}
+
 // per-frame data sent to shaders every frame - camera matrices etc.
 // must be 16-byte aligned because the GPU reads constant buffers in 16byte chunks
 __declspec(align(16)) struct PerFrameCb {
@@ -18,7 +26,12 @@ __declspec(align(16)) struct PerFrameCb {
 	Float4x4 rayDirTransform; // maps screen-space positions to world-space ray directions
 	Float4 cameraPos; // camera position in world space, w=1
 	Float4 lightDir; // xyz = direction toward light, w = unused
-	Float4 particleParams; // xyz are color, w is radius
+	Float4 particleParams; // x = rho0 (density coloring), w = particle display radius
+	UINT shadingMode; // offset 176: which shading branch to use (ShadingMode::*)
+	UINT minLOD;      // offset 180: minimum LOD value (for LOD color normalization)
+	UINT maxLOD;      // offset 184: maximum LOD value (for LOD color normalization)
+	float _pad;       // offset 188: padding to reach 192 bytes (next 16-byte boundary)
+	// total: 192 bytes
 };
 
 // per-draw data for the solid obstacle rendering shader

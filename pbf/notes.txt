@@ -15,9 +15,7 @@ TODOS:
 -investigate whether we're actually double buffering  
 -pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
  so we could pre-compute them and just add them to the cell index
--check bottleneck in nsight graphics
 -check if we can enforce fps cap better (it's a bit too far under the target)
--double buffer in the sorting might be slower than copying?
 -notes on GSM: I though I could improve the speed of particleData[idx] type lookups by
  storing thread group sharing particles' data in GSM for quicker lookup in the neighbor loop
  This didn't lead to efficiency gains at all, so I supposed that the ratio of particles
@@ -29,8 +27,10 @@ TODOS:
  due to the Morton Code indexing. However, they didn't, and now that I think about it, the Morton
  codes' introduction didn't provide a speedup at all (almost identical to row-major). Are we even
  using Morton codes?
--we could try making the sort quicker to be able to make a finer grid? would that do anything?
- we could, for example, skip some neighbor checks 
+-finer grid, more cells in a h radius -> fewer overall neighbor checks
+	-this didn't help, and mate it worse
+-comments in a lot of places, and a more intuitive initialization: initialize every pointer/descriptor/etc
+ relating to a certain resource in one place for that resource?
 -another idea for trying to boost with GSM:
  The reason that sorting particles by their cells' index helps is that the data of 
  particles in the same cell is contiguous in memory. This, in theory would be even better with
