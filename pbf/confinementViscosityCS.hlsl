@@ -86,9 +86,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // --- Viscosity: write combined result ---
     // vi now includes the confinement impulse, so the output encodes both corrections.
-#ifdef JACOBI_STYLE
     scratch[i] = vi + viscosity * xsphSum;
-#else
-    velocity[i] = vi + viscosity * xsphSum;
-#endif
 }

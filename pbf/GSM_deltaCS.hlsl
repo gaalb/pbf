@@ -13,7 +13,7 @@
 // In: predictedPosition, lambda, cellCount, cellPrefixSum
 // Out: scratch (new predicted position)
 
-#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -25,6 +25,7 @@ RWStructuredBuffer<float> lambda : register(u3);
 RWStructuredBuffer<float3> scratch : register(u6);
 RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
+RWStructuredBuffer<uint> lod : register(u9);
 
 groupshared float3 gs_predPos[THREAD_GROUP_SIZE];
 groupshared float gs_lambda[THREAD_GROUP_SIZE];
@@ -42,8 +43,10 @@ uint3 groupID : SV_GroupID) // unique ID for the thread group
     gs_predPos[localIdx] = (i < numParticles) ? predictedPosition[i] : (float3) 0;
     gs_lambda[localIdx] = (i < numParticles) ? lambda[i] : 0.0;
     GroupMemoryBarrierWithGroupSync();
-    
+
     if (i >= numParticles)
+        return;
+    if (lod[i] == 0)
         return;
 
     // cache to avoid repeated UAV reads

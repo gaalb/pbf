@@ -20,7 +20,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-#ifdef JACOBI_STYLE
     velocity[i] = scratch[i];
-#endif
 }

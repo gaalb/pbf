@@ -9,12 +9,13 @@
 // For the solid: if the predicted position is inside (SDF < 0), the particle
 // is displaced along the SDF gradient so it sits on the surface.
 //
-// In:  predictedPosition
+// In:  predictedPosition, lod
 // Out: predictedPosition
 
 #define CollisionPositionRootSig \
     "CBV(b0), " \
     "DescriptorTable(UAV(u0, numDescriptors = 7)), " \
+    "DescriptorTable(UAV(u9, numDescriptors = 1)), " \
     "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
@@ -27,6 +28,7 @@
 #include "SolidSdf.hlsli"
 
 RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<uint> lod : register(u9);
 
 [RootSignature(CollisionPositionRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
@@ -34,6 +36,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;
     if (i >= numParticles)
+        return;
+    if (lod[i] == 0)
         return;
 
     float3 p = predictedPosition[i];

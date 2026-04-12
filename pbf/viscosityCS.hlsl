@@ -73,9 +73,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         }
     }
 
-#ifdef JACOBI_STYLE
     scratch[i] = vi + viscosity * xsphSum;
-#else
-    velocity[i] = vi + viscosity * xsphSum;
-#endif
 }

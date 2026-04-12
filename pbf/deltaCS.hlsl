@@ -10,10 +10,10 @@
 // predictedPosition before the next solver iteration, ensuring all threads in the next
 // iteration see a consistent snapshot.
 //
-// In: predictedPosition, lambda, cellCount, cellPrefixSum
+// In: predictedPosition, lambda, cellCount, cellPrefixSum, lod
 // Out: scratch (new predicted position)
 
-#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -25,6 +25,7 @@ RWStructuredBuffer<float> lambda : register(u3);
 RWStructuredBuffer<float3> scratch : register(u6);
 RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
+RWStructuredBuffer<uint> lod : register(u9);
 
 [RootSignature(DeltaRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
@@ -33,6 +34,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     uint i = dispatchID.x;
     if (i >= numParticles)
         return;
+    if (lod[i] == 0)
+        return;
 
     // cache to avoid repeated UAV reads
     float3 pi = predictedPosition[i];
@@ -40,7 +43,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // Precompute the s_corr denominator, same for every (i,j) pair.
     // Poly6 only uses the squared magnitude so the direction does not matter.
-    float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q*SCORR_DELTA_Q);
+    float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q * SCORR_DELTA_Q);
 
     float3 deltaP = float3(0, 0, 0);
 
@@ -71,7 +74,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
              if (r2 < EPSILON*EPSILON) {
                 deltaP += overlapJitter(i, j) * (H * 0.001);
                 continue;
-             }
+            }
 
             // Eq. 13: artificial pressure term s_corr to suppress tensile instability.
             // When lambda > 0 (sparse region), the standard Eq. 12 correction becomes attractive,
@@ -96,9 +99,5 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     deltaP /= RHO0;
 
     // Update the predicted position (collision response is handled by collisionCS)
-#ifdef JACOBI_STYLE
     scratch[i] = pi + deltaP;
-#else
-    predictedPosition[i] = pi + deltaP;
-#endif
 }

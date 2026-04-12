@@ -11,7 +11,9 @@
 // slots12–18  SORTED_FIELDS     u9..u15           – sorted particle field UAVs (PF_COUNT=7) 
 // slot 19     SDF_SRV           t0 in collision CSs – solid obstacle SDF Texture3D         
 // slot 20     PERM_UAV          u16               – permutation buffer                      
-// slot 21     GROUP_SUM_UAV     (scratch)         – Blelloch prefix-sum group totals         
+// slot 21     GROUP_SUM_UAV     (scratch)         – Blelloch prefix-sum group totals       
+// slot 22     LOD_UAV           (APBF)            – per-particle LOD countdown (uint)
+// slot 23     LOD_REDUCTION_UAV (APBF)            – DTC min/max reduction scratch (2 uints) 
 //
 // Snapshot staging heap (CPU-only, StagingSlot::TOTAL descriptors)
 // slot  0     SNAPSHOT_POS_0    snapshotPosition[0] SRV                                     
@@ -49,8 +51,14 @@ namespace HeapSlot {
     // Blelloch prefix-sum group-sum scratch UAV
     constexpr UINT GROUP_SUM_UAV      = 21;
 
+    // Per-particle LOD countdown (uint per particle), written by lodCS, decremented by positionFromScratchCS
+    constexpr UINT LOD_UAV = 22;
+
+    // LOD reduction buffer: 2 uints [minDTC bits, maxDTC bits], written by clearLodReductionCS + dtcReductionCS
+    constexpr UINT LOD_REDUCTION_UAV = 23;
+
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL              = 22;
+    constexpr UINT TOTAL              = 24;
 
 } // namespace HeapSlot
 

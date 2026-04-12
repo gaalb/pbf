@@ -49,5 +49,11 @@ __declspec(align(16)) struct ComputeCb {
 	Float4x4 solidInvTransform; // offset  80: world-to-object transform for SDF sampling
 	Float4 sdfMin;          // offset 144: object-space SDF AABB min (xyz = min corner, w unused)
 	Float4 sdfMax;          // offset 160: object-space SDF AABB max (xyz = max corner, w unused)
-	// total: 176 bytes
+	Float3 cameraPos;       // offset 176: camera world position for DTC LOD computation
+	UINT minLOD;            // offset 188: minimum solver iterations (farthest particles)
+	UINT maxLOD;            // offset 192: maximum solver iterations (= solverIterations, closest)
+	float _padLod0;         // offset 196
+	float _padLod1;         // offset 200
+	float _padLod2;         // offset 204
+	// total: 208 bytes
 };

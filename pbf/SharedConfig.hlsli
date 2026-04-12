@@ -1,5 +1,5 @@
 #define THREAD_GROUP_SIZE 256
-#define CELL_PER_H 2
+#define CELL_PER_H 1
 
 // Compile-time simulation constants shared between HLSL and C++.
 // These never change at runtime, so keeping them as preprocessor defines
@@ -7,7 +7,7 @@
 // and removes them from the constant buffer entirely.
 
 #define PARTICLE_SPACING  0.25f
-#define H_MULTIPLIER      3.25f
+#define H_MULTIPLIER      3.0f
 #define H                 (PARTICLE_SPACING * H_MULTIPLIER)   // SPH smoothing radius
 
 // Rest density: if particles are spaced PARTICLE_SPACING apart, each occupies
@@ -34,12 +34,3 @@
 
 // Grid world-space half-extent: GRID_DIM cells of width H/CELL_PER_H on each side.
 #define BOX_HALF_EXTENT GRID_DIM * CELL_SIZE / 2.0f
-
-// When defined, deltaCS and viscosityCS write their results to the scratch field and
-// separate "from scratch" passes copy back — a strict Jacobi update where every thread
-// sees a consistent snapshot from the previous iteration.
-// When commented out, each shader writes directly to the target field (predictedPosition
-// or velocity), accepting that some threads may read their neighbors' already-updated
-// values (Gauss-Seidel ordering).
-#define JACOBI_STYLE
-

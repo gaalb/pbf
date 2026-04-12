@@ -15,7 +15,7 @@
 //
 // In: predictedPosition, cellCount, cellPreficSum
 // Out: lambda, density
-#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -27,7 +27,7 @@ RWStructuredBuffer<float> lambda : register(u3);
 RWStructuredBuffer<float> density : register(u4);
 RWStructuredBuffer<uint> cellCount : register(u7);
 RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-
+RWStructuredBuffer<uint> lod : register(u9);
 
 // group shared memory array, one slot per thread in group
 // This memory lives on-chip (fast), and is shared by all threads in the same
@@ -50,8 +50,10 @@ uint3 groupID : SV_GroupID) // unique ID for the thread group
     gs_predPos[localIdx] = (i < numParticles) ? predictedPosition[i] : (float3) 0;
 
     GroupMemoryBarrierWithGroupSync();
-    
+
     if (i >= numParticles)
+        return;
+    if (lod[i] == 0)
         return;
 
     // The lambda calculation involves three "indexes", i, j, and k, which aren't clearly explained
@@ -64,7 +66,7 @@ uint3 groupID : SV_GroupID) // unique ID for the thread group
     float3 pi = gs_predPos[localIdx]; // cache from GSM instead of UAV read
 
     float rho = 0.0; // density estimate rho_i
-    float3 gradI = float3(0,0,0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
+    float3 gradI = float3(0, 0, 0); // accumulates sum_{j != i}( grad_W(r_ij) ) for the k=i case
     float gradSqSum = 0.0; // accumulates sum_k(|grad_pk(C_i)|^2) for the k=j case
 
     // Iterate over neighboring cells using the precomputed cell index list.

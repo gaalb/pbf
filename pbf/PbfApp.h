@@ -97,7 +97,8 @@ protected:
 	Float3 boxMax = gridMax; // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
-	int solverIterations = 4; // how many newton steps to take per frame
+	int solverIterations = 5; // how many newton steps to take per frame
+	int minLOD = 2;  // minimum solver iterations for the farthest particles
 	float epsilon = 4.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
 	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
@@ -136,7 +137,8 @@ protected:
 	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
 	com_ptr<ID3D12Resource> permBuffer; // default heap: uint per particle, maps old index -> sorted index (computed by sortCS, applied by permutateCS)
 	com_ptr<ID3D12Resource> groupSumBuffer; // default heap: per-group totals scratch for the Blelloch 3-pass prefix sum (numCells / (2*THREAD_GROUP_SIZE) uints)
-
+	com_ptr<ID3D12Resource> lodBuffer;  // default heap: per-particle LOD countdown (uint per particle)
+	com_ptr<ID3D12Resource> lodReductionBuffer; // default heap: DTC reduction scratch [minDTC bits, maxDTC bits] (2 uints)
 
 	// One ComputeShader per pass. Each holds its own PSO, root signature, descriptor
 	// table bindings, and input/output resource lists for UAV barrier insertion.
@@ -148,6 +150,9 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE permHandle; // permutation buffer 
 	CD3DX12_GPU_DESCRIPTOR_HANDLE cellPrefixSumHandle; // cellPrefixSum alone, used by prefix sum pass 3
 	CD3DX12_GPU_DESCRIPTOR_HANDLE groupSumHandle; // group totals scratch, used by all three prefix sum passes
+	CD3DX12_GPU_DESCRIPTOR_HANDLE lodHandle; // per-particle LOD UAV
+	CD3DX12_GPU_DESCRIPTOR_HANDLE lodReductionHandle; // DTC min/max reduction UAV
+
 	ComputeShader::P predictShader; // apply forces + velocity collision response + predict p* in one per-particle pass
 	ComputeShader::P collisionPredictedPositionShader; // clamp p* to box; runs pre-sort and every solver iteration
 	ComputeShader::P clearGridShader; // zero cellCount array
@@ -166,6 +171,10 @@ protected:
 	ComputeShader::P confinementViscosityShader; // vorticity confinement + XSPH viscosity in one neighbor pass
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
+	ComputeShader::P clearLodReductionShader; // zero lodReduction accumulator before dtcReductionShader
+	ComputeShader::P dtcReductionShader;  // compute per-frame DTC min/max via GPU atomics
+	ComputeShader::P lodShader; // assign per-particle LOD countdown from DTC range
+
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
 	SolidObstacle::P solidObstacle;
 	CD3DX12_GPU_DESCRIPTOR_HANDLE sdfHandle; // GPU handle for descriptor heap slot 19: SDF Texture3D SRV
@@ -345,14 +354,14 @@ protected:
 			vector<P>{ std::addressof(particleFields[PF_VELOCITY]), std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &sdfHandle } },
-			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) },
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodHandle }, { 3, &sdfHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodBuffer) },
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
 
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle} },
-			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) },
-			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]) });
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodHandle } },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]), std::addressof(lodBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodBuffer) });
 
 		updateVelocityShader = ComputeShader::Create(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
 			vector<TableBinding>{ {1, & particleFieldsHandle} },
@@ -399,13 +408,13 @@ protected:
 			vector<P>{ std::addressof(cellCountBuffer) });
 
 		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
-			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle }, { 3, &lodHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer), std::addressof(lodBuffer) },
 			vector<P>{ std::addressof(particleFields[PF_LAMBDA]), std::addressof(particleFields[PF_DENSITY]) });
 
 		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
-			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle } },
-			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(particleFields[PF_LAMBDA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &gridHandle }, { 3, &lodHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(particleFields[PF_LAMBDA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer), std::addressof(lodBuffer) },
 			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
 
 		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
@@ -434,6 +443,21 @@ protected:
 			std::addressof(sortedFields[PF_PREDICTED_POSITION]), std::addressof(sortedFields[PF_LAMBDA]),
 			std::addressof(sortedFields[PF_DENSITY]), std::addressof(sortedFields[PF_OMEGA]),
 			std::addressof(sortedFields[PF_SCRATCH]) });
+
+		clearLodReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearLodReductionCS.cso", cbv,
+			vector<TableBinding>{ {1, & lodReductionHandle} },
+			vector<P>{},
+			vector<P>{ std::addressof(lodReductionBuffer) });
+
+		dtcReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodReductionHandle } },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
+			vector<P>{ std::addressof(lodReductionBuffer) });
+
+		lodShader = ComputeShader::Create(device.Get(), "Shaders/lodCS.cso", cbv,
+			vector<TableBinding>{ {1, & particleFieldsHandle}, { 2, &lodHandle }, { 3, &lodReductionHandle }},
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
+			vector<P>{ std::addressof(lodBuffer)});
 	}
 
 	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
@@ -623,6 +647,11 @@ protected:
 
 		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
+		// APBF LOD assignment: clear accumulators, reduce DTC min/max, assign per-particle LOD countdown
+		clearLodReductionShader->dispatch_then_barrier(computeList.Get(), 1);
+		dtcReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
+
 		// constraint solver loop
 		// particles are now in grid-sorted order, and cellCount + cellPrefixSum describe
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
@@ -743,6 +772,7 @@ protected:
 		ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 		ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
+		ImGui::InputInt("Min LOD", &minLOD, 1);
 		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
 		ImGui::InputFloat("Viscosity (XSPH)", &viscosity, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
@@ -832,6 +862,9 @@ protected:
 		Float3 smax = solidObstacle->GetSdfMax();
 		computeCb->sdfMin = Float4(smin, 0.0f);
 		computeCb->sdfMax = Float4(smax, 0.0f);
+		computeCb->cameraPos = camera->GetEyePosition();
+		computeCb->minLOD = (UINT)minLOD;
+		computeCb->maxLOD = (UINT)solverIterations;
 		computeCb.Upload();
 	}
 
@@ -1099,6 +1132,33 @@ protected:
 		groupSumBuffer->SetName(L"Prefix Sum Group Sum Buffer");
 	}
 
+	void CreateLodBuffers() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+		// lodBuffer: one uint per particle — LOD countdown, recomputed fresh each frame after sorting
+		const UINT64 lodSize = (UINT64)numParticles * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC lodDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			lodSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create LOD buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &lodDesc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				IID_PPV_ARGS(lodBuffer.ReleaseAndGetAddressOf()));
+		lodBuffer->SetName(L"LOD Buffer");
+
+		// lodReductionBuffer: 2 uints — [minDTC bits, maxDTC bits], written atomically by dtcReductionCS
+		const UINT64 redSize = 2 * sizeof(UINT);
+		const CD3DX12_RESOURCE_DESC redDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			redSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		DX_API("Failed to create LOD reduction buffer")
+			device->CreateCommittedResource(
+				&defaultHeapProps, D3D12_HEAP_FLAG_NONE, &redDesc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				IID_PPV_ARGS(lodReductionBuffer.ReleaseAndGetAddressOf()));
+		lodReductionBuffer->SetName(L"LOD Reduction Buffer");;
+	}
+
+
 	void CreateGridUavs() {
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -1204,6 +1264,32 @@ protected:
 		CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::PERM_UAV, descriptorSize);
 		device->CreateUnorderedAccessView(permBuffer.Get(), nullptr, &uavDesc, handle);
+	}
+
+	void CreateLodUavs() {
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		D3D12_UNORDERED_ACCESS_VIEW_DESC lodUavDesc = {};
+		lodUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		lodUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		lodUavDesc.Buffer.FirstElement = 0;
+		lodUavDesc.Buffer.NumElements = numParticles;
+		lodUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		lodUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE lodCpuHandle(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::LOD_UAV, descriptorSize);
+		device->CreateUnorderedAccessView(lodBuffer.Get(), nullptr, &lodUavDesc, lodCpuHandle);
+
+		D3D12_UNORDERED_ACCESS_VIEW_DESC redUavDesc = {};
+		redUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		redUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+		redUavDesc.Buffer.FirstElement = 0;
+		redUavDesc.Buffer.NumElements = 2;
+		redUavDesc.Buffer.StructureByteStride = sizeof(UINT);
+		redUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE redCpuHandle(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::LOD_REDUCTION_UAV, descriptorSize);
+		device->CreateUnorderedAccessView(lodReductionBuffer.Get(), nullptr, &redUavDesc, redCpuHandle);
 	}
 
 	void CreateDensityReadbackBuffer() {
@@ -1340,6 +1426,8 @@ protected:
 		solidObstacle->CreateSdfSrv(device.Get(), descriptorHeap.Get(), HeapSlot::SDF_SRV);
 		// slot 20: permutation UAV -- old index -> sorted index
 		CreatePermUav();
+		// slots 22-23: LOD UAVs -- per-particle countdown and DTC reduction scratch
+		CreateLodUavs();
 		CreateSnapshotSrvs();
 	}
 
@@ -1361,6 +1449,10 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::CELL_PREFIX_SUM, sz);
 		groupSumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::GROUP_SUM_UAV, sz);
+		lodHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::LOD_UAV, sz);
+		lodReductionHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::LOD_REDUCTION_UAV, sz);
 	}
 
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
@@ -1454,6 +1546,7 @@ public:
 		CreateParticleBuffers();
 		CreateUploadBuffers();
 		CreateGridBuffers();
+		CreateLodBuffers();
 		CreateSortBuffers();
 		CreatePermBuffer();
 		CreateDensityReadbackBuffer();

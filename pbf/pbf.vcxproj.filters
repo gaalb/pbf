@@ -46,6 +46,9 @@
     <Filter Include="Shaders\Compute\lambda">
       <UniqueIdentifier>{cad448eb-03f6-482f-bf08-ff689e7b5668}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\LOD">
+      <UniqueIdentifier>{3a62d2ce-4841-4645-90b0-17661e7200c6}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -192,6 +195,15 @@
     </FxCompile>
     <FxCompile Include="predictCS.hlsl">
       <Filter>Shaders\Compute\prediction</Filter>
+    </FxCompile>
+    <FxCompile Include="clearLodReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD</Filter>
+    </FxCompile>
+    <FxCompile Include="dtcReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD</Filter>
+    </FxCompile>
+    <FxCompile Include="lodCS.hlsl">
+      <Filter>Shaders\Compute\LOD</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

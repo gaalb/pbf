@@ -27,7 +27,13 @@ cbuffer ComputeCb : register(b0)
     float _padSdfMin;       // offset 156
     float3 sdfMax;          // offset 160: object-space SDF AABB maximum corner
     float _padSdfMax;       // offset 172
-    // total: 176 bytes
+    float3 cameraPos;       // offset 176: camera world position for DTC LOD computation
+    uint minLOD;            // offset 188: minimum solver iterations (farthest particles)
+    uint maxLOD;            // offset 192: maximum solver iterations (= solverIterations, closest)
+    float _padLod0;         // offset 196
+    float _padLod1;         // offset 200
+    float _padLod2;         // offset 204
+    // total: 208 bytes
 };
 
 #endif
