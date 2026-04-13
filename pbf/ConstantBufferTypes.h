@@ -68,5 +68,10 @@ __declspec(align(16)) struct ComputeCb {
 	float _padLod0;         // offset 196
 	float _padLod1;         // offset 200
 	float _padLod2;         // offset 204
-	// total: 208 bytes
+	Float4x4 viewProjTransform; // offset 208: world-to-clip transform for DTVS depth projection
+	float viewportWidth;    // offset 272: render target width in pixels
+	float viewportHeight;   // offset 276: render target height in pixels
+	float _padVp0;          // offset 280
+	float _padVp1;          // offset 284
+	// total: 288 bytes
 };

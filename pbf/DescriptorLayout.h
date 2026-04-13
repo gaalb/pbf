@@ -15,6 +15,8 @@
 // slot 22     GROUP_SUM_UAV     (scratch)         – Blelloch prefix-sum group totals
 // slot 23     LOD_UAV           (APBF)            – per-particle LOD countdown (uint)
 // slot 24     LOD_REDUCTION_UAV (APBF)            – DTC min/max reduction scratch (2 uints)
+// slot 25     PARTICLE_DEPTH_SRV   (DTVS)          – R32_FLOAT SRV of particleDepthTexture[0]
+// slot 26     PARTICLE_DEPTH_SRV_1 (DTVS)          – R32_FLOAT SRV of particleDepthTexture[1]
 //
 // Snapshot staging heap (CPU-only, StagingSlot::TOTAL descriptors)
 // slot  0     SNAPSHOT_POS_0    snapshotPosition[0] SRV
@@ -61,8 +63,14 @@ namespace HeapSlot {
     // LOD reduction buffer: 2 uints [minDTC bits, maxDTC bits], written by clearLodReductionCS + dtcReductionCS
     constexpr UINT LOD_REDUCTION_UAV  = 24;
 
+    // Particle depth texture SRVs (R32_FLOAT views of R32_TYPELESS depth textures).
+    // Double-buffered: graphics writes slot readIdx while compute reads slot writeIdx.
+    // PARTICLE_DEPTH_SRV_0/1 correspond to particleDepthTexture[0/1].
+    constexpr UINT PARTICLE_DEPTH_SRV = 25; // slot for particleDepthTexture[0]
+    constexpr UINT PARTICLE_DEPTH_SRV_1 = 26; // slot for particleDepthTexture[1]
+
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL              = 25;
+    constexpr UINT TOTAL              = 27;
 
 } // namespace HeapSlot
 

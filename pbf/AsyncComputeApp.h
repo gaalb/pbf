@@ -57,6 +57,11 @@ protected:
 		computeFence.gpuWait(commandQueue, frame);
 	}
 
+	// Compute queue GPU-stalls until graphicsFence reaches frame N (CPU is not blocked).
+	void computeWaitForGraphics(uint64_t frame) {
+		graphicsFence.gpuWait(computeCommandQueue, frame);
+	}
+
 	// Optional hook for subclasses that want a single-list graphics recording pattern.
 	// Not pure virtual: applications that override Render() directly can leave this empty.
 	virtual void PopulateCommandList() {}

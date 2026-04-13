@@ -171,7 +171,7 @@ protected:
 	ComputeShader::P confinementViscosityShader; // vorticity confinement + XSPH viscosity in one neighbor pass
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
-	ComputeShader::P clearLodReductionShader; // zero lodReduction accumulator before dtcReductionShader
+	ComputeShader::P clearDtcReductionShader; // zero lodReduction accumulator before dtcReductionShader
 	ComputeShader::P lodReductionShader;  // compute per-frame DTC min/max via GPU atomics
 	ComputeShader::P lodShader;           // assign per-particle LOD countdown from DTC range
 	ComputeShader::P setLodMaxShader;     // fill all lod[i] = maxLOD (used when adaptivity is off)
@@ -201,8 +201,11 @@ protected:
 
 	bool fpsCapped = false;
 	bool physicsRunning = false;  // toggled by spacebar: when false, compute passes are skipped each frame
-	bool adaptiveEnabled = true;  // when false: all particles run maxLOD iterations (no DTC computation)
-	
+
+	// LOD mode: which per-particle LOD assignment method to use each frame
+	enum class LodMode { NONE = 0, DTC = 1, DTVS = 2 };
+	LodMode lodMode = LodMode::DTVS; // default to DTVS
+
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false; // arrow key held state for box translation
 
 	// Async compute: physics runs on the compute queue (from AsyncComputeApp), decoupled from vsync.
@@ -213,6 +216,24 @@ protected:
 	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (COMMON state, written by compute, read by direct)
 	com_ptr<ID3D12Resource> snapshotLod[2];      // LOD snapshot double-buffer (COMMON state, written by compute, read by direct)
 	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
+
+	// DTVS: double-buffered window-resolution depth textures. Graphics (cpu frame N) writes
+	// slot readIdx; Compute (cpu frame N) reads slot writeIdx — always different resources,
+	// so no cross-queue serialization is needed.
+	// Created as R32_TYPELESS to allow both D32_FLOAT (DSV write) and R32_FLOAT (SRV read).
+	com_ptr<ID3D12Resource> particleDepthTexture[2];    // default heap; recreated on resize
+	com_ptr<ID3D12DescriptorHeap> particleDsvHeap;      // 2-slot DSV heap for both textures
+	CD3DX12_GPU_DESCRIPTOR_HANDLE particleDepthHandle[2]; // GPU handles for SRV slots 25/26
+	CD3DX12_GPU_DESCRIPTOR_HANDLE particleDepthActiveHandle; // set to [writeIdx] each frame before dispatch
+
+	// DTVS graphics pipeline: reuses particleVS + particleGS with a depth-only PS
+	com_ptr<ID3D12RootSignature> depthOnlyRootSig;
+	com_ptr<ID3D12PipelineState> depthOnlyPso;
+
+	// DTVS compute shaders
+	ComputeShader::P clearDtvsReductionShader; // reset lodReduction[0] to 0u before DTVS reduction
+	ComputeShader::P dtvsReductionShader;      // accumulate max DTVS into lodReduction[0]
+	ComputeShader::P dtvsLodShader;            // assign per-particle LOD from DTVS / maxDTVS
 
 	int shadingMode = SHADING_DENSITY; // current particle shading mode, driven by ImGui
 
@@ -230,6 +251,70 @@ protected:
 		// reads the SDF file and allocates the SDF Texture3D + upload buffer. No GPU commands.
 		solidObstacle = SolidObstacle::Create();
 		solidObstacle->Load(device.Get(), psoManager, "dragonite.obj", "dragonite.sdf", perFrameCb);
+	}
+
+	// Create the two window-resolution depth textures and the 2-slot DSV heap.
+	// Called from CreateSwapChainResources (and on resize). Both textures start in COMMON state.
+	void CreateParticleDepthTexture() {
+		UINT width  = (UINT)scissorRect.right;
+		UINT height = (UINT)scissorRect.bottom;
+
+		D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+		dsvHeapDesc.NumDescriptors = 2; // one DSV per depth buffer slot
+		dsvHeapDesc.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+		dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		DX_API("Failed to create particle DSV descriptor heap")
+			device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(particleDsvHeap.ReleaseAndGetAddressOf()));
+
+		D3D12_CLEAR_VALUE clearValue = {};
+		clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+		clearValue.DepthStencil.Depth = 1.0f;
+
+		UINT dsvSz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+		D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+		dsvDesc.Format        = DXGI_FORMAT_D32_FLOAT;
+		dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+		dsvDesc.Flags         = D3D12_DSV_FLAG_NONE;
+
+		const wchar_t* names[2] = { L"Particle Depth Texture [0] (DTVS)", L"Particle Depth Texture [1] (DTVS)" };
+		for (int i = 0; i < 2; i++) {
+			DX_API("Failed to create particle depth texture")
+				device->CreateCommittedResource(
+					&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+					D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Tex2D(
+						DXGI_FORMAT_R32_TYPELESS,
+						width, height, 1, 1, 1, 0,
+						D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+					D3D12_RESOURCE_STATE_COMMON,
+					&clearValue,
+					IID_PPV_ARGS(particleDepthTexture[i].ReleaseAndGetAddressOf()));
+			particleDepthTexture[i]->SetName(names[i]);
+
+			CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(
+				particleDsvHeap->GetCPUDescriptorHandleForHeapStart(), i, dsvSz);
+			device->CreateDepthStencilView(particleDepthTexture[i].Get(), &dsvDesc, dsvHandle);
+		}
+	}
+
+	// Create (or recreate on resize) the SRVs for both depth textures in the main descriptor heap.
+	// Only callable once descriptorHeap exists (checked by callers).
+	void CreateParticleDepthSrv() {
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format                    = DXGI_FORMAT_R32_FLOAT;
+		srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Shader4ComponentMapping   = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels       = 1;
+
+		constexpr UINT slots[2] = { HeapSlot::PARTICLE_DEPTH_SRV, HeapSlot::PARTICLE_DEPTH_SRV_1 };
+		for (int i = 0; i < 2; i++) {
+			CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), slots[i], sz);
+			device->CreateShaderResourceView(particleDepthTexture[i].Get(), &srvDesc, srvHandle);
+		}
 	}
 
 	// Build the background skybox rendering pipeline (shaders, material, mesh).
@@ -449,7 +534,7 @@ protected:
 			std::addressof(sortedFields[PF_DENSITY]), std::addressof(sortedFields[PF_OMEGA]),
 			std::addressof(sortedFields[PF_SCRATCH]) });
 
-		clearLodReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearLodReductionCS.cso", cbv,
+		clearDtcReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtcReductionCS.cso", cbv,
 			vector<TableBinding>{ {1, & lodReductionHandle} },
 			vector<P>{},
 			vector<P>{ std::addressof(lodReductionBuffer) });
@@ -467,6 +552,22 @@ protected:
 		setLodMaxShader = ComputeShader::Create(device.Get(), "Shaders/setLodMaxCS.cso", cbv,
 			vector<TableBinding>{ {1, &lodHandle} },
 			vector<P>{},
+			vector<P>{ std::addressof(lodBuffer) });
+
+		// DTVS shaders: clear reduction buffer, reduce max DTVS, assign LOD from burial depth
+		clearDtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtvsReductionCS.cso", cbv,
+			vector<TableBinding>{ {1, &lodReductionHandle} },
+			vector<P>{},
+			vector<P>{ std::addressof(lodReductionBuffer) });
+
+		dtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtvsReductionCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &lodReductionHandle}, {3, &particleDepthActiveHandle} },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
+			vector<P>{ std::addressof(lodReductionBuffer) });
+
+		dtvsLodShader = ComputeShader::Create(device.Get(), "Shaders/dtvsLodCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &lodHandle}, {3, &lodReductionHandle}, {4, &particleDepthActiveHandle} },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodBuffer) });
 	}
 
@@ -519,6 +620,35 @@ protected:
 
 		// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
 		particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
+	}
+
+	// Build the depth-only PSO for the DTVS particle depth pass.
+	// Reuses particleVS + particleGS for correct billboard coverage;
+	// dtvsDepthOnlyPS discards outside the sphere and writes no color.
+	void BuildParticleDepthOnlyPipeline() {
+		com_ptr<ID3DBlob> vertexShader   = Egg::Shader::LoadCso("Shaders/particleVS.cso");
+		com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
+		com_ptr<ID3DBlob> pixelShader    = Egg::Shader::LoadCso("Shaders/dtvsDepthOnlyPS.cso");
+		depthOnlyRootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+		psoDesc.pRootSignature          = depthOnlyRootSig.Get();
+		psoDesc.VS                      = { vertexShader->GetBufferPointer(),   vertexShader->GetBufferSize() };
+		psoDesc.GS                      = { geometryShader->GetBufferPointer(), geometryShader->GetBufferSize() };
+		psoDesc.PS                      = { pixelShader->GetBufferPointer(),    pixelShader->GetBufferSize() };
+		psoDesc.BlendState              = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+		psoDesc.SampleMask              = UINT_MAX;
+		psoDesc.RasterizerState         = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+		psoDesc.DepthStencilState       = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT); // depth test + write on
+		psoDesc.InputLayout             = { nullptr, 0 }; // no vertex buffer: positions read from SRV
+		psoDesc.PrimitiveTopologyType   = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+		psoDesc.NumRenderTargets        = 0; // depth-only: no color output
+		psoDesc.DSVFormat               = DXGI_FORMAT_D32_FLOAT;
+		psoDesc.SampleDesc.Count        = 1;
+		psoDesc.SampleDesc.Quality      = 0;
+
+		DX_API("Failed to create particle depth-only PSO")
+			device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(depthOnlyPso.ReleaseAndGetAddressOf()));
 	}
 
 	void PrepareComputeCommandList() {
@@ -644,6 +774,57 @@ protected:
 		for (UINT f = 0; f < PF_COUNT; f++)	std::swap(particleFields[f], sortedFields[f]);
 	}
 
+	// Record the DTVS depth-only particle draw into the already-open graphics command list.
+	// Writes into particleDepthTexture[readIdx] — the slot NOT being read by compute this frame.
+	// Must be called after the snapshot SRVs are already in SRV state (after the toSrv barrier).
+	// Leaves the texture in COMMON state so compute can read it next frame.
+	void DrawParticleDepth(int readIdx) {
+		UINT dsvSz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+		// Transition this slot from COMMON to DEPTH_WRITE for the clear + draw
+		D3D12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
+			particleDepthTexture[readIdx].Get(),
+			D3D12_RESOURCE_STATE_COMMON,
+			D3D12_RESOURCE_STATE_DEPTH_WRITE);
+		commandList->ResourceBarrier(1, &toDepthWrite);
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE particleDepthDsv(
+			particleDsvHeap->GetCPUDescriptorHandleForHeapStart(), readIdx, dsvSz);
+
+		// Depth-only render target: no RTV, just the DSV
+		commandList->OMSetRenderTargets(0, nullptr, FALSE, &particleDepthDsv);
+		commandList->ClearDepthStencilView(particleDepthDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+		// Bind the depth-only PSO and root signature
+		commandList->SetGraphicsRootSignature(depthOnlyRootSig.Get());
+		commandList->SetPipelineState(depthOnlyPso.Get());
+		commandList->SetGraphicsRootConstantBufferView(0, perFrameCb.GetGPUVirtualAddress());
+
+		// Root param 1: SRV table (pos/density/lod) — pos at t0 drives the VS; same heap slot as main draw
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		CD3DX12_GPU_DESCRIPTOR_HANDLE posSrvGpu(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_POS_SRV, sz);
+		commandList->SetGraphicsRootDescriptorTable(1, posSrvGpu);
+
+		commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+		commandList->DrawInstanced(numParticles, 1, 0, 0);
+
+		// Restore the original render targets (backbuffer RTV + scene DSV) for subsequent draws
+		CD3DX12_CPU_DESCRIPTOR_HANDLE mainDsv(dsvHeap->GetCPUDescriptorHandleForHeapStart());
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
+			rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			swapChainBackBufferIndex,
+			rtvDescriptorHandleIncrementSize);
+		commandList->OMSetRenderTargets(1, &rtv, FALSE, &mainDsv);
+
+		// Transition back to COMMON so compute can read it next frame
+		D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+			particleDepthTexture[readIdx].Get(),
+			D3D12_RESOURCE_STATE_DEPTH_WRITE,
+			D3D12_RESOURCE_STATE_COMMON);
+		commandList->ResourceBarrier(1, &toCommon);
+	}
+
 	// writeIdx: which snapshot slot to write to this step (caller sets and flips).
 	void RecordComputeCommands(int writeIdx) {
 		// ceil(numParticles / THREAD_GROUP_SIZE) groups cover all particles; the shader discards extra threads
@@ -658,13 +839,32 @@ protected:
 		SortParticles(); // sort particle data for improved cache coherence -> fewer cache misses
 
 		// APBF LOD assignment
-		if (adaptiveEnabled) {
-			// DTC-based adaptive: reduce per-frame min/max camera distance, interpolate LOD
-			clearLodReductionShader->dispatch_then_barrier(computeList.Get(), 1);
+		if (lodMode == LodMode::DTC) {
+			// DTC: reduce per-frame min/max camera distance, interpolate LOD
+			clearDtcReductionShader->dispatch_then_barrier(computeList.Get(), 1);
 			lodReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 			lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
+		} else if (lodMode == LodMode::DTVS) {
+			// DTVS: read particleDepthTexture[writeIdx] — the slot graphics is NOT writing this frame.
+			// ALLOW_DEPTH_STENCIL textures require explicit barriers; no implicit promotion from COMMON.
+			particleDepthActiveHandle = particleDepthHandle[writeIdx]; // select the correct slot for dispatch
+			D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+				particleDepthTexture[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON,
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			computeList->ResourceBarrier(1, &toSrv);
+
+			clearDtvsReductionShader->dispatch_then_barrier(computeList.Get(), 1);
+			dtvsReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
+			dtvsLodShader->dispatch_then_barrier(computeList.Get(), numGroups);
+
+			D3D12_RESOURCE_BARRIER backToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+				particleDepthTexture[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+				D3D12_RESOURCE_STATE_COMMON);
+			computeList->ResourceBarrier(1, &backToCommon);
 		} else {
-			// Non-adaptive: every particle runs the full solver (maxLOD iterations)
+			// NONE: every particle runs the full solver (maxLOD iterations)
 			setLodMaxShader->dispatch_then_barrier(computeList.Get(), numGroups);
 		}
 
@@ -787,6 +987,10 @@ protected:
 		};
 		commandList->ResourceBarrier(3, toSrv);
 
+		// DTVS depth-only pass: render billboard particles into particleDepthTexture[readIdx]
+		// (the slot compute is NOT reading this frame) so compute can sample it next frame.
+		if (lodMode == LodMode::DTVS) DrawParticleDepth(readIdx);
+
 		particleMesh->Draw(commandList.Get()); // draw particles on top
 
 		D3D12_RESOURCE_BARRIER toCommon[3] = {
@@ -822,7 +1026,10 @@ protected:
 		// Shading mode combo. The order of items must match the ShadingMode:: constants.
 		static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD" };
 		ImGui::Combo("Shading", &shadingMode, shadingModeItems, IM_ARRAYSIZE(shadingModeItems));
-
+		static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
+		int lodModeInt = (int)lodMode;
+		if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
+			lodMode = (LodMode)lodModeInt;
 		ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
 		ImGui::InputInt("Min LOD", &minLOD, 1);
 		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
@@ -830,9 +1037,7 @@ protected:
 		ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
-		ImGui::Checkbox("Fountain", &fountainEnabled);
-		ImGui::SameLine();
-		ImGui::Checkbox("Adaptive", &adaptiveEnabled);
+		ImGui::Checkbox("Fountain", &fountainEnabled);		
 		ImGui::SameLine();
 		ImGui::Checkbox("FPS cap", &fpsCapped);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
@@ -922,6 +1127,9 @@ protected:
 		computeCb->cameraPos = camera->GetEyePosition();
 		computeCb->minLOD = (UINT)minLOD;
 		computeCb->maxLOD = (UINT)solverIterations;
+		computeCb->viewProjTransform = camera->GetViewMatrix() * camera->GetProjMatrix();
+		computeCb->viewportWidth  = (float)scissorRect.right;
+		computeCb->viewportHeight = (float)scissorRect.bottom;
 		computeCb.Upload();
 	}
 
@@ -998,7 +1206,7 @@ protected:
 			PrepareComputeCommandList();
 			// Record commands for compute frame N: physics step + snapshot copy
 			RecordComputeCommands(snapshotWriteIdx);
-			ExecuteCompute(); // dispatch the calculations for frame N			
+			ExecuteCompute(); // dispatch the calculations for frame N
 		}
 		// signal: when the compute queue reaches this point, the data for frame N is ready
 		// this signal dispatches even if there was no physics loop, since that means that the
@@ -1517,6 +1725,8 @@ protected:
 		CreatePermUav();
 		// slots 23-24: LOD UAVs -- per-particle countdown and DTC reduction scratch
 		CreateLodUavs();
+		// slot 25: particle depth SRV -- R32_FLOAT view of particleDepthTexture for DTVS
+		CreateParticleDepthSrv();
 		CreateSnapshotSrvs();
 	}
 
@@ -1542,6 +1752,10 @@ protected:
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::LOD_UAV, sz);
 		lodReductionHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::LOD_REDUCTION_UAV, sz);
+		particleDepthHandle[0] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEPTH_SRV, sz);
+		particleDepthHandle[1] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::PARTICLE_DEPTH_SRV_1, sz);
 	}
 
 	// Batch all initial data uploads (cubemap, particles, SDF) into a single command list execution.
@@ -1559,6 +1773,31 @@ protected:
 		RecordParticleUpload(); // record particle copy + barriers
 		solidObstacle->UploadSdf(commandList.Get()); // record SDF texture copy + barrier
 		UploadSnapshotData(); // record initial state of snapshot buffers for frame 1
+
+		// Pre-clear both depth texture slots to 1.0 (far plane) so the first DTVS compute frame
+		// sees valid depth data even before any graphics depth pass has run.
+		{
+			UINT dsvSz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+			D3D12_RESOURCE_BARRIER toWrite[2] = {
+				CD3DX12_RESOURCE_BARRIER::Transition(particleDepthTexture[0].Get(),
+					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE),
+				CD3DX12_RESOURCE_BARRIER::Transition(particleDepthTexture[1].Get(),
+					D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE),
+			};
+			commandList->ResourceBarrier(2, toWrite);
+			for (int i = 0; i < 2; i++) {
+				CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(
+					particleDsvHeap->GetCPUDescriptorHandleForHeapStart(), i, dsvSz);
+				commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+			}
+			D3D12_RESOURCE_BARRIER toCommon[2] = {
+				CD3DX12_RESOURCE_BARRIER::Transition(particleDepthTexture[0].Get(),
+					D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON),
+				CD3DX12_RESOURCE_BARRIER::Transition(particleDepthTexture[1].Get(),
+					D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON),
+			};
+			commandList->ResourceBarrier(2, toCommon);
+		}
 
 		DX_API("Failed to close command list (UploadAll)")
 			commandList->Close();
@@ -1611,14 +1850,33 @@ protected:
 		lastFrame = clock::now();
 	}
 
-	// Build all graphics rendering pipelines (background, particles, solid obstacle transform).
+	// Build all graphics rendering pipelines (background, particles, DTVS depth-only, solid transform).
 	void BuildGraphicsPipelines() {
 		BuildBackgroundPipeline();
 		BuildParticlePipeline();
+		BuildParticleDepthOnlyPipeline();
 		SetSolidTransform();
 	}
 
 public:
+	// Recreate the window-resolution depth texture whenever the swap chain is (re)created.
+	virtual void CreateSwapChainResources() override {
+		AsyncComputeApp::CreateSwapChainResources(); // base class: RTVs, DSV, viewport/scissorRect
+		CreateParticleDepthTexture();
+		// descriptorHeap doesn't exist yet on the very first call (CreateSwapChainResources runs
+		// before CreateResources). CreateAllDescriptors() will call CreateParticleDepthSrv() later.
+		// On resize, descriptorHeap already exists, so we update the SRV immediately.
+		if (descriptorHeap != nullptr)
+			CreateParticleDepthSrv();
+	}
+
+	virtual void ReleaseSwapChainResources() override {
+		particleDepthTexture[0].Reset();
+		particleDepthTexture[1].Reset();
+		particleDsvHeap.Reset();
+		AsyncComputeApp::ReleaseSwapChainResources();
+	}
+
 	// Allocate all GPU memory and descriptors.
 	// After this returns, every ID3D12Resource and every descriptor heap slot exists,
 	// but texture/buffer contents have not been uploaded yet.
