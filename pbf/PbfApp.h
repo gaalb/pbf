@@ -50,7 +50,7 @@ using namespace Egg::Math;
 //   CreateUploadBuffers              
 //   CreateGridBuffers                 
 //   CreateSortBuffers                 
-//   CreateDensityReadbackBuffer       
+//   CreateReadbackBuffers       
 //   CreateTextureResources           
 //   CreateImGuiDescriptorHeap        
 //   CreateDescriptorHeap              
@@ -189,6 +189,13 @@ protected:
 	com_ptr<ID3D12Resource> densityReadbackBuffer;
 	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
+
+	// Readback buffer for LOD (readback heap, CPU-readable after CopyBufferRegion).
+	// Copied in the same window as the LOD snapshot, before the solver decrements lodBuffer.
+	com_ptr<ID3D12Resource> lodReadbackBuffer;
+	std::vector<uint32_t> lodReadbackData;
+	float avgLod = 0.0f; // average per-particle LOD from previous frame's readback
+
 	using clock = std::chrono::high_resolution_clock;
 	clock::time_point lastFrame; // tracks accumulated time toward next physics step
 	const float targetFps = 60.0f;
@@ -880,6 +887,9 @@ protected:
 			computeList->ResourceBarrier(1, &toLodDest);
 			computeList->CopyBufferRegion(snapshotLod[writeIdx].Get(), 0,
 				lodBuffer.Get(), 0, (UINT64)numParticles * sizeof(UINT));
+			// Copy LOD to readback buffer in the same window (CPU reads it after the next cpuWaitForCompute).
+			computeList->CopyBufferRegion(lodReadbackBuffer.Get(), 0,
+				lodBuffer.Get(), 0, (UINT64)numParticles * sizeof(UINT));
 			D3D12_RESOURCE_BARRIER fromLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
 				lodBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			D3D12_RESOURCE_BARRIER fromLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1046,6 +1056,7 @@ protected:
 		ImGui::Text("%d particles, %u cells", numParticles, gridDim*gridDim*gridDim);
 		ImGui::Text("%.1f FPS, render: %.2f ms", ImGui::GetIO().Framerate, debugTimer);
 		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
+		ImGui::Text("avg LOD: %.2f", avgLod);
 		ImGui::Separator();
 		ImGui::Text("Dragonite");
 		ImGui::PushItemWidth(200);
@@ -1161,6 +1172,22 @@ protected:
 		avgDensity = static_cast<float>(densitySum / numParticles);
 	}
 
+	void CalculateAvgLod() {
+		const UINT64 bufferSize = numParticles * sizeof(uint32_t);
+		void* pData;
+		CD3DX12_RANGE readRange(0, bufferSize);
+		if (SUCCEEDED(lodReadbackBuffer->Map(0, &readRange, &pData))) {
+			memcpy(lodReadbackData.data(), pData, bufferSize);
+			CD3DX12_RANGE writeRange(0, 0);
+			lodReadbackBuffer->Unmap(0, &writeRange);
+		}
+
+		double lodSum = 0.0;
+		for (int i = 0; i < numParticles; i++)
+			lodSum += lodReadbackData[i];
+		avgLod = static_cast<float>(lodSum / numParticles);
+	}
+
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
 	//
 	// Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
@@ -1198,6 +1225,7 @@ protected:
 			// nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw --format=csv -l 1
 			// yep :) fix: nvidia control panel -> manage 3d settings -> power management mode -> prefer maximum performance
 			CalculateAvgDensity();
+			CalculateAvgLod();
 
 
 			// Safe to write computeCb now: the previous step has finished reading it.
@@ -1570,19 +1598,32 @@ protected:
 		device->CreateUnorderedAccessView(lodReductionBuffer.Get(), nullptr, &redUavDesc, redCpuHandle);
 	}
 
-	void CreateDensityReadbackBuffer() {
+	void CreateReadbackBuffers() {
 		// create a readback buffer for density only (4 bytes per particle instead of 68)
 		// this is here mainly to serve as an example of how to read data back to the CPU
-		const UINT64 bufferSize = (UINT64)numParticles * sizeof(float);
 		const CD3DX12_HEAP_PROPERTIES readbackHeapProps(D3D12_HEAP_TYPE_READBACK);
-		const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
-		DX_API("Failed to create density readback buffer")
-			device->CreateCommittedResource(
-				&readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc,
-				D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-				IID_PPV_ARGS(densityReadbackBuffer.ReleaseAndGetAddressOf()));
-		densityReadbackBuffer->SetName(L"Density Readback Buffer");
-		densityReadbackData.resize(numParticles);
+		{
+			const UINT64 bufferSize = (UINT64)numParticles * sizeof(float);
+			const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+			DX_API("Failed to create density readback buffer")
+				device->CreateCommittedResource(
+					&readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+					D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+					IID_PPV_ARGS(densityReadbackBuffer.ReleaseAndGetAddressOf()));
+			densityReadbackBuffer->SetName(L"Density Readback Buffer");
+			densityReadbackData.resize(numParticles);
+		}
+		{
+			const UINT64 bufferSize = (UINT64)numParticles * sizeof(uint32_t);
+			const CD3DX12_RESOURCE_DESC readbackDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+			DX_API("Failed to create LOD readback buffer")
+				device->CreateCommittedResource(
+					&readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackDesc,
+					D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+					IID_PPV_ARGS(lodReadbackBuffer.ReleaseAndGetAddressOf()));
+			lodReadbackBuffer->SetName(L"LOD Readback Buffer");
+			lodReadbackData.resize(numParticles);
+		}
 	}
 
 	// Create the double-buffered snapshot buffers for position and density.
@@ -1896,7 +1937,7 @@ public:
 		CreateLodBuffers();
 		CreateSortBuffers();
 		CreatePermBuffer();
-		CreateDensityReadbackBuffer();
+		CreateReadbackBuffers();
 		CreateSnapshotBuffers();
 		CreateTextureResources();
 

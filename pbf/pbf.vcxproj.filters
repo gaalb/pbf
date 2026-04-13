@@ -49,6 +49,12 @@
     <Filter Include="Shaders\Compute\LOD">
       <UniqueIdentifier>{3a62d2ce-4841-4645-90b0-17661e7200c6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\LOD\DTC">
+      <UniqueIdentifier>{7534b863-39ad-4a3d-8493-192019aed637}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\LOD\DTVS">
+      <UniqueIdentifier>{844050c7-d19d-4669-8b24-f9a41b75f698}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -196,17 +202,29 @@
     <FxCompile Include="predictCS.hlsl">
       <Filter>Shaders\Compute\prediction</Filter>
     </FxCompile>
-    <FxCompile Include="clearLodReductionCS.hlsl">
-      <Filter>Shaders\Compute\LOD</Filter>
-    </FxCompile>
-    <FxCompile Include="dtcReductionCS.hlsl">
-      <Filter>Shaders\Compute\LOD</Filter>
-    </FxCompile>
-    <FxCompile Include="dtcLodCS.hlsl">
-      <Filter>Shaders\Compute\LOD</Filter>
-    </FxCompile>
     <FxCompile Include="setLodMaxCS.hlsl">
       <Filter>Shaders\Compute\LOD</Filter>
+    </FxCompile>
+    <FxCompile Include="clearDtcReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTC</Filter>
+    </FxCompile>
+    <FxCompile Include="dtcLodCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTC</Filter>
+    </FxCompile>
+    <FxCompile Include="dtcReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTC</Filter>
+    </FxCompile>
+    <FxCompile Include="dtvsReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTVS</Filter>
+    </FxCompile>
+    <FxCompile Include="clearDtvsReductionCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTVS</Filter>
+    </FxCompile>
+    <FxCompile Include="dtvsDepthOnlyPS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTVS</Filter>
+    </FxCompile>
+    <FxCompile Include="dtvsLodCS.hlsl">
+      <Filter>Shaders\Compute\LOD\DTVS</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
