@@ -66,7 +66,7 @@ namespace HeapSlot {
     // Particle depth texture SRVs (R32_FLOAT views of R32_TYPELESS depth textures).
     // Double-buffered: graphics writes slot readIdx while compute reads slot writeIdx.
     // PARTICLE_DEPTH_SRV_0/1 correspond to particleDepthTexture[0/1].
-    constexpr UINT PARTICLE_DEPTH_SRV = 25; // slot for particleDepthTexture[0]
+    constexpr UINT PARTICLE_DEPTH_SRV_0 = 25; // slot for particleDepthTexture[0]
     constexpr UINT PARTICLE_DEPTH_SRV_1 = 26; // slot for particleDepthTexture[1]
 
     // Total size of the main shader-visible heap
