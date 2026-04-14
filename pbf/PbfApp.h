@@ -216,9 +216,9 @@ protected:
 	// Double-buffered snapshot buffers hold position, density, and LOD for the graphics queue.
 	// snapshotWriteIdx is the slot currently being written by the compute queue;
 	// the graphics queue always reads from the OTHER slot (1 - snapshotWriteIdx).
-	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (COMMON state, written by compute, read by direct)
-	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (COMMON state, written by compute, read by direct)
-	com_ptr<ID3D12Resource> snapshotLod[2]; // LOD snapshot double-buffer (COMMON state, written by compute, read by direct)
+	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
+	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
+	com_ptr<ID3D12Resource> snapshotLod[2]; // LOD snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
 	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
 
 	// DTVS: double-buffered window-resolution depth textures. Graphics (cpu frame N) writes
@@ -708,21 +708,21 @@ protected:
 			DX_API("Failed to create snapshot position buffer")
 				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
 					&CD3DX12_RESOURCE_DESC::Buffer(posSize),
-					D3D12_RESOURCE_STATE_COMMON, nullptr,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, // buffers always start in COMMON regardless of InitialState
 					IID_PPV_ARGS(snapshotPosition[i].ReleaseAndGetAddressOf()));
 			snapshotPosition[i]->SetName(i == 0 ? L"Snapshot Position [0]" : L"Snapshot Position [1]");
 
 			DX_API("Failed to create snapshot density buffer")
 				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
 					&CD3DX12_RESOURCE_DESC::Buffer(denSize),
-					D3D12_RESOURCE_STATE_COMMON, nullptr,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, // buffers always start in COMMON regardless of InitialState
 					IID_PPV_ARGS(snapshotDensity[i].ReleaseAndGetAddressOf()));
 			snapshotDensity[i]->SetName(i == 0 ? L"Snapshot Density [0]" : L"Snapshot Density [1]");
 
 			DX_API("Failed to create snapshot LOD buffer")
 				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
 					&CD3DX12_RESOURCE_DESC::Buffer(lodSize),
-					D3D12_RESOURCE_STATE_COMMON, nullptr,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, // buffers always start in COMMON regardless of InitialState
 					IID_PPV_ARGS(snapshotLod[i].ReleaseAndGetAddressOf()));
 			snapshotLod[i]->SetName(i == 0 ? L"Snapshot LOD [0]" : L"Snapshot LOD [1]");
 		}
@@ -832,28 +832,44 @@ protected:
 	// before physics starts. Expects command list to be recording.
 	void RecordSnapshotUpload() {
 		D3D12_RESOURCE_BARRIER barriers[3];
-		// Transition the source buffers (particleFields) to COPY_SOURCE and the snapshot buffers to COPY_DEST.
-		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition( // position buffer's "home" state is UAV, rest are COMMON 
+		// Transition position source to COPY_SOURCE and both snapshotPosition slots to COPY_DEST.
+		// Buffers always start in COMMON regardless of the InitialState passed to CreateCommittedResource.
+		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition( // position buffer's home state is UAV
 			particleFields[PF_POSITION].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
 			snapshotPosition[0].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
 		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
 			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-		commandList->ResourceBarrier(3, barriers); // record the barrier transitions
+		commandList->ResourceBarrier(3, barriers);
 
-		// record the actual copy calls
 		const UINT64 posBytes = (UINT64)numParticles * sizeof(Float3);
 		commandList->CopyBufferRegion(snapshotPosition[0].Get(), 0, particleFields[PF_POSITION].Get(), 0, posBytes);
 		commandList->CopyBufferRegion(snapshotPosition[1].Get(), 0, particleFields[PF_POSITION].Get(), 0, posBytes);
 
-		// Transition the buffers back to their home states
+		// Transition everything to its home state.
+		// snapshotPosition lands in SRV — its permanent home state from this point on.
 		barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
 			particleFields[PF_POSITION].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 		barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
-			snapshotPosition[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+			snapshotPosition[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 		barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
-			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-		commandList->ResourceBarrier(3, barriers); // record the barrier transitions
+			snapshotPosition[1].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		commandList->ResourceBarrier(3, barriers);
+
+		// snapshotDensity and snapshotLod have no data to upload at init, but they must be in SRV
+		// state before the compute queue first runs WriteSnapshot/CalculateLod. Transition them now
+		// from their implicit COMMON creation state into SRV so the home state is consistent.
+		D3D12_RESOURCE_BARRIER toSrv[4] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[0].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[1].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[0].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[1].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+		};
+		commandList->ResourceBarrier(4, toSrv);
 	}
 
 	// Sets all depth pixels in both depth texture slots to 1.0 (far plane)
@@ -1486,9 +1502,9 @@ protected:
 		};
 		D3D12_RESOURCE_BARRIER snapshotToDest[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
 		};
 		// insert them into the command list so the GPU knows about the state changes before the copy calls
 		computeList->ResourceBarrier(2, toCopySrc);
@@ -1510,14 +1526,14 @@ protected:
 			CD3DX12_RESOURCE_BARRIER::Transition(particleFields[PF_DENSITY].Get(),
 				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
 		};
-		D3D12_RESOURCE_BARRIER snapshotToCommon[2] = {
+		D3D12_RESOURCE_BARRIER snapshotToSrv[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 		};
 		computeList->ResourceBarrier(2, toUav);
-		computeList->ResourceBarrier(2, snapshotToCommon);
+		computeList->ResourceBarrier(2, snapshotToSrv);
 	}
 
 	void CalculateLod(int writeIdx) {
@@ -1567,7 +1583,7 @@ protected:
 		D3D12_RESOURCE_BARRIER toLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
 			lodBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 		D3D12_RESOURCE_BARRIER toLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
-			snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+			snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 		computeList->ResourceBarrier(1, &toLodSrc);
 		computeList->ResourceBarrier(1, &toLodDest);
 		computeList->CopyBufferRegion(snapshotLod[writeIdx].Get(), 0,
@@ -1579,15 +1595,12 @@ protected:
 		D3D12_RESOURCE_BARRIER fromLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
 			lodBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 		D3D12_RESOURCE_BARRIER fromLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
-			snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+			snapshotLod[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 		computeList->ResourceBarrier(1, &fromLodSrc);
 		computeList->ResourceBarrier(1, &fromLodDest);
 	}
 
 	// readIdx: which snapshot slot the graphics queue reads from (always 1 - snapshotWriteIdx).
-	// TODO: remove unnecessary complexity of the transitions under here: make the home state of
-	// the snapshot buffers SRV for graphics, only transition to COPY_DEST when needed, saving us
-	// the COMMON->SRV->COMMON dance every frame
 	void RecordGraphicsCommands(int readIdx) {
 		backgroundMesh->Draw(commandList.Get()); // draw skybox at the back first
 		solidObstacle->Draw(commandList.Get());  // draw solid with depth test before particles
@@ -1610,43 +1623,16 @@ protected:
 			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_LOD_0 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// Snapshot buffers live in COMMON. Transition them to SRV state for the draw, then back.
-		D3D12_RESOURCE_BARRIER toSrv[3] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[readIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-		};
-		commandList->ResourceBarrier(3, toSrv);
-
+		// Snapshot buffers live in SRV state — no transition needed before the draw.
 		// DTVS depth-only pass: render billboard particles into particleDepthTexture[readIdx]
 		// (the slot compute is NOT reading this frame) so compute can sample it next frame.
 		if (lodMode == LodMode::DTVS) DrawParticleDepth(readIdx);
 
 		particleMesh->Draw(commandList.Get()); // draw particles on top
-
-		D3D12_RESOURCE_BARRIER toCommon[3] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_COMMON),
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[readIdx].Get(),
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_COMMON),
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[readIdx].Get(),
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_COMMON),
-		};
-		commandList->ResourceBarrier(3, toCommon);
 	}
 
 	// Record the DTVS depth-only particle draw into the already-open graphics command list.
 	// Writes into particleDepthTexture[readIdx] — the slot NOT being read by compute this frame.
-	// Must be called after the snapshot SRVs are already in SRV state (after the toSrv barrier).
 	// Leaves the texture in COMMON state so compute can read it next frame.
 	void DrawParticleDepth(int readIdx) {
 		UINT dsvSz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
