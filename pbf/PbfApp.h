@@ -1742,7 +1742,7 @@ protected:
 
 		// Cubemap: reads the DDS file, creates default + upload heap resources, copies to upload heap.
 		// Actual GPU transfer deferred to UploadAll() -> envTexture.UploadResource(commandList).
-		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/cloudyNoon.dds");
+		envTexture = Egg::Importer::ImportTextureCube(device.Get(), "../Media/pretty_sky.dds");
 
 		// SRV at CUBEMAP_SRV (slot 0, t0): sampled by the background pixel shader
 		envTexture.CreateSRV(device.Get(), descriptorHeap.Get(), HeapSlot::CUBEMAP_SRV);

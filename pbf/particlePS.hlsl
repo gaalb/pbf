@@ -46,7 +46,7 @@ float4 main(GSOutput input) : SV_Target
     if (shadingMode == SHADING_UNICOLOR)
     {
         // all particles the same color
-        baseColor = float3(1.0, 1.0, 0.0);
+        baseColor = float3(0.0, 1.0, 1.0);
     }
     else if (shadingMode == SHADING_DENSITY)
     {
