@@ -31,9 +31,6 @@
     <Filter Include="Shaders\Geometry">
       <UniqueIdentifier>{a2e37ae3-76d8-400f-80f4-8fdb854e1f46}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Shaders\Compute\prefixSum">
-      <UniqueIdentifier>{fc9cc854-9c2d-4d87-8c88-ff7e8c880feb}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Shaders\Compute\vorticity_viscosity">
       <UniqueIdentifier>{d35f037f-06ce-4d89-be6c-b0d196bd14d8}</UniqueIdentifier>
     </Filter>
@@ -46,6 +43,9 @@
     <Filter Include="Shaders\Compute\lambda">
       <UniqueIdentifier>{cad448eb-03f6-482f-bf08-ff689e7b5668}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\sort">
+      <UniqueIdentifier>{761a74a6-35e1-430e-9060-ec146f275a6d}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Shaders\Compute\LOD">
       <UniqueIdentifier>{3a62d2ce-4841-4645-90b0-17661e7200c6}</UniqueIdentifier>
     </Filter>
@@ -54,6 +54,9 @@
     </Filter>
     <Filter Include="Shaders\Compute\LOD\DTVS">
       <UniqueIdentifier>{844050c7-d19d-4669-8b24-f9a41b75f698}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\sort\prefixSum">
+      <UniqueIdentifier>{fc9cc854-9c2d-4d87-8c88-ff7e8c880feb}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -118,12 +121,6 @@
     <FxCompile Include="updateVelocityCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
-    <FxCompile Include="countGridCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
-    <FxCompile Include="sortCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="collisionPredictedPositionCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -148,9 +145,6 @@
     <FxCompile Include="solidPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
     </FxCompile>
-    <FxCompile Include="permutateCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="GSM_deltaCS.hlsl">
       <Filter>Shaders\Compute\delta</Filter>
     </FxCompile>
@@ -167,13 +161,13 @@
       <Filter>Shaders\Compute\lambda</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass1CS.hlsl">
-      <Filter>Shaders\Compute\prefixSum</Filter>
+      <Filter>Shaders\Compute\sort\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass2CS.hlsl">
-      <Filter>Shaders\Compute\prefixSum</Filter>
+      <Filter>Shaders\Compute\sort\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass3CS.hlsl">
-      <Filter>Shaders\Compute\prefixSum</Filter>
+      <Filter>Shaders\Compute\sort\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="vorticityCS.hlsl">
       <Filter>Shaders\Compute\vorticity_viscosity</Filter>
@@ -225,6 +219,15 @@
     </FxCompile>
     <FxCompile Include="dtvsDepthOnlyPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
+    </FxCompile>
+    <FxCompile Include="countGridCS.hlsl">
+      <Filter>Shaders\Compute\sort</Filter>
+    </FxCompile>
+    <FxCompile Include="permutateCS.hlsl">
+      <Filter>Shaders\Compute\sort</Filter>
+    </FxCompile>
+    <FxCompile Include="sortCS.hlsl">
+      <Filter>Shaders\Compute\sort</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

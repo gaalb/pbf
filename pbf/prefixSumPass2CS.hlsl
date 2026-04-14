@@ -45,7 +45,7 @@ void main(uint3 threadID : SV_GroupThreadID)
     s[2 * tid + 1] = groupSums[2 * tid + 1];
     GroupMemoryBarrierWithGroupSync();
 
-    // --- Up-sweep ---
+    // Up-sweep
     for (uint stride = 1; stride < PASS2_NUM_ELEMENTS; stride <<= 1)
     {
         uint i = (tid + 1) * (stride << 1) - 1;
@@ -59,7 +59,7 @@ void main(uint3 threadID : SV_GroupThreadID)
         s[PASS2_NUM_ELEMENTS - 1] = 0;
     GroupMemoryBarrierWithGroupSync();
 
-    // --- Down-sweep ---
+    // Down-sweep
     for (uint stride = PASS2_NUM_ELEMENTS >> 1; stride >= 1; stride >>= 1)
     {
         uint i = (tid + 1) * (stride << 1) - 1;
@@ -73,6 +73,6 @@ void main(uint3 threadID : SV_GroupThreadID)
     }
 
     // Write the global exclusive offsets back to groupSums[].
-    groupSums[2 * tid]     = s[2 * tid];
+    groupSums[2 * tid] = s[2 * tid];
     groupSums[2 * tid + 1] = s[2 * tid + 1];
 }
