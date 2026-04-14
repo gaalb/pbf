@@ -220,11 +220,11 @@
     <FxCompile Include="clearDtvsReductionCS.hlsl">
       <Filter>Shaders\Compute\LOD\DTVS</Filter>
     </FxCompile>
-    <FxCompile Include="dtvsDepthOnlyPS.hlsl">
-      <Filter>Shaders\Compute\LOD\DTVS</Filter>
-    </FxCompile>
     <FxCompile Include="dtvsLodCS.hlsl">
       <Filter>Shaders\Compute\LOD\DTVS</Filter>
+    </FxCompile>
+    <FxCompile Include="dtvsDepthOnlyPS.hlsl">
+      <Filter>Shaders\Pixel</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

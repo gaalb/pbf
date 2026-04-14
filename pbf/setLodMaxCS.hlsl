@@ -1,6 +1,8 @@
 // setLodMaxCS: fills every particle's LOD countdown with maxLOD so all particles
-// run the full solverIterations each frame. Dispatched instead of the DTC adaptive
-// pipeline when adaptivity is toggled off.
+// run the full solverIterations each frame.
+//
+// In: -
+// Out: lod
 
 #define SetLodMaxRootSig \
     "CBV(b0), " \

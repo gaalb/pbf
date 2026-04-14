@@ -1,3 +1,8 @@
+// Clear the DTVS reduction buffer to initial values (0.0f bits) 
+//
+// In: -
+// Out: lodReduction
+
 #define ClearDtvsReductionRootSig \
     "CBV(b0), " \
     "DescriptorTable(UAV(u0, numDescriptors = 1))"

@@ -29,8 +29,9 @@ TODOS:
  using Morton codes?
 -finer grid, more cells in a h radius -> fewer overall neighbor checks
 	-this didn't help, and mate it worse
--comments in a lot of places, and a more intuitive initialization: initialize every pointer/descriptor/etc
- relating to a certain resource in one place for that resource?
+-remove unnecessary barriers, for example, by not forcing buffers that don't need to be in COMMON
+ state, to return to COMMON, instead make their home state whatever is natural, and whatever state
+ they are most often used in
 -another idea for trying to boost with GSM:
  The reason that sorting particles by their cells' index helps is that the data of 
  particles in the same cell is contiguous in memory. This, in theory would be even better with
