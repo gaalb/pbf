@@ -241,6 +241,9 @@
     <FxCompile Include="viscosityCS.hlsl">
       <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
     </FxCompile>
+    <FxCompile Include="GSM_confinementViscosityCS.hlsl">
+      <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">

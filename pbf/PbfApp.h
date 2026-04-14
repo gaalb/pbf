@@ -1100,7 +1100,6 @@ protected:
 		commandList->ResourceBarrier(2, toUav);
 	}
 
-
 	// Create all 16 compute shader PSOs and their descriptor table bindings.
 	// Requires CacheDescriptorHandles() to have been called first.
 	void BuildComputePipelines() {

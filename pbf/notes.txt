@@ -4,8 +4,6 @@ TODOS:
 -investigate brownian motion: probably just a feature of pbf...
 -morton codes implemented, but no efficiency gain?
 -liquid surface rendering
--adaptive pbf article imrovements
--notes explaining the blelloch scan
 -completely disjoin the graphics fps from the simulation timestep:
 	-make it possible to have several physics steps per graphics frame
 	-make it possible for several graphics frames to pass without a physics step
@@ -27,11 +25,6 @@ TODOS:
  due to the Morton Code indexing. However, they didn't, and now that I think about it, the Morton
  codes' introduction didn't provide a speedup at all (almost identical to row-major). Are we even
  using Morton codes?
--finer grid, more cells in a h radius -> fewer overall neighbor checks
-	-this didn't help, and mate it worse
--remove unnecessary barriers, for example, by not forcing buffers that don't need to be in COMMON
- state, to return to COMMON, instead make their home state whatever is natural, and whatever state
- they are most often used in
 -another idea for trying to boost with GSM:
  The reason that sorting particles by their cells' index helps is that the data of 
  particles in the same cell is contiguous in memory. This, in theory would be even better with
@@ -134,13 +127,4 @@ Later on we might make this a float4, and add lambda in w.
 The GSM arrays are independent of UAV buffer types -- data is packed during
 the cooperative loading phase from separate float3 and float UAVs.
 
-PHILOSOPHY
-----------
-- Preserve algorithmic and physical correctness. Same math, same iterations,
-  same kernel functions. Only the memory access pattern changes.
-- Incremental approach. Start with lambdaCS + predictedPosition only, measure
-  the impact, then I might ask you to extend to deltaCS and full float4 packing.
-- Keep it simple. Dispatch all cells rather than compacting. Use fixed
-  numthreads rather than variable. Accept minor waste in exchange for
-  implementation clarity.
 
