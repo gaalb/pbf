@@ -31,9 +31,6 @@
     <Filter Include="Shaders\Geometry">
       <UniqueIdentifier>{a2e37ae3-76d8-400f-80f4-8fdb854e1f46}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Shaders\Compute\vorticity_viscosity">
-      <UniqueIdentifier>{d35f037f-06ce-4d89-be6c-b0d196bd14d8}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Shaders\Compute\prediction">
       <UniqueIdentifier>{7822cde0-1346-4e64-bc00-54567246fc5a}</UniqueIdentifier>
     </Filter>
@@ -57,6 +54,21 @@
     </Filter>
     <Filter Include="Shaders\Compute\sort\prefixSum">
       <UniqueIdentifier>{fc9cc854-9c2d-4d87-8c88-ff7e8c880feb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\delta\unused">
+      <UniqueIdentifier>{9debaac5-d9cc-4747-9dc4-08f9350eb563}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\lambda\unused">
+      <UniqueIdentifier>{4093c901-108a-4683-9c28-d3da6891b17f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\prediction\unused">
+      <UniqueIdentifier>{451d982b-d922-42f1-b2be-4fe55052cc97}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\vorticity, viscosity">
+      <UniqueIdentifier>{d35f037f-06ce-4d89-be6c-b0d196bd14d8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Compute\vorticity, viscosity\unused">
+      <UniqueIdentifier>{8f10ca65-0f25-417a-9c56-75a976db5a5f}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -109,9 +121,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="clearGridCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="positionFromScratchCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -145,17 +154,8 @@
     <FxCompile Include="solidPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
     </FxCompile>
-    <FxCompile Include="GSM_deltaCS.hlsl">
-      <Filter>Shaders\Compute\delta</Filter>
-    </FxCompile>
     <FxCompile Include="deltaCS.hlsl">
       <Filter>Shaders\Compute\delta</Filter>
-    </FxCompile>
-    <FxCompile Include="GSM_CC_deltaCS.hlsl">
-      <Filter>Shaders\Compute\delta</Filter>
-    </FxCompile>
-    <FxCompile Include="GSM_lambdaCS.hlsl">
-      <Filter>Shaders\Compute\lambda</Filter>
     </FxCompile>
     <FxCompile Include="lambdaCS.hlsl">
       <Filter>Shaders\Compute\lambda</Filter>
@@ -170,28 +170,13 @@
       <Filter>Shaders\Compute\sort\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="vorticityCS.hlsl">
-      <Filter>Shaders\Compute\vorticity_viscosity</Filter>
-    </FxCompile>
-    <FxCompile Include="confinementCS.hlsl">
-      <Filter>Shaders\Compute\vorticity_viscosity</Filter>
-    </FxCompile>
-    <FxCompile Include="viscosityCS.hlsl">
-      <Filter>Shaders\Compute\vorticity_viscosity</Filter>
+      <Filter>Shaders\Compute\vorticity, viscosity</Filter>
     </FxCompile>
     <FxCompile Include="velocityFromScratchCS.hlsl">
-      <Filter>Shaders\Compute\vorticity_viscosity</Filter>
+      <Filter>Shaders\Compute\vorticity, viscosity</Filter>
     </FxCompile>
     <FxCompile Include="confinementViscosityCS.hlsl">
-      <Filter>Shaders\Compute\vorticity_viscosity</Filter>
-    </FxCompile>
-    <FxCompile Include="applyForcesCS.hlsl">
-      <Filter>Shaders\Compute\prediction</Filter>
-    </FxCompile>
-    <FxCompile Include="collisionVelocityCS.hlsl">
-      <Filter>Shaders\Compute\prediction</Filter>
-    </FxCompile>
-    <FxCompile Include="predictPositionCS.hlsl">
-      <Filter>Shaders\Compute\prediction</Filter>
+      <Filter>Shaders\Compute\vorticity, viscosity</Filter>
     </FxCompile>
     <FxCompile Include="predictCS.hlsl">
       <Filter>Shaders\Compute\prediction</Filter>
@@ -228,6 +213,33 @@
     </FxCompile>
     <FxCompile Include="sortCS.hlsl">
       <Filter>Shaders\Compute\sort</Filter>
+    </FxCompile>
+    <FxCompile Include="clearGridCS.hlsl">
+      <Filter>Shaders\Compute\sort</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_CC_deltaCS.hlsl">
+      <Filter>Shaders\Compute\delta\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_deltaCS.hlsl">
+      <Filter>Shaders\Compute\delta\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_lambdaCS.hlsl">
+      <Filter>Shaders\Compute\lambda\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="predictPositionCS.hlsl">
+      <Filter>Shaders\Compute\prediction\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="applyForcesCS.hlsl">
+      <Filter>Shaders\Compute\prediction\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="collisionVelocityCS.hlsl">
+      <Filter>Shaders\Compute\prediction\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="confinementCS.hlsl">
+      <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
+    </FxCompile>
+    <FxCompile Include="viscosityCS.hlsl">
+      <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
