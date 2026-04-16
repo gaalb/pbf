@@ -1980,7 +1980,21 @@ protected:
 			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_LOD_0 + readIdx, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// Snapshot buffers live in SRV state — no transition needed before the draw.
+		// In liquid mode snapshotPosition[readIdx] is read by liquidPS from the pixel stage (t1).
+		// DrawParticleDepth (DTVS) also binds it via an ALL-visible descriptor table on the graphics
+		// pipeline, which makes the D3D12 debug layer implicitly promote the resource to
+		// NON_PIXEL|PIXEL at first use — before the explicit snapToPixel barrier inside
+		// DrawLiquidSurface. That causes a "before state mismatch" validation error (#527).
+		// Promoting explicitly here, before any draw, keeps the tracked state consistent.
+		constexpr D3D12_RESOURCE_STATES SRV_ALL =
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		if (shadingMode == ShadingMode::LIQUID) {
+			D3D12_RESOURCE_BARRIER snapPosToPixel = CD3DX12_RESOURCE_BARRIER::Transition(
+				snapshotPosition[readIdx].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, SRV_ALL);
+			commandList->ResourceBarrier(1, &snapPosToPixel);
+		}
+
 		// DTVS depth-only pass: render billboard particles into particleDepthTexture[readIdx]
 		// (the slot compute is NOT reading this frame) so compute can sample it next frame.
 		// Run regardless of shading mode: the DTVS LOD calculation in the compute queue still needs it.
@@ -1989,6 +2003,11 @@ protected:
 		// In liquid mode, the ray-marched surface replaces the individual particle billboards.
 		if (shadingMode == ShadingMode::LIQUID) {
 			DrawLiquidSurface(readIdx);
+			// Return snapshotPosition to NON_PIXEL home state after all pixel-stage accesses.
+			D3D12_RESOURCE_BARRIER snapPosToNonPixel = CD3DX12_RESOURCE_BARRIER::Transition(
+				snapshotPosition[readIdx].Get(),
+				SRV_ALL, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+			commandList->ResourceBarrier(1, &snapPosToNonPixel);
 		} else {
 			particleMesh->Draw(commandList.Get()); // draw particle billboards
 		}
@@ -2043,13 +2062,13 @@ protected:
 			densityVolume.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, SRV_ALL);
 		commandList->ResourceBarrier(1, &toSrv);
 
-		// The snapshot buffers live in NON_PIXEL_SHADER_RESOURCE home state (used by densityVolumeCS
-		// as a non-pixel SRV). liquidPS reads them from the pixel stage, so promote to the combined
-		// state before the Draw. Transitions back to home state after.
-		D3D12_RESOURCE_BARRIER snapToPixel[3] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+		// cellCountSnapshot and cellPrefixSumSnapshot live in NON_PIXEL home state (densityVolumeCS reads
+		// them as compute SRVs on the DIRECT list, which does not promote to the pixel stage).
+		// liquidPS reads them from the pixel stage, so promote to the combined state before the Draw.
+		// snapshotPosition[readIdx] is managed by RecordGraphicsCommands (promoted before DrawParticleDepth,
+		// demoted after DrawLiquidSurface returns) to avoid a before-state mismatch caused by the implicit
+		// NON_PIXEL → NON_PIXEL|PIXEL promotion that DrawParticleDepth triggers via its ALL-visible table.
+		D3D12_RESOURCE_BARRIER snapToPixel[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
@@ -2057,15 +2076,12 @@ protected:
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
 		};
-		commandList->ResourceBarrier(3, snapToPixel);
+		commandList->ResourceBarrier(2, snapToPixel);
 
 		liquidMesh->Draw(commandList.Get()); // ray-march density volume, compute SPH gradient at surface
 
-		// Return snapshot buffers to their NON_PIXEL home state.
-		D3D12_RESOURCE_BARRIER snapToNonPixel[3] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(snapshotPosition[readIdx].Get(),
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+		// Return grid snapshot buffers to their NON_PIXEL home state.
+		D3D12_RESOURCE_BARRIER snapToNonPixel[2] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[readIdx].Get(),
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
@@ -2073,7 +2089,7 @@ protected:
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 		};
-		commandList->ResourceBarrier(3, snapToNonPixel);
+		commandList->ResourceBarrier(2, snapToNonPixel);
 
 		// Return densityVolume to COMMON home state.
 		D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
