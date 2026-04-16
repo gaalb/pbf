@@ -7,7 +7,7 @@
 // and removes them from the constant buffer entirely.
 
 #define PARTICLE_SPACING  0.25f
-#define H_MULTIPLIER      2.7f
+#define H_MULTIPLIER      2.5f
 #define H                 (PARTICLE_SPACING * H_MULTIPLIER)   // SPH smoothing radius
 
 // Rest density: if particles are spaced PARTICLE_SPACING apart, each occupies
@@ -15,7 +15,8 @@
 #define RHO0              (1.0f / (PARTICLE_SPACING * PARTICLE_SPACING * PARTICLE_SPACING))
 
 // Particle radius used for display and SDF push-out distance.
-#define PUSH_RADIUS       (PARTICLE_SPACING * 0.4f)
+#define PARTICLE_RADIUS  (PARTICLE_SPACING * 0.4f)
+#define PUSH_RADIUS      (PARTICLE_SPACING * 0.4f)
 
 // Artificial pressure reference distance and exponent (Macklin & Muller eq. 13).
 #define SCORR_DELTA_Q     (0.2f * H)
@@ -43,3 +44,6 @@
 
 // Density volume resolution: VOL_DIM voxels per axis.
 #define VOL_DIM (GRID_DIM * 4)
+
+// How coarsely to take the average density and LOD for ImGui display
+#define AVG_COARSENESS 100

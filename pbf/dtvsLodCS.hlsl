@@ -30,8 +30,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float maxDtvs = asfloat(lodReduction[0]);
 
-    // Default: max LOD (surface particles, or off-screen/behind-camera — conservative)
-    uint lodVal = maxLOD;
+    // Default: avg
+    uint lodVal = round(0.5*(float)maxLOD + 0.5*(float)minLOD);
 
     // Project world position into clip space. Result is a homogenous 4-component
     // vector, where clip.w is the view-space depth 

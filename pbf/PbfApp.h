@@ -131,7 +131,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 70, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 75, particlesY = 75, particlesZ = 75; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -141,7 +141,6 @@ protected:
 	// lets us define the box as exactly gridDim * h on each axis, giving a perfectly aligned 
 	// cubic grid with a dense Morton code space.
 	const float particleSpacing = PARTICLE_SPACING; // inter-particle distance (also determines rest density and display size)
-	const float particleRadius = PUSH_RADIUS;
 	const float hMultiplier = H_MULTIPLIER; // h = particleSpacing * hMultiplier
 	const float h = H; // SPH smoothing radius
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
@@ -159,18 +158,18 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = gridMin; // adjustable collision boundary
-	Float3 boxMax = gridMax; // adjustable collision boundary
+	Float3 boxMin = Float3(-17.0f, -13.0f, -17.0f); // adjustable collision boundary
+	Float3 boxMax = Float3(17.0f, 20.0f, 17.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 6; // how many newton steps to take per frame
 	int minLOD = 2;  // minimum solver iterations for the farthest particles
 	float epsilon = 4.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
-	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
+	float viscosity = 0.005f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension, 
-	float sCorrK = 0.01f; // artificial pressure magnitude coefficient M&M: 0.1
+	float sCorrK = 0.02f; // artificial pressure magnitude coefficient M&M: 0.1
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
-	float adhesion = 0.02f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
+	float adhesion = 0.015f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
 	
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
@@ -329,7 +328,7 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE posSnapshotActiveHandle;
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridSnapshotActiveHandle;
 	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
-	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
+	float liquidIsoThreshold = 0.75f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
 
 	int shadingMode = SHADING_UNICOLOR; // current particle shading mode, driven by ImGui
 
@@ -2160,7 +2159,7 @@ protected:
 		perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 		perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
 		perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
-		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, particleRadius); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
+		perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, PARTICLE_RADIUS); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
 		perFrameCb->shadingMode = (UINT)shadingMode;
 		perFrameCb->minLOD = (UINT)minLOD;
 		perFrameCb->maxLOD = (UINT)solverIterations;
@@ -2220,9 +2219,13 @@ protected:
 
 		// Compute average density from readback data
 		double densitySum = 0.0;
-		for (int i = 0; i < numParticles; i++)
+		int cnt = 0;
+		for (int i = 0; i < numParticles; i += AVG_COARSENESS) {
 			densitySum += densityReadbackData[i];
-		avgDensity = static_cast<float>(densitySum / numParticles);
+			cnt++;
+		}
+			
+		avgDensity = static_cast<float>(densitySum / cnt);
 	}
 
 	void CalculateAvgLod() {
@@ -2239,9 +2242,13 @@ protected:
 
 		// Compute average LOD from readback data
 		double lodSum = 0.0;
-		for (int i = 0; i < numParticles; i++)
+		int cnt = 0;
+		for (int i = 0; i < numParticles; i += AVG_COARSENESS) {
 			lodSum += lodReadbackData[i];
-		avgLod = static_cast<float>(lodSum / numParticles);
+			cnt++;
+		}
+			
+		avgLod = static_cast<float>(lodSum / cnt);
 	}
 
 	// This function cannot be called more than once every targetPeriod time: rate limit

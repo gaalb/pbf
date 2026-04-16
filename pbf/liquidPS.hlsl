@@ -159,7 +159,7 @@ PSOutput main(VSOutput input)
     float3 V = normalize(cameraPos.xyz - pSurf);
     float3 H_vec = normalize(L + V);
 
-    static const float3 kLiquidColor = float3(0.05, 0.28, 0.75); // deep ocean blue
+    static const float3 kLiquidColor = float3(0.75, 0.05, 0.05);
     static const float  kAmbient     = 0.18;
     static const float  kDiffuse     = 0.55;
     static const float  kSpecular    = 1.2;
