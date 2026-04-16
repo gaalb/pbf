@@ -1,13 +1,19 @@
 // densityVolumeCS.hlsl
-// Fills a Texture3D<float4> volume with float4(density, gradX, gradY, gradZ) at each voxel.
+// Fills a Texture3D<float> volume with density (rho) at each voxel.
 // The volume covers the fixed simulation grid (GRID_MIN..GRID_MAX) at resolution VOL_DIM^3,
 // giving a voxel spacing of exactly H/2 per axis.
 //
 // For each voxel, this shader:
 //   1. Maps the voxel's 3D index to a world-space position
 //   2. Looks up the 27 neighboring grid cells (same spatial grid as lambdaCS / deltaCS)
-//   3. Accumulates density (Poly6 kernel) and density gradient (Poly6Grad) from all particles
-//   4. Writes float4(rho, gradX, gradY, gradZ) to the UAV
+//   3. Accumulates density (Poly6 kernel) from all particles
+//   4. Writes rho to the UAV
+//
+// Gradient computation has been moved to liquidPS, where it is computed via SPH at the exact
+// surface point rather than pre-baked per voxel. This halves the per-thread arithmetic here,
+// reduces the volume format from float4 to float (4x bandwidth reduction for both the UAV
+// write and all subsequent texture samples in liquidPS), and allows VOL_DIM to be reduced
+// since the texture is only used for density (surface finding), not normals.
 //
 // The result is read by liquidPS.hlsl for ray-marched liquid surface rendering.
 // Dispatched from the GRAPHICS queue (on commandList) in DrawLiquidSurface(), reading from
@@ -32,7 +38,7 @@
 StructuredBuffer<float3>  position        : register(t0);
 StructuredBuffer<uint>    cellCount       : register(t1);
 StructuredBuffer<uint>    cellPrefixSum   : register(t2);
-RWTexture3D<float4>       densityVolume   : register(u16);
+RWTexture3D<float>        densityVolume   : register(u16);
 
 [RootSignature(DensityVolumeRootSig)]
 [numthreads(8, 8, 4)]  // 8*8*4 = 256 threads per group, same total as THREAD_GROUP_SIZE
@@ -52,9 +58,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 uvw = (float3(voxel) + 0.5) / float(volDim);
     float3 worldPos = lerp(GRID_MIN, GRID_MAX, uvw);
 
-    // Accumulate SPH density and gradient by iterating over neighboring grid cells
-    float  rho     = 0.0;
-    float3 gradRho = float3(0.0, 0.0, 0.0);
+    // Accumulate SPH density by iterating over neighboring grid cells.
+    // Gradient is no longer computed here; liquidPS evaluates it via SPH at the exact surface point.
+    float rho = 0.0;
 
     NeighborCells nCells = NeighborCellIndices(worldPos);
     for (uint c = 0; c < nCells.count; c++)
@@ -65,14 +71,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
         for (uint s = 0; s < count; s++)
         {
-            uint  j = offset + s;
+            uint   j  = offset + s;
             float3 r  = worldPos - position[j]; // vector from particle j to voxel center
             float  r2 = dot(r, r);
 
-            rho     += Poly6(r, r2);
-            gradRho += Poly6Grad(r, r2);
+            rho += Poly6(r, r2);
         }
     }
 
-    densityVolume[voxel] = float4(rho, gradRho);
+    densityVolume[voxel] = rho;
 }

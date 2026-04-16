@@ -9,7 +9,7 @@
 #define LiquidRootSig \
     "RootFlags(ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT), " \
     "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 4)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \

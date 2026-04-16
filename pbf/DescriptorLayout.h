@@ -17,14 +17,19 @@
 // slot 24     LOD_REDUCTION_UAV    (APBF)            – DTC min/max reduction scratch (2 uints)
 // slot 25     PARTICLE_DEPTH_SRV_0 (DTVS)            – R32_FLOAT SRV of particleDepthTexture[0]
 // slot 26     PARTICLE_DEPTH_SRV_1 (DTVS)            – R32_FLOAT SRV of particleDepthTexture[1]
-// slot 27     DENSITY_VOL_UAV      (liquid)          – UAV for densityVolume (written by densityVolumeCS on graphics queue)
-// slot 28     DENSITY_VOL_SRV      (liquid)          – static SRV for densityVolume (t0 in liquidPS)
+// slot 27     DENSITY_VOL_UAV      (liquid)          – UAV for densityVolume, R32_FLOAT (written by densityVolumeCS on graphics queue)
+// slot 28     DENSITY_VOL_SRV      (liquid)          – static SRV for densityVolume, R32_FLOAT (t0 in liquidPS)
 // slot 29     SNAP_POS_GFX_SRV_0   (liquid)          – SRV for posSnapshot[0] (t0 in graphics-side densityVolumeCS)
 // slot 30     SNAP_POS_GFX_SRV_1   (liquid)          – SRV for posSnapshot[1]
 // slot 31     GRID_SNAP_SRV_0      (liquid)          – SRV for cellCountSnapshot[0] (t1)
 // slot 32     GRID_SNAP_PREFIX_SRV_0 (liquid)        – SRV for cellPrefixSumSnapshot[0] (t2)
 // slot 33     GRID_SNAP_SRV_1      (liquid)          – SRV for cellCountSnapshot[1]
 // slot 34     GRID_SNAP_PREFIX_SRV_1 (liquid)        – SRV for cellPrefixSumSnapshot[1]
+// slots 35–38 LIQUID_TABLE         (liquid)          – single 4-slot descriptor table for liquidPS (t0..t3); one SetSrvHeap call
+//   slot 35     LIQUID_TABLE_DENSITY  – density vol SRV (t0); set once at init, never changes
+//   slot 36     LIQUID_TABLE_POS      – active position snapshot (t1); Pattern 1, per-frame CopyDescriptorsSimple
+//   slot 37     LIQUID_TABLE_GRID_COUNT – active cellCount snapshot (t2); Pattern 1, per-frame CopyDescriptorsSimple
+//   slot 38     LIQUID_TABLE_GRID_PREFIX – active cellPrefixSum snapshot (t3); contiguous with slot 37
 //
 // Snapshot staging heap (CPU-only, StagingSlot::TOTAL descriptors)
 // slot  0     SNAPSHOT_POS_0    snapshotPosition[0] SRV
@@ -33,6 +38,10 @@
 // slot  3     SNAPSHOT_DEN_1    snapshotDensity[1]  SRV
 // slot  4     SNAPSHOT_LOD_0    snapshotLod[0]      SRV
 // slot  5     SNAPSHOT_LOD_1    snapshotLod[1]      SRV
+// slot  6     SNAPSHOT_GRID_COUNT_0   cellCountSnapshot[0]    SRV (source for CopyDescriptorsSimple → LIQUID_TABLE_GRID_COUNT)
+// slot  7     SNAPSHOT_GRID_PREFIX_0  cellPrefixSumSnapshot[0] SRV
+// slot  8     SNAPSHOT_GRID_COUNT_1   cellCountSnapshot[1]    SRV
+// slot  9     SNAPSHOT_GRID_PREFIX_1  cellPrefixSumSnapshot[1] SRV
 
 
 namespace HeapSlot {
@@ -77,7 +86,7 @@ namespace HeapSlot {
     constexpr UINT PARTICLE_DEPTH_SRV_0 = 25; // slot for particleDepthTexture[0]
     constexpr UINT PARTICLE_DEPTH_SRV_1 = 26; // slot for particleDepthTexture[1]
 
-    // Liquid surface density+gradient volume: single Texture3D<float4>.
+    // Liquid surface density volume: single Texture3D<R32_FLOAT> (density only; gradient computed in liquidPS).
     // Graphics fills it via densityVolumeCS dispatch, then reads it via liquidPS in the same frame.
     constexpr UINT DENSITY_VOL_UAV      = 27; // UAV written by densityVolumeCS (u16)
     constexpr UINT DENSITY_VOL_SRV      = 28; // static SRV read by liquidPS (t0); set once at init
@@ -94,8 +103,16 @@ namespace HeapSlot {
     constexpr UINT GRID_SNAP_SRV_1       = 33; // cellCountSnapshot[1]      SRV (t1)
     constexpr UINT GRID_SNAP_PREFIX_SRV_1 = 34; // cellPrefixSumSnapshot[1] SRV (t2)
 
+    // Single 4-slot descriptor table for liquidPS (t0..t3 all from one root param via one SetSrvHeap call).
+    // Slots must be contiguous. DENSITY is static (set once); POS/GRID_COUNT/GRID_PREFIX are
+    // per-frame via CopyDescriptorsSimple in DrawLiquidSurface().
+    constexpr UINT LIQUID_TABLE_DENSITY      = 35; // t0: density vol SRV, set once at init
+    constexpr UINT LIQUID_TABLE_POS          = 36; // t1: active posSnapshot SRV, per-frame
+    constexpr UINT LIQUID_TABLE_GRID_COUNT   = 37; // t2: active cellCount SRV, per-frame
+    constexpr UINT LIQUID_TABLE_GRID_PREFIX  = 38; // t3: active cellPrefixSum SRV, per-frame
+
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL                = 35;
+    constexpr UINT TOTAL                = 39;
 
 } // namespace HeapSlot
 
@@ -113,7 +130,14 @@ namespace StagingSlot {
     constexpr UINT SNAPSHOT_LOD_0     =  4;
     constexpr UINT SNAPSHOT_LOD_1     =  5;
 
+    // Grid snapshot SRVs for CopyDescriptorsSimple → LIQUID_TABLE_GRID_COUNT/PREFIX.
+    // Pairs are contiguous so a single CopyDescriptorsSimple(2, ...) can copy both at once.
+    constexpr UINT SNAPSHOT_GRID_COUNT_0   =  6; // cellCountSnapshot[0]    SRV
+    constexpr UINT SNAPSHOT_GRID_PREFIX_0  =  7; // cellPrefixSumSnapshot[0] SRV
+    constexpr UINT SNAPSHOT_GRID_COUNT_1   =  8; // cellCountSnapshot[1]    SRV
+    constexpr UINT SNAPSHOT_GRID_PREFIX_1  =  9; // cellPrefixSumSnapshot[1] SRV
+
     // Total size of the CPU-only snapshot staging heap
-    constexpr UINT TOTAL              =  6;
+    constexpr UINT TOTAL              = 10;
 
 } // namespace StagingSlot
