@@ -10,16 +10,18 @@
 //   4. Writes float4(rho, gradX, gradY, gradZ) to the UAV
 //
 // The result is read by liquidPS.hlsl for ray-marched liquid surface rendering.
-// Dispatched after updatePositionCS each frame (when SHADING_LIQUID is active),
-// using the same spatial grid built during SortParticles().
+// Dispatched from the GRAPHICS queue (on commandList) in DrawLiquidSurface(), reading from
+// the previous frame's position and grid snapshots. The density volume is filled and consumed
+// within the same graphics frame (fill → SRV transition → liquidPS draw), so no double-buffering
+// of the volume is required.
 //
-// In:  position (u0), cellCount (u7), cellPrefixSum (u8)
+// In:  position snapshot (t0), cellCount snapshot (t1), cellPrefixSum snapshot (t2)
 // Out: densityVolume (u16)
 
 #define DensityVolumeRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7)), " \
-    "DescriptorTable(UAV(u7, numDescriptors = 2)), " \
+    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(SRV(t1, numDescriptors = 2)), " \
     "DescriptorTable(UAV(u16, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
@@ -27,12 +29,10 @@
 #include "SphKernels.hlsli"
 #include "GridUtils.hlsli"
 
-// Particle position buffer (read-only in this shader, but declared as RW because the
-// root signature table covers u0..u6 which are all RWStructuredBuffers in the particle pipeline)
-RWStructuredBuffer<float3> position        : register(u0);
-RWStructuredBuffer<uint>   cellCount       : register(u7);
-RWStructuredBuffer<uint>   cellPrefixSum   : register(u8);
-RWTexture3D<float4>        densityVolume   : register(u16);
+StructuredBuffer<float3>  position        : register(t0);
+StructuredBuffer<uint>    cellCount       : register(t1);
+StructuredBuffer<uint>    cellPrefixSum   : register(t2);
+RWTexture3D<float4>       densityVolume   : register(u16);
 
 [RootSignature(DensityVolumeRootSig)]
 [numthreads(8, 8, 4)]  // 8*8*4 = 256 threads per group, same total as THREAD_GROUP_SIZE

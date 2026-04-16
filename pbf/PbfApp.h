@@ -238,13 +238,27 @@ protected:
 	ComputeShader::P dtvsReductionShader; // accumulate max DTVS into lodReduction[0]
 	ComputeShader::P dtvsLodShader; // assign per-particle LOD from DTVS / maxDTVS
 
-	// Liquid surface rendering: double-buffered Texture3D density+gradient volume.
-	// Compute writes densityVolume[snapshotWriteIdx]; graphics reads densityVolume[1-snapshotWriteIdx].
-	// Same writeIdx/readIdx convention as snapshot buffers. Home state: COMMON.
-	com_ptr<ID3D12Resource> densityVolume[2]; // VOL_DIM^3, R32G32B32A32_FLOAT, float4(rho, gradX, gradY, gradZ)
-	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle[2]; // GPU handles for the two UAV descriptors
-	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeActiveHandle; // set to densityVolumeHandle[writeIdx] before each dispatch
-	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid data
+	// Liquid surface rendering: single-buffered Texture3D density+gradient volume.
+	// Graphics fills it (densityVolumeCS dispatch) and reads it (liquidPS draw) sequentially in the same frame.
+	// No double-buffering needed: fill -> UAV barrier -> SRV use all happen on the graphics queue. Home state: COMMON.
+	com_ptr<ID3D12Resource> densityVolume; // VOL_DIM^3, R32G32B32A32_FLOAT, float4(rho, gradX, gradY, gradZ)
+	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle; // GPU handle for the UAV descriptor (slot DENSITY_VOL_UAV)
+	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid snapshots
+
+	// Grid snapshot buffers: double-buffered copies of cellCountBuffer and cellPrefixSumBuffer.
+	// Compute writes to [writeIdx] via CopyBufferRegion in WriteSnapshot(); graphics reads [readIdx] in densityVolumeCS.
+	// Home state: NON_PIXEL_SHADER_RESOURCE.
+	com_ptr<ID3D12Resource> cellCountSnapshot[2];
+	com_ptr<ID3D12Resource> cellPrefixSumSnapshot[2];
+
+	// GPU handles for densityVolumeCS SRV tables. posSnapshotGfxHandle[i] points to posSnapshot[i] SRV (t0).
+	// gridSnapshotHandle[i] points to the start of the 2-slot table cellCountSnapshot[i] (t1) + cellPrefixSumSnapshot[i] (t2).
+	CD3DX12_GPU_DESCRIPTOR_HANDLE posSnapshotGfxHandle[2];
+	CD3DX12_GPU_DESCRIPTOR_HANDLE gridSnapshotHandle[2];
+
+	// Set to [readIdx] before each densityVolumeCS dispatch in DrawLiquidSurface(); pointed to by TableBinding.
+	CD3DX12_GPU_DESCRIPTOR_HANDLE posSnapshotActiveHandle;
+	CD3DX12_GPU_DESCRIPTOR_HANDLE gridSnapshotActiveHandle;
 	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
 	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
 
@@ -772,12 +786,78 @@ protected:
 				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_LOD_0 + i, sz);
 			device->CreateShaderResourceView(snapshotLod[i].Get(), &lodSrvDesc, lodHandle);
 		}
+
+		// SRVs for posSnapshot in the main (shader-visible) heap: used as t0 by the graphics-queue
+		// densityVolumeCS dispatch. Indexed by slot (0 or 1); set posSnapshotGfxHandle accordingly.
+		for (int i = 0; i < 2; i++) {
+			CD3DX12_CPU_DESCRIPTOR_HANDLE gfxPosHandle(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::SNAP_POS_GFX_SRV_0 + i, sz);
+			device->CreateShaderResourceView(snapshotPosition[i].Get(), &posSrvDesc, gfxPosHandle);
+
+			posSnapshotGfxHandle[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+				descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::SNAP_POS_GFX_SRV_0 + i, sz);
+		}
 	}
 
-	// Create the double-buffered density+gradient volume textures and their descriptors.
-	// Each is a VOL_DIM^3 Texture3D<R32G32B32A32_FLOAT> with UAV support.
-	// UAVs are placed in the main heap (compute writes); SRVs in the staging heap (graphics reads
-	// via CopyDescriptorsSimple, same pattern as snapshot buffers). Home state: COMMON.
+	// Create double-buffered copies of cellCountBuffer and cellPrefixSumBuffer for the graphics queue.
+	// Compute copies into [writeIdx] in WriteSnapshot(); graphics reads [readIdx] in densityVolumeCS (t1, t2).
+	// SRVs are placed in the main shader-visible heap in contiguous pairs:
+	//   GRID_SNAP_SRV_0 + GRID_SNAP_PREFIX_SRV_0 for slot 0 (t1..t2 table)
+	//   GRID_SNAP_SRV_1 + GRID_SNAP_PREFIX_SRV_1 for slot 1
+	// gridSnapshotHandle[i] points to the start of the 2-slot t1..t2 SRV table for slot i.
+	// Home state: NON_PIXEL_SHADER_RESOURCE (set during RecordSnapshotUpload at startup).
+	void InitGridSnapshotBuffers() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		const UINT64 gridBufSize = (UINT64)numCells * sizeof(UINT);
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC gridSrvDesc = {};
+		gridSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+		gridSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		gridSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		gridSrvDesc.Buffer.NumElements = numCells;
+		gridSrvDesc.Buffer.StructureByteStride = sizeof(UINT);
+
+		constexpr UINT countSlots[2]  = { HeapSlot::GRID_SNAP_SRV_0,        HeapSlot::GRID_SNAP_SRV_1 };
+		constexpr UINT prefixSlots[2] = { HeapSlot::GRID_SNAP_PREFIX_SRV_0, HeapSlot::GRID_SNAP_PREFIX_SRV_1 };
+
+		for (int i = 0; i < 2; i++) {
+			DX_API("Failed to create cellCount snapshot buffer")
+				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Buffer(gridBufSize),
+					D3D12_RESOURCE_STATE_COMMON, nullptr,
+					IID_PPV_ARGS(cellCountSnapshot[i].ReleaseAndGetAddressOf()));
+			cellCountSnapshot[i]->SetName(i == 0 ? L"Cell Count Snapshot [0]" : L"Cell Count Snapshot [1]");
+
+			DX_API("Failed to create cellPrefixSum snapshot buffer")
+				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE,
+					&CD3DX12_RESOURCE_DESC::Buffer(gridBufSize),
+					D3D12_RESOURCE_STATE_COMMON, nullptr,
+					IID_PPV_ARGS(cellPrefixSumSnapshot[i].ReleaseAndGetAddressOf()));
+			cellPrefixSumSnapshot[i]->SetName(i == 0 ? L"Cell Prefix Sum Snapshot [0]" : L"Cell Prefix Sum Snapshot [1]");
+
+			// cellCount SRV (t1)
+			CD3DX12_CPU_DESCRIPTOR_HANDLE countCpu(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), countSlots[i], sz);
+			device->CreateShaderResourceView(cellCountSnapshot[i].Get(), &gridSrvDesc, countCpu);
+
+			// cellPrefixSum SRV (t2) — must be adjacent to count SRV to form the 2-slot descriptor table
+			CD3DX12_CPU_DESCRIPTOR_HANDLE prefixCpu(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), prefixSlots[i], sz);
+			device->CreateShaderResourceView(cellPrefixSumSnapshot[i].Get(), &gridSrvDesc, prefixCpu);
+
+			// gridSnapshotHandle[i] points to the count SRV (t1); the shader reads t1 and t2 from this table
+			gridSnapshotHandle[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+				descriptorHeap->GetGPUDescriptorHandleForHeapStart(), countSlots[i], sz);
+		}
+	}
+
+	// Create the single-buffered density+gradient volume texture and its descriptors.
+	// The volume is a VOL_DIM^3 Texture3D<R32G32B32A32_FLOAT> with UAV support.
+	// UAV at DENSITY_VOL_UAV (slot 27): written by densityVolumeCS dispatched from the graphics queue.
+	// SRV at DENSITY_VOL_SRV (slot 28): read by liquidPS in the same frame, immediately after the dispatch.
+	// Both descriptors live in the main shader-visible heap. Home state: COMMON.
 	void InitDensityVolume() {
 		const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -790,45 +870,39 @@ protected:
 			1,                                        // single mip level
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // UAV write by densityVolumeCS
 
-		const wchar_t* names[2] = { L"Density Volume [0]", L"Density Volume [1]" };
-		constexpr UINT uavSlots[2]     = { HeapSlot::DENSITY_VOL_UAV_0, HeapSlot::DENSITY_VOL_UAV_1 };
-		constexpr UINT stagingSlots[2] = { StagingSlot::LIQUID_VOL_SRV_0, StagingSlot::LIQUID_VOL_SRV_1 };
+		DX_API("Failed to create density volume texture")
+			device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr, // COMMON: graphics transitions to UAV before filling
+				IID_PPV_ARGS(densityVolume.ReleaseAndGetAddressOf()));
+		densityVolume->SetName(L"Density Volume");
 
-		for (int i = 0; i < 2; i++) {
-			DX_API("Failed to create density volume texture")
-				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
-					D3D12_RESOURCE_STATE_COMMON, nullptr, // COMMON: compute transitions to UAV before writing
-					IID_PPV_ARGS(densityVolume[i].ReleaseAndGetAddressOf()));
-			densityVolume[i]->SetName(names[i]);
+		// UAV in main heap at slot DENSITY_VOL_UAV: densityVolumeCS writes here (u16)
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+		uavDesc.Texture3D.MipSlice    = 0;
+		uavDesc.Texture3D.FirstWSlice = 0;
+		uavDesc.Texture3D.WSize       = volDim; // all depth slices
+		CD3DX12_CPU_DESCRIPTOR_HANDLE uavCpu(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::DENSITY_VOL_UAV, sz);
+		device->CreateUnorderedAccessView(densityVolume.Get(), nullptr, &uavDesc, uavCpu);
 
-			// UAV in main heap: densityVolumeCS writes here (u16 in the shader's third descriptor table)
-			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-			uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
-			uavDesc.Texture3D.MipSlice    = 0;
-			uavDesc.Texture3D.FirstWSlice = 0;
-			uavDesc.Texture3D.WSize       = volDim; // all depth slices
-			CD3DX12_CPU_DESCRIPTOR_HANDLE uavCpu(
-				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), uavSlots[i], sz);
-			device->CreateUnorderedAccessView(densityVolume[i].Get(), nullptr, &uavDesc, uavCpu);
+		// SRV in main heap at slot DENSITY_VOL_SRV: liquidPS reads here (t0). Set once; no dynamic redirect needed
+		// because fill and draw are sequential on the same queue in the same frame.
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture3D.MostDetailedMip     = 0;
+		srvDesc.Texture3D.MipLevels           = 1;
+		srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE srvCpu(
+			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::DENSITY_VOL_SRV, sz);
+		device->CreateShaderResourceView(densityVolume.Get(), &srvDesc, srvCpu);
 
-			// SRV in the CPU-only staging heap: copied to HeapSlot::LIQUID_DENSITY_SRV each frame
-			// via CopyDescriptorsSimple so liquidPS always reads from the correct read-slot.
-			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-			srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-			srvDesc.Texture3D.MostDetailedMip    = 0;
-			srvDesc.Texture3D.MipLevels          = 1;
-			srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
-			CD3DX12_CPU_DESCRIPTOR_HANDLE srvCpu(
-				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), stagingSlots[i], sz);
-			device->CreateShaderResourceView(densityVolume[i].Get(), &srvDesc, srvCpu);
-
-			// GPU handle cache: used to bind the correct UAV slot before each densityVolumeShader dispatch
-			densityVolumeHandle[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-				descriptorHeap->GetGPUDescriptorHandleForHeapStart(), uavSlots[i], sz);
-		}
+		// GPU handle cache: bound to root param 3 (u16) before each densityVolumeCS dispatch
+		densityVolumeHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::DENSITY_VOL_UAV, sz);
 	}
 
 	// Load the cubemap texture create GPU resources and descriptors.
@@ -926,7 +1000,9 @@ protected:
 		// snapshotDensity and snapshotLod have no data to upload at init, but they must be in SRV
 		// state before the compute queue first runs WriteSnapshot/CalculateLod. Transition them now
 		// from their implicit COMMON creation state into SRV so the home state is consistent.
-		D3D12_RESOURCE_BARRIER toSrv[4] = {
+		// Grid snapshots also have no initial data but must be in NON_PIXEL_SHADER_RESOURCE before
+		// WriteSnapshot first transitions them to COPY_DEST.
+		D3D12_RESOURCE_BARRIER toSrv[8] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[0].Get(),
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotDensity[1].Get(),
@@ -935,8 +1011,16 @@ protected:
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 			CD3DX12_RESOURCE_BARRIER::Transition(snapshotLod[1].Get(),
 				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[0].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[1].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshot[0].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshot[1].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
 		};
-		commandList->ResourceBarrier(4, toSrv);
+		commandList->ResourceBarrier(8, toSrv);
 	}
 
 	// Sets all depth pixels in both depth texture slots to 1.0 (far plane)
@@ -1111,9 +1195,10 @@ protected:
 		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
 		// per-frame CB (root param 0): camera matrices, bbMin/bbMax, threshold
 		material->SetConstantBuffer(perFrameCb);
-		// density volume SRV (root param 1, t0): overwritten each frame to redirect to the active read slot
+		// density volume SRV (root param 1, t0): static slot — fill and draw are sequential on the graphics queue,
+		// so no per-frame redirect is needed. Set once here; the slot always points at the single densityVolume.
 		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-		material->SetSrvHeap(1, descriptorHeap, HeapSlot::LIQUID_DENSITY_SRV * descriptorSize);
+		material->SetSrvHeap(1, descriptorHeap, HeapSlot::DENSITY_VOL_SRV * descriptorSize);
 
 		// same fullscreen quad as the background skybox
 		Egg::Mesh::Geometry::P geometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
@@ -1356,14 +1441,15 @@ protected:
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodBuffer) });
 
-		// Density volume: fills densityVolume[writeIdx] with float4(rho, gradX, gradY, gradZ) per voxel.
-		// Root params: 0=CBV, 1=particleFieldsHandle(u0-u6), 2=gridHandle(u7-u8), 3=densityVolume UAV(u16).
-		// Inputs/outputs are empty: the texture uses explicit COMMON<->UAV state transitions rather than
-		// UAV barriers, so the transitions around the dispatch in RecordComputeCommands are sufficient.
+		// Density volume: fills densityVolume with float4(rho, gradX, gradY, gradZ) per voxel.
+		// Dispatched from the GRAPHICS queue in DrawLiquidSurface(), reading from snapshot buffers.
+		// Root params: 0=CBV, 1=posSnapshotActiveHandle(t0), 2=gridSnapshotActiveHandle(t1..t2), 3=densityVolumeHandle(u16).
+		// posSnapshotActiveHandle and gridSnapshotActiveHandle are set to [readIdx] before each dispatch.
+		// Inputs/outputs are empty: explicit COMMON->UAV and UAV->SRV_ALL transitions bracket the dispatch.
 		densityVolumeShader = ComputeShader::Create(device.Get(), "Shaders/densityVolumeCS.cso", cbv,
-			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle}, {3, &densityVolumeActiveHandle} },
-			vector<P>{},   // no UAV-barrier inputs (grid was already stable when we arrive here)
-			vector<P>{}); // no UAV-barrier outputs (COMMON->UAV->COMMON transitions are used instead)
+			vector<TableBinding>{ {1, &posSnapshotActiveHandle}, {2, &gridSnapshotActiveHandle}, {3, &densityVolumeHandle} },
+			vector<P>{},   // no UAV-barrier inputs (snapshot buffers are SRV-state when we arrive)
+			vector<P>{}); // no UAV-barrier outputs (UAV->SRV_ALL transition acts as synchronization)
 	}
 
 	void PrepareComputeCommandList() {
@@ -1602,34 +1688,7 @@ protected:
 		velocityFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> velocity
 		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups); // position = predictedPosition
 
-		// Density volume: fill densityVolume[writeIdx] with float4(rho, gradX, gradY, gradZ) per voxel.
-		// Dispatched only in liquid shading mode; the grid built during SortParticles() is used.
-		// The positions are the most up-to-date (just written by updatePositionShader).
-		// Explicit COMMON->UAV->COMMON transitions bracket the dispatch; the UAV->COMMON transition
-		// acts as the synchronization point instead of a UAV barrier.
-		if (shadingMode == ShadingMode::LIQUID) {
-			densityVolumeActiveHandle = densityVolumeHandle[writeIdx];
-
-			D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(
-				densityVolume[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-			computeList->ResourceBarrier(1, &toUav);
-
-			// 3D dispatch matching the shader's [numthreads(8, 8, 4)] declaration.
-			// Each axis dimension is ceil(VOL_DIM / threadgroup_size_on_that_axis).
-			// VOL_DIM = 256 -> (32, 32, 64) groups, all well within the 65535 per-axis limit.
-			constexpr UINT gx = (VOL_DIM + 7) / 8;
-			constexpr UINT gy = (VOL_DIM + 7) / 8;
-			constexpr UINT gz = (VOL_DIM + 3) / 4;
-			densityVolumeShader->dispatch3d_then_barrier(computeList.Get(), gx, gy, gz);
-
-			D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
-				densityVolume[writeIdx].Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-			computeList->ResourceBarrier(1, &toCommon);
-		}
-
-		WriteSnapshot(writeIdx); // copy the results to the snapshot buffers that the graphics queue will read from
+		WriteSnapshot(writeIdx); // copy positions, densities, and grid data into snapshot slot [writeIdx] for the graphics queue
 	}
 
 	void WriteSnapshot(int writeIdx) {
@@ -1675,6 +1734,45 @@ protected:
 		};
 		computeList->ResourceBarrier(2, toUav);
 		computeList->ResourceBarrier(2, snapshotToSrv);
+
+		// Copy grid buffers into snapshot slot [writeIdx] so the graphics queue can read them
+		// as SRVs in the next frame's densityVolumeCS dispatch. The cell buffers are in UAV state here
+		// (returned to that state by clearGridCS/countGridCS/prefixSumCS dispatch_then_barrier chains).
+		D3D12_RESOURCE_BARRIER gridToCopySrc[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountBuffer.Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumBuffer.Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+		};
+		D3D12_RESOURCE_BARRIER gridSnapToDest[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshot[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
+		};
+		computeList->ResourceBarrier(2, gridToCopySrc);
+		computeList->ResourceBarrier(2, gridSnapToDest);
+
+		const UINT64 gridBufSize = (UINT64)numCells * sizeof(UINT);
+		computeList->CopyBufferRegion(cellCountSnapshot[writeIdx].Get(), 0,
+			cellCountBuffer.Get(), 0, gridBufSize);
+		computeList->CopyBufferRegion(cellPrefixSumSnapshot[writeIdx].Get(), 0,
+			cellPrefixSumBuffer.Get(), 0, gridBufSize);
+
+		D3D12_RESOURCE_BARRIER gridBackToUav[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountBuffer.Get(),
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumBuffer.Get(),
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+		};
+		D3D12_RESOURCE_BARRIER gridSnapToSrv[2] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshot[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshot[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+		};
+		computeList->ResourceBarrier(2, gridBackToUav);
+		computeList->ResourceBarrier(2, gridSnapToSrv);
 	}
 
 	void CalculateLod(int writeIdx) {
@@ -1778,34 +1876,45 @@ protected:
 		}
 	}
 
-	// Draw the ray-marched liquid surface into the already-open graphics command list.
-	// Reads densityVolume[readIdx] (compute wrote the other slot this frame).
-	// Transitions: COMMON -> PIXEL_SHADER_RESOURCE -> COMMON, matching the depth texture pattern.
+	// Fill the density volume and draw the ray-marched liquid surface, all on the graphics command list.
+	// densityVolumeCS is dispatched here (graphics queue) reading from the previous frame's position and
+	// grid snapshots at [readIdx]. liquidPS then ray-marches through the freshly filled volume in the same frame.
+	// The GPU-wait at the front of the graphics list (graphicsWaitForCompute(N-1)) guarantees that
+	// snapshotPosition[readIdx] and the grid snapshots are fully written by compute before this runs.
 	void DrawLiquidSurface(int readIdx) {
-		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		// Point the active handle members at the correct snapshot slot; TableBindings dereference them at dispatch time.
+		posSnapshotActiveHandle  = posSnapshotGfxHandle[readIdx];
+		gridSnapshotActiveHandle = gridSnapshotHandle[readIdx];
 
-		// Redirect LIQUID_DENSITY_SRV slot to this frame's active read buffer (analogous to
-		// the snapshot CopyDescriptorsSimple calls just above in RecordGraphicsCommands).
-		device->CopyDescriptorsSimple(1,
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::LIQUID_DENSITY_SRV, sz),
-			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::LIQUID_VOL_SRV_0 + readIdx, sz),
-			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		// Transition densityVolume from COMMON to UAV so densityVolumeCS can write it.
+		D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		commandList->ResourceBarrier(1, &toUav);
 
-		// Transition from COMMON to the combined SRV state required by SetGraphicsRootDescriptorTable.
-		// D3D12 validates that descriptor-table-bound SRVs have BOTH NON_PIXEL_SHADER_RESOURCE and
-		// PIXEL_SHADER_RESOURCE bits set (0xC0); transitioning to only PIXEL_SHADER_RESOURCE (0x80)
-		// fails the DATA_STATIC_WHILE_SET_AT_EXECUTE check with error #538.
+		// Dispatch densityVolumeCS on the graphics command list (DIRECT lists support Dispatch()).
+		// 3D dispatch matching [numthreads(8, 8, 4)]: each axis is ceil(VOL_DIM / group_size_on_axis).
+		// VOL_DIM = 256 -> (32, 32, 64) groups, well within the 65535 per-axis limit.
+		constexpr UINT gx = (VOL_DIM + 7) / 8;
+		constexpr UINT gy = (VOL_DIM + 7) / 8;
+		constexpr UINT gz = (VOL_DIM + 3) / 4;
+		densityVolumeShader->dispatch3d_then_barrier(commandList.Get(), gx, gy, gz);
+		// outputs vector is empty, so dispatch3d_then_barrier issues no UAV barriers;
+		// the following Transition to SRV_ALL is the synchronization point.
+
+		// Transition densityVolume UAV -> combined SRV state for liquidPS.
+		// Both NON_PIXEL_SHADER_RESOURCE and PIXEL_SHADER_RESOURCE bits must be set:
+		// D3D12 validates that descriptor-table SRVs carry both flags (#538 error otherwise).
 		constexpr D3D12_RESOURCE_STATES SRV_ALL =
 			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 		D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-			densityVolume[readIdx].Get(), D3D12_RESOURCE_STATE_COMMON, SRV_ALL);
+			densityVolume.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, SRV_ALL);
 		commandList->ResourceBarrier(1, &toSrv);
 
 		liquidMesh->Draw(commandList.Get()); // ray-march through the density volume, write SV_Depth
 
-		// Transition back to COMMON so compute can write to it again next frame.
+		// Return densityVolume to COMMON home state.
 		D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
-			densityVolume[readIdx].Get(), SRV_ALL, D3D12_RESOURCE_STATE_COMMON);
+			densityVolume.Get(), SRV_ALL, D3D12_RESOURCE_STATE_COMMON);
 		commandList->ResourceBarrier(1, &toCommon);
 	}
 
@@ -2095,6 +2204,7 @@ public:
 		InitLodBuffers();
 		InitReadbackBuffers();
 		InitSnapshotBuffers();
+		InitGridSnapshotBuffers();
 		InitDensityVolume();
 		InitBackground();
 		InitObstacle();
