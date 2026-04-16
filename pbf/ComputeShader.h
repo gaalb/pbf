@@ -82,6 +82,17 @@ public:
             cmd->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(r->Get()));
     }
 
+    // 3D variant of dispatch_then_barrier. Use when a 1D dispatch would exceed the
+    // D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION (65535) limit on a single axis.
+    // The caller is responsible for choosing (gx, gy, gz) such that each dimension fits.
+    void dispatch3d_then_barrier(ID3D12GraphicsCommandList* cmd, UINT gx, UINT gy, UINT gz)
+    {
+        setup(cmd);
+        cmd->Dispatch(gx, gy, gz);
+        for (auto* r : outputs)
+            cmd->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(r->Get()));
+    }
+
     // Inserts a UAV barrier on every input resource, then dispatches the shader.
     // Use this pattern (future "wait-calculate" ordering) to ensure prior writes
     // to inputs are complete before this shader reads them.

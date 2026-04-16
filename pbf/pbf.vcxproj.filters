@@ -244,6 +244,15 @@
     <FxCompile Include="GSM_confinementViscosityCS.hlsl">
       <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
     </FxCompile>
+    <FxCompile Include="densityVolumeCS.hlsl">
+      <Filter>Shaders\Compute</Filter>
+    </FxCompile>
+    <FxCompile Include="liquidPS.hlsl">
+      <Filter>Shaders\Pixel</Filter>
+    </FxCompile>
+    <FxCompile Include="liquidVS.hlsl">
+      <Filter>Shaders\Vertex</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">

@@ -17,6 +17,7 @@ namespace ShadingMode {
 	constexpr UINT UNICOLOR = 0; // flat blue base color
 	constexpr UINT DENSITY  = 1; // blue->green->red by density relative to rho0 (default)
 	constexpr UINT LOD      = 2; // blue->orange by LOD value (minLOD..maxLOD)
+	constexpr UINT LIQUID   = 3; // ray-marched liquid surface with Blinn-Phong shading
 }
 
 // per-frame data sent to shaders every frame - camera matrices etc.
@@ -30,8 +31,10 @@ __declspec(align(16)) struct PerFrameCb {
 	UINT shadingMode; // offset 176: which shading branch to use (ShadingMode::*)
 	UINT minLOD;      // offset 180: minimum LOD value (for LOD color normalization)
 	UINT maxLOD;      // offset 184: maximum LOD value (for LOD color normalization)
-	float _pad;       // offset 188: padding to reach 192 bytes (next 16-byte boundary)
-	// total: 192 bytes
+	float _pad;       // offset 188: padding to 192-byte boundary
+	Float4 bbMin;     // offset 192: xyz = adjustable boxMin, w = liquid density iso-surface threshold
+	Float4 bbMax;     // offset 208: xyz = adjustable boxMax, w = unused
+	// total: 224 bytes
 };
 
 // per-draw data for the solid obstacle rendering shader

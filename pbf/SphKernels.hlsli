@@ -67,4 +67,17 @@ float3 SpikyGrad(float3 r, float r2)
     return -SPIKY_GRAD_COEFF * diff * diff * rHat;
 }
 
+// Gradient of the Poly6 kernel with respect to r = (pos - pos_j):
+// The gradient was computed here:
+// https://courses.grainger.illinois.edu/CS418/sp2023/text/sph.html
+// grad_W_poly6(r) = -6 * POLY6_COEFF * (H^2 - |r|^2)^2 * r
+// Used by densityVolumeCS to compute the density gradient field for surface normals.
+float3 Poly6Grad(float3 r, float r2)
+{
+    if (r2 > H * H || r2 < EPSILON * EPSILON)
+        return float3(0.0, 0.0, 0.0);
+    float diff = H * H - r2;
+    return -6.0 * POLY6_COEFF * diff * diff * r;
+}
+
 #endif // SPH_KERNELS_HLSLI

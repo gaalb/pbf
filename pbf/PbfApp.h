@@ -100,7 +100,7 @@ protected:
 	Float3 boxMax = Float3(17.0f, 20.0f, 17.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
-	int solverIterations = 5; // how many newton steps to take per frame
+	int solverIterations = 6; // how many newton steps to take per frame
 	int minLOD = 2;  // minimum solver iterations for the farthest particles
 	float epsilon = 4.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
 	float viscosity = 0.01f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
@@ -238,7 +238,17 @@ protected:
 	ComputeShader::P dtvsReductionShader; // accumulate max DTVS into lodReduction[0]
 	ComputeShader::P dtvsLodShader; // assign per-particle LOD from DTVS / maxDTVS
 
-	int shadingMode = SHADING_DENSITY; // current particle shading mode, driven by ImGui
+	// Liquid surface rendering: double-buffered Texture3D density+gradient volume.
+	// Compute writes densityVolume[snapshotWriteIdx]; graphics reads densityVolume[1-snapshotWriteIdx].
+	// Same writeIdx/readIdx convention as snapshot buffers. Home state: COMMON.
+	com_ptr<ID3D12Resource> densityVolume[2]; // VOL_DIM^3, R32G32B32A32_FLOAT, float4(rho, gradX, gradY, gradZ)
+	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle[2]; // GPU handles for the two UAV descriptors
+	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeActiveHandle; // set to densityVolumeHandle[writeIdx] before each dispatch
+	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid data
+	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
+	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
+
+	int shadingMode = SHADING_LIQUID; // current particle shading mode, driven by ImGui
 
 	// Create the two window-resolution depth textures and their 2-slot DSV heap.
 	// Called from CreateSwapChainResources (and again on resize). Both textures start in COMMON state.
@@ -764,6 +774,63 @@ protected:
 		}
 	}
 
+	// Create the double-buffered density+gradient volume textures and their descriptors.
+	// Each is a VOL_DIM^3 Texture3D<R32G32B32A32_FLOAT> with UAV support.
+	// UAVs are placed in the main heap (compute writes); SRVs in the staging heap (graphics reads
+	// via CopyDescriptorsSimple, same pattern as snapshot buffers). Home state: COMMON.
+	void InitDensityVolume() {
+		const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		const UINT volDim = (UINT)VOL_DIM;
+
+		D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex3D(
+			DXGI_FORMAT_R32G32B32A32_FLOAT,          // one float4 per voxel: (rho, gradX, gradY, gradZ)
+			volDim, volDim, volDim,                   // VOL_DIM on each axis
+			1,                                        // single mip level
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // UAV write by densityVolumeCS
+
+		const wchar_t* names[2] = { L"Density Volume [0]", L"Density Volume [1]" };
+		constexpr UINT uavSlots[2]     = { HeapSlot::DENSITY_VOL_UAV_0, HeapSlot::DENSITY_VOL_UAV_1 };
+		constexpr UINT stagingSlots[2] = { StagingSlot::LIQUID_VOL_SRV_0, StagingSlot::LIQUID_VOL_SRV_1 };
+
+		for (int i = 0; i < 2; i++) {
+			DX_API("Failed to create density volume texture")
+				device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
+					D3D12_RESOURCE_STATE_COMMON, nullptr, // COMMON: compute transitions to UAV before writing
+					IID_PPV_ARGS(densityVolume[i].ReleaseAndGetAddressOf()));
+			densityVolume[i]->SetName(names[i]);
+
+			// UAV in main heap: densityVolumeCS writes here (u16 in the shader's third descriptor table)
+			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+			uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+			uavDesc.Texture3D.MipSlice    = 0;
+			uavDesc.Texture3D.FirstWSlice = 0;
+			uavDesc.Texture3D.WSize       = volDim; // all depth slices
+			CD3DX12_CPU_DESCRIPTOR_HANDLE uavCpu(
+				descriptorHeap->GetCPUDescriptorHandleForHeapStart(), uavSlots[i], sz);
+			device->CreateUnorderedAccessView(densityVolume[i].Get(), nullptr, &uavDesc, uavCpu);
+
+			// SRV in the CPU-only staging heap: copied to HeapSlot::LIQUID_DENSITY_SRV each frame
+			// via CopyDescriptorsSimple so liquidPS always reads from the correct read-slot.
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+			srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDesc.Texture3D.MostDetailedMip    = 0;
+			srvDesc.Texture3D.MipLevels          = 1;
+			srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
+			CD3DX12_CPU_DESCRIPTOR_HANDLE srvCpu(
+				snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), stagingSlots[i], sz);
+			device->CreateShaderResourceView(densityVolume[i].Get(), &srvDesc, srvCpu);
+
+			// GPU handle cache: used to bind the correct UAV slot before each densityVolumeShader dispatch
+			densityVolumeHandle[i] = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+				descriptorHeap->GetGPUDescriptorHandleForHeapStart(), uavSlots[i], sz);
+		}
+	}
+
 	// Load the cubemap texture create GPU resources and descriptors.
 	// No GPU commands are recorded here — uploads happen later in UploadAll().
 	void InitBackground() {
@@ -899,21 +966,32 @@ protected:
 
 	// Sets frameCount = 1 and signals computeFence to 1 so the
 	// graphics queue's GPU-side wait is immediately satisfied on the first frame.
+	//
+	// Only computeFence is pre-seeded here. graphicsFence is intentionally NOT pre-seeded:
+	// Render() signals graphicsFence to (frameCount - 1) at the end of every frame.
+	// On the first Render() call frameCount becomes 2, so the signal targets value 1.
+	// If WaitFirstFrame also signaled graphicsFence to 1, the second signal (to the same
+	// value) would be rejected by D3D12 (signal value must strictly increase), causing
+	// cpuWaitForGraphics(1) to return immediately without waiting for the GPU to finish
+	// frame 2's command list. The frame-3 allocator reset and CopyDescriptorsSimple calls
+	// would then race against the still-executing frame-2 graphics work, producing:
+	//   COMMAND_ALLOCATOR_SYNC (#552) -- allocator reset before GPU finishes
+	//   STATIC_DESCRIPTOR_INVALID_DESCRIPTOR_CHANGE (#1001) -- descriptor modified while bound
 	void WaitFirstFrame() {
 		frameCount = 1;
 		computeFence.signal(commandQueue, frameCount); // when reached, we're done calculating frame 1
 		cpuWaitForCompute(frameCount);
-		graphicsFence.signal(commandQueue, frameCount); // when reached, we're done rendering frame 1		
-		cpuWaitForGraphics(frameCount);
+		// graphicsFence deliberately NOT pre-seeded here (see comment above).
 
-		lastFrame = clock::now(); 
+		lastFrame = clock::now();
 	}
 
-	// Build all graphics rendering pipelines (background, particles, DTVS depth-only, solid transform).
+	// Build all graphics rendering pipelines (background, particles, DTVS depth-only, liquid, solid transform).
 	void BuildGraphicsPipelines() {
 		BuildBackgroundPipeline();
 		BuildParticlePipeline();
 		BuildParticleDepthOnlyPipeline();
+		BuildLiquidPipeline();
 		SetSolidTransform();
 	}
 
@@ -1013,6 +1091,34 @@ protected:
 
 		DX_API("Failed to create particle depth-only PSO")
 			device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(depthOnlyPso.ReleaseAndGetAddressOf()));
+	}
+
+	// Build the liquid surface rendering pipeline (liquidVS + liquidPS, fullscreen quad).
+	// The PS ray-marches through the density volume (t0 = densityVol SRV) and writes SV_Depth
+	// for correct depth-buffer occlusion against the solid obstacle.
+	void BuildLiquidPipeline() {
+		com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/liquidVS.cso");
+		com_ptr<ID3DBlob> pixelShader  = Egg::Shader::LoadCso("Shaders/liquidPS.cso");
+		// extract the root signature from the vertex shader blob (same LiquidRootSig as in PS)
+		com_ptr<ID3D12RootSignature> rootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
+
+		Egg::Mesh::Material::P material = Egg::Mesh::Material::Create();
+		material->SetRootSignature(rootSig);
+		material->SetVertexShader(vertexShader);
+		material->SetPixelShader(pixelShader);
+		// depth test + write: liquid SV_Depth correctly occludes / is occluded by the solid obstacle
+		material->SetDepthStencilState(CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT));
+		material->SetDSVFormat(DXGI_FORMAT_D32_FLOAT);
+		// per-frame CB (root param 0): camera matrices, bbMin/bbMax, threshold
+		material->SetConstantBuffer(perFrameCb);
+		// density volume SRV (root param 1, t0): overwritten each frame to redirect to the active read slot
+		UINT descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+		material->SetSrvHeap(1, descriptorHeap, HeapSlot::LIQUID_DENSITY_SRV * descriptorSize);
+
+		// same fullscreen quad as the background skybox
+		Egg::Mesh::Geometry::P geometry = Egg::Mesh::Prefabs::FullScreenQuad(device.Get());
+
+		liquidMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
 	}
 
 	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
@@ -1249,6 +1355,15 @@ protected:
 			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &lodHandle}, {3, &lodReductionHandle}, {4, &particleDepthActiveHandle} },
 			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(lodReductionBuffer) },
 			vector<P>{ std::addressof(lodBuffer) });
+
+		// Density volume: fills densityVolume[writeIdx] with float4(rho, gradX, gradY, gradZ) per voxel.
+		// Root params: 0=CBV, 1=particleFieldsHandle(u0-u6), 2=gridHandle(u7-u8), 3=densityVolume UAV(u16).
+		// Inputs/outputs are empty: the texture uses explicit COMMON<->UAV state transitions rather than
+		// UAV barriers, so the transitions around the dispatch in RecordComputeCommands are sufficient.
+		densityVolumeShader = ComputeShader::Create(device.Get(), "Shaders/densityVolumeCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle}, {3, &densityVolumeActiveHandle} },
+			vector<P>{},   // no UAV-barrier inputs (grid was already stable when we arrive here)
+			vector<P>{}); // no UAV-barrier outputs (COMMON->UAV->COMMON transitions are used instead)
 	}
 
 	void PrepareComputeCommandList() {
@@ -1487,6 +1602,33 @@ protected:
 		velocityFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> velocity
 		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups); // position = predictedPosition
 
+		// Density volume: fill densityVolume[writeIdx] with float4(rho, gradX, gradY, gradZ) per voxel.
+		// Dispatched only in liquid shading mode; the grid built during SortParticles() is used.
+		// The positions are the most up-to-date (just written by updatePositionShader).
+		// Explicit COMMON->UAV->COMMON transitions bracket the dispatch; the UAV->COMMON transition
+		// acts as the synchronization point instead of a UAV barrier.
+		if (shadingMode == ShadingMode::LIQUID) {
+			densityVolumeActiveHandle = densityVolumeHandle[writeIdx];
+
+			D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(
+				densityVolume[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+			computeList->ResourceBarrier(1, &toUav);
+
+			// 3D dispatch matching the shader's [numthreads(8, 8, 4)] declaration.
+			// Each axis dimension is ceil(VOL_DIM / threadgroup_size_on_that_axis).
+			// VOL_DIM = 256 -> (32, 32, 64) groups, all well within the 65535 per-axis limit.
+			constexpr UINT gx = (VOL_DIM + 7) / 8;
+			constexpr UINT gy = (VOL_DIM + 7) / 8;
+			constexpr UINT gz = (VOL_DIM + 3) / 4;
+			densityVolumeShader->dispatch3d_then_barrier(computeList.Get(), gx, gy, gz);
+
+			D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+				densityVolume[writeIdx].Get(),
+				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+			computeList->ResourceBarrier(1, &toCommon);
+		}
+
 		WriteSnapshot(writeIdx); // copy the results to the snapshot buffers that the graphics queue will read from
 	}
 
@@ -1625,9 +1767,46 @@ protected:
 		// Snapshot buffers live in SRV state — no transition needed before the draw.
 		// DTVS depth-only pass: render billboard particles into particleDepthTexture[readIdx]
 		// (the slot compute is NOT reading this frame) so compute can sample it next frame.
+		// Run regardless of shading mode: the DTVS LOD calculation in the compute queue still needs it.
 		if (lodMode == LodMode::DTVS) DrawParticleDepth(readIdx);
 
-		particleMesh->Draw(commandList.Get()); // draw particles on top
+		// In liquid mode, the ray-marched surface replaces the individual particle billboards.
+		if (shadingMode == ShadingMode::LIQUID) {
+			DrawLiquidSurface(readIdx);
+		} else {
+			particleMesh->Draw(commandList.Get()); // draw particle billboards
+		}
+	}
+
+	// Draw the ray-marched liquid surface into the already-open graphics command list.
+	// Reads densityVolume[readIdx] (compute wrote the other slot this frame).
+	// Transitions: COMMON -> PIXEL_SHADER_RESOURCE -> COMMON, matching the depth texture pattern.
+	void DrawLiquidSurface(int readIdx) {
+		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// Redirect LIQUID_DENSITY_SRV slot to this frame's active read buffer (analogous to
+		// the snapshot CopyDescriptorsSimple calls just above in RecordGraphicsCommands).
+		device->CopyDescriptorsSimple(1,
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::LIQUID_DENSITY_SRV, sz),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::LIQUID_VOL_SRV_0 + readIdx, sz),
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+		// Transition from COMMON to the combined SRV state required by SetGraphicsRootDescriptorTable.
+		// D3D12 validates that descriptor-table-bound SRVs have BOTH NON_PIXEL_SHADER_RESOURCE and
+		// PIXEL_SHADER_RESOURCE bits set (0xC0); transitioning to only PIXEL_SHADER_RESOURCE (0x80)
+		// fails the DATA_STATIC_WHILE_SET_AT_EXECUTE check with error #538.
+		constexpr D3D12_RESOURCE_STATES SRV_ALL =
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume[readIdx].Get(), D3D12_RESOURCE_STATE_COMMON, SRV_ALL);
+		commandList->ResourceBarrier(1, &toSrv);
+
+		liquidMesh->Draw(commandList.Get()); // ray-march through the density volume, write SV_Depth
+
+		// Transition back to COMMON so compute can write to it again next frame.
+		D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume[readIdx].Get(), SRV_ALL, D3D12_RESOURCE_STATE_COMMON);
+		commandList->ResourceBarrier(1, &toCommon);
 	}
 
 	// Record the DTVS depth-only particle draw into the already-open graphics command list.
@@ -1697,8 +1876,10 @@ protected:
 		//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 
 		// Shading mode combo. The order of items must match the ShadingMode:: constants.
-		static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD" };
+		static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD", "Liquid" };
 		ImGui::Combo("Shading", &shadingMode, shadingModeItems, IM_ARRAYSIZE(shadingModeItems));
+		if (shadingMode == ShadingMode::LIQUID)
+			ImGui::InputFloat("Liquid iso threshold", &liquidIsoThreshold, 1.0f, 10.0f, "%.1f");
 		static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
 		int lodModeInt = (int)lodMode;
 		if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
@@ -1778,6 +1959,10 @@ protected:
 		perFrameCb->shadingMode = (UINT)shadingMode;
 		perFrameCb->minLOD = (UINT)minLOD;
 		perFrameCb->maxLOD = (UINT)solverIterations;
+		// bbMin.xyz = adjustable collision box min; bbMin.w = liquid density iso-surface threshold.
+		// bbMax.xyz = collision box max; bbMax.w unused.
+		perFrameCb->bbMin = Float4(boxMin, liquidIsoThreshold);
+		perFrameCb->bbMax = Float4(boxMax, 0.0f);
 		perFrameCb.Upload(); // memcpy the data to the GPU-visible constant buffer
 	}
 
@@ -1910,6 +2095,7 @@ public:
 		InitLodBuffers();
 		InitReadbackBuffers();
 		InitSnapshotBuffers();
+		InitDensityVolume();
 		InitBackground();
 		InitObstacle();
 		// depth textures already exist (InitParticleDepthTextures was called from CreateSwapChainResources);

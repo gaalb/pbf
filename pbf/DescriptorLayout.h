@@ -17,6 +17,9 @@
 // slot 24     LOD_REDUCTION_UAV (APBF)            – DTC min/max reduction scratch (2 uints)
 // slot 25     PARTICLE_DEPTH_SRV   (DTVS)          – R32_FLOAT SRV of particleDepthTexture[0]
 // slot 26     PARTICLE_DEPTH_SRV_1 (DTVS)          – R32_FLOAT SRV of particleDepthTexture[1]
+// slot 27     DENSITY_VOL_UAV_0 (liquid)           – UAV for densityVolume[0] (written by densityVolumeCS)
+// slot 28     DENSITY_VOL_UAV_1 (liquid)           – UAV for densityVolume[1]
+// slot 29     LIQUID_DENSITY_SRV (liquid)          – t0 in liquidPS (overwritten each frame)
 //
 // Snapshot staging heap (CPU-only, StagingSlot::TOTAL descriptors)
 // slot  0     SNAPSHOT_POS_0    snapshotPosition[0] SRV
@@ -25,6 +28,8 @@
 // slot  3     SNAPSHOT_DEN_1    snapshotDensity[1]  SRV
 // slot  4     SNAPSHOT_LOD_0    snapshotLod[0]      SRV
 // slot  5     SNAPSHOT_LOD_1    snapshotLod[1]      SRV
+// slot  6     LIQUID_VOL_SRV_0  densityVolume[0]    SRV
+// slot  7     LIQUID_VOL_SRV_1  densityVolume[1]    SRV
 
 
 namespace HeapSlot {
@@ -69,8 +74,17 @@ namespace HeapSlot {
     constexpr UINT PARTICLE_DEPTH_SRV_0 = 25; // slot for particleDepthTexture[0]
     constexpr UINT PARTICLE_DEPTH_SRV_1 = 26; // slot for particleDepthTexture[1]
 
+    // Liquid surface density+gradient volume: double-buffered Texture3D<float4> UAVs.
+    // Compute writes densityVolume[writeIdx] while graphics reads densityVolume[readIdx=1-writeIdx].
+    constexpr UINT DENSITY_VOL_UAV_0  = 27; // UAV for densityVolume[0] (u16 in densityVolumeCS)
+    constexpr UINT DENSITY_VOL_UAV_1  = 28; // UAV for densityVolume[1]
+
+    // Liquid density SRV: single slot overwritten each frame via CopyDescriptorsSimple to point
+    // at the active read slot (t0 in liquidPS). Same pattern as PARTICLE_POS/DEN/LOD_SRV.
+    constexpr UINT LIQUID_DENSITY_SRV = 29;
+
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL              = 27;
+    constexpr UINT TOTAL              = 30;
 
 } // namespace HeapSlot
 
@@ -88,7 +102,12 @@ namespace StagingSlot {
     constexpr UINT SNAPSHOT_LOD_0     =  4;
     constexpr UINT SNAPSHOT_LOD_1     =  5;
 
+    // Liquid density volume SRVs indexed by double-buffer index (0 or 1).
+    // Copied to HeapSlot::LIQUID_DENSITY_SRV each frame via CopyDescriptorsSimple.
+    constexpr UINT LIQUID_VOL_SRV_0   =  6; // SRV for densityVolume[0]
+    constexpr UINT LIQUID_VOL_SRV_1   =  7; // SRV for densityVolume[1]
+
     // Total size of the CPU-only snapshot staging heap
-    constexpr UINT TOTAL              =  6;
+    constexpr UINT TOTAL              =  8;
 
 } // namespace StagingSlot

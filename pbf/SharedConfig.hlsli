@@ -7,7 +7,7 @@
 // and removes them from the constant buffer entirely.
 
 #define PARTICLE_SPACING  0.25f
-#define H_MULTIPLIER      3.0f
+#define H_MULTIPLIER      2.5f
 #define H                 (PARTICLE_SPACING * H_MULTIPLIER)   // SPH smoothing radius
 
 // Rest density: if particles are spaced PARTICLE_SPACING apart, each occupies
@@ -39,3 +39,7 @@
 #define SHADING_UNICOLOR 0
 #define SHADING_DENSITY  1
 #define SHADING_LOD      2
+#define SHADING_LIQUID   3
+
+// Density volume resolution: VOL_DIM voxels per axis.
+#define VOL_DIM (GRID_DIM * 4)
