@@ -1,47 +1,48 @@
-// For each particle i, compute a position correction:
-// delta_p_i = (1/rho0) * sum_{j != i}( (lambda_i + lambda_j) * grad_W_spiky(r_ij, h) )
+// Two-phase broadcast-GSM variant of deltaCS.
+// Applies the same broadcast pattern as GSM_confinementViscosityCS:
 //
-// Apply the correction to the predicted position:
-// p*_i += delta_p_i
+// Phase 1 — GSM broadcast sweep:
+//   All threads read gs_predPos[k] and gs_lambda[k] at the same k each step → broadcast.
+//   Self (k == localIdx) is skipped. OOB slots get float3(1e10) so r2 >> H*H and
+//   SpikyGrad returns 0; overlap-jitter is not triggered because r2 >> EPSILON^2.
 //
-// To avoid a Gauss-Seidel race (thread i reading predictedPosition[j] while thread j
-// overwrites it in the same dispatch), this shader writes its result to the scratch field
-// scratch. A separate positionFromScratchCS pass then copies the scratch field back to
-// predictedPosition before the next solver iteration, ensuring all threads in the next
-// iteration see a consistent snapshot.
+// Phase 2 — residual VRAM pass:
+//   Full 27-cell traversal, skipping j in [groupStart, groupStart+THREAD_GROUP_SIZE).
+//   i lies in that range, so j==i is implicitly excluded.
 //
-// In: predictedPosition, lambda, cellCount, cellPrefixSum
-// Out: scratch (new predicted position)
+// In: predictedPosition, lambda, cellCount, cellPrefixSum, lod
+// Out: scratch (new predicted position, Jacobi)
 
 #define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
-#include "SphKernels.hlsli" // SpikyGrad, Poly6
-#include "GridUtils.hlsli" // posToCell(), cellIndex()
+#include "SphKernels.hlsli"
+#include "GridUtils.hlsli"
 
 RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<float> lambda : register(u3);
-RWStructuredBuffer<float3> scratch : register(u6);
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-RWStructuredBuffer<uint> lod : register(u9);
+RWStructuredBuffer<float>  lambda            : register(u3);
+RWStructuredBuffer<float3> scratch           : register(u6);
+RWStructuredBuffer<uint>   cellCount         : register(u7);
+RWStructuredBuffer<uint>   cellPrefixSum     : register(u8);
+RWStructuredBuffer<uint>   lod               : register(u9);
 
 groupshared float3 gs_predPos[THREAD_GROUP_SIZE];
-groupshared float gs_lambda[THREAD_GROUP_SIZE];
+groupshared float  gs_lambda[THREAD_GROUP_SIZE];
 
 [RootSignature(DeltaRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(
-uint3 dispatchID : SV_DispatchThreadID, // unique ID for the thread
-uint localIdx : SV_GroupIndex, // unique ID for the thread within the group
-uint3 groupID : SV_GroupID) // unique ID for the thread group
+    uint3 dispatchID : SV_DispatchThreadID,
+    uint  localIdx   : SV_GroupIndex,
+    uint3 groupID    : SV_GroupID)
 {
-    uint i = dispatchID.x;
-    uint groupStart = groupID.x * THREAD_GROUP_SIZE; // global particle index where this group beginx
+    uint i          = dispatchID.x;
+    uint groupStart = groupID.x * THREAD_GROUP_SIZE;
 
-    gs_predPos[localIdx] = (i < numParticles) ? predictedPosition[i] : (float3) 0;
-    gs_lambda[localIdx] = (i < numParticles) ? lambda[i] : 0.0;
+    // OOB slots get a sentinel position so Phase 1 produces r2 >> H*H -> SpikyGrad = 0.
+    gs_predPos[localIdx] = (i < numParticles) ? predictedPosition[i] : float3(1e10f, 1e10f, 1e10f);
+    gs_lambda[localIdx]  = (i < numParticles) ? lambda[i]            : 0.0;
     GroupMemoryBarrierWithGroupSync();
 
     if (i >= numParticles)
@@ -49,70 +50,66 @@ uint3 groupID : SV_GroupID) // unique ID for the thread group
     if (lod[i] == 0)
         return;
 
-    // cache to avoid repeated UAV reads
-    float3 pi = gs_predPos[localIdx];
-    float lambdaI = gs_lambda[localIdx];
+    float3 pi      = gs_predPos[localIdx];
+    float  lambdaI = gs_lambda[localIdx];
 
-    // Precompute the s_corr denominator, same for every (i,j) pair.
-    // Poly6 only uses the squared magnitude so the direction does not matter.
-    float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q*SCORR_DELTA_Q);
-
+    float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q * SCORR_DELTA_Q);
     float3 deltaP = float3(0, 0, 0);
 
+    // ---- Phase 1: broadcast sweep over GSM ----
+    for (uint k = 0; k < THREAD_GROUP_SIZE; k++)
+    {
+        if (k == localIdx) // skip self
+            continue;
+
+        float3 pj      = gs_predPos[k]; // broadcast
+        float3 r       = pi - pj;
+        float  r2      = dot(r, r);
+
+        // Overlapping particles: nudge apart. j = groupStart + k for the global index.
+        if (r2 < EPSILON * EPSILON)
+        {
+            deltaP += overlapJitter(i, groupStart + k) * (H * 0.001);
+            continue;
+        }
+
+        float  lambdaJ = gs_lambda[k]; // broadcast
+        float  wRatio  = Poly6(r, r2) / poly6AtDeltaQ;
+        float  sCorr   = -sCorrK * pow(wRatio, SCORR_N);
+        deltaP += (lambdaI + lambdaJ + sCorr) * SpikyGrad(r, r2);
+    }
+
+    // ---- Phase 2: residual VRAM pass ----
     NeighborCells nCells = NeighborCellIndices(pi);
     for (uint c = 0; c < nCells.count; c++)
     {
-        uint ci = nCells.indices[c];
+        uint ci    = nCells.indices[c];
         uint count = cellCount[ci];
-        uint prefixSum = cellPrefixSum[ci];
 
         for (uint s = 0; s < count; s++)
         {
-            uint j = prefixSum + s;
-            if (j == i)
-                continue;
+            uint j = cellPrefixSum[ci] + s;
 
-            // r_ij points from neighbor j toward particle i
-            bool inGSM = j >= groupStart && j < groupStart + THREAD_GROUP_SIZE;
-            float3 pj = inGSM ? gs_predPos[j - groupStart] : predictedPosition[j];
-            float3 r = pi - pj;
-            
-            float r2 = dot(r, r);
+            if (j >= groupStart && j < groupStart + THREAD_GROUP_SIZE)
+                continue; // handled in Phase 1
 
-            // Overlapping particles (r ~ 0): SpikyGrad returns zero so they'd
-            // be stuck forever. Skip the normal sCorr + SpikyGrad computation
-            // (which would blow up due to Poly6(0)/Poly6(deltaQ) in sCorr) and
-            // instead add a small direct repulsive nudge in a pseudo-random
-            // direction. On subsequent solver iterations, even a tiny separation
-            // lets the normal gradient take over.
-             if (r2 < EPSILON*EPSILON) {
+            float3 pj = predictedPosition[j];
+            float3 r  = pi - pj;
+            float  r2 = dot(r, r);
+
+            if (r2 < EPSILON * EPSILON)
+            {
                 deltaP += overlapJitter(i, j) * (H * 0.001);
                 continue;
-             }
+            }
 
-            // Eq. 13: artificial pressure term s_corr to suppress tensile instability.
-            // When lambda > 0 (sparse region), the standard Eq. 12 correction becomes attractive,
-            // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
-            // that counteracts this without disturbing the bulk behavior.
-            // s_corr = -k * (W(r, h) / W(delta_q, h))^n
-            float wRatio = Poly6(r, r2) / poly6AtDeltaQ;
-            float sCorr = -sCorrK * pow(wRatio, SCORR_N); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
-
-            // Eq. 12 + 13: position correction with artificial pressure included..
-            // SpikyGrad with r = p_i - p_j points from i toward j.
-            // A negative coefficient times that direction pushes i away from j -- repulsive.
-            // So sCorr is a repulsive contribution. The "surface tension-like effect" is because
-            // sCorr keeps the bulk density slightly below rho0, so even bulk particles
-            // end up with a weakly positive lambda (attractive). At the surface, where
-            // particle counts are low and density is even lower, this mild attraction
-            // creates a coherent surface instead of the violent clumping (tensile instability)
-            // that occurs without s_corr. Raising sCorrK increases this surface cohesion.
-            float lambdaJ = inGSM ? gs_lambda[j - groupStart] : lambda[j];
+            float  wRatio  = Poly6(r, r2) / poly6AtDeltaQ;
+            float  sCorr   = -sCorrK * pow(wRatio, SCORR_N);
+            float  lambdaJ = lambda[j];
             deltaP += (lambdaI + lambdaJ + sCorr) * SpikyGrad(r, r2);
         }
     }
-    deltaP /= RHO0;
 
-    // Update the predicted position (collision response is handled by collisionCS)
+    deltaP /= RHO0;
     scratch[i] = pi + deltaP;
 }

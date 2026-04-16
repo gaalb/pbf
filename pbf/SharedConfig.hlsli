@@ -7,7 +7,7 @@
 // and removes them from the constant buffer entirely.
 
 #define PARTICLE_SPACING  0.25f
-#define H_MULTIPLIER      2.5f
+#define H_MULTIPLIER      2.7f
 #define H                 (PARTICLE_SPACING * H_MULTIPLIER)   // SPH smoothing radius
 
 // Rest density: if particles are spaced PARTICLE_SPACING apart, each occupies

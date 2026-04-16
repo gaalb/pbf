@@ -58,9 +58,6 @@
     <Filter Include="Shaders\Compute\delta\unused">
       <UniqueIdentifier>{9debaac5-d9cc-4747-9dc4-08f9350eb563}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Shaders\Compute\lambda\unused">
-      <UniqueIdentifier>{4093c901-108a-4683-9c28-d3da6891b17f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Shaders\Compute\prediction\unused">
       <UniqueIdentifier>{451d982b-d922-42f1-b2be-4fe55052cc97}</UniqueIdentifier>
     </Filter>
@@ -220,12 +217,6 @@
     <FxCompile Include="GSM_CC_deltaCS.hlsl">
       <Filter>Shaders\Compute\delta\unused</Filter>
     </FxCompile>
-    <FxCompile Include="GSM_deltaCS.hlsl">
-      <Filter>Shaders\Compute\delta\unused</Filter>
-    </FxCompile>
-    <FxCompile Include="GSM_lambdaCS.hlsl">
-      <Filter>Shaders\Compute\lambda\unused</Filter>
-    </FxCompile>
     <FxCompile Include="predictPositionCS.hlsl">
       <Filter>Shaders\Compute\prediction\unused</Filter>
     </FxCompile>
@@ -241,9 +232,6 @@
     <FxCompile Include="viscosityCS.hlsl">
       <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
     </FxCompile>
-    <FxCompile Include="GSM_confinementViscosityCS.hlsl">
-      <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
-    </FxCompile>
     <FxCompile Include="densityVolumeCS.hlsl">
       <Filter>Shaders\Compute</Filter>
     </FxCompile>
@@ -252,6 +240,18 @@
     </FxCompile>
     <FxCompile Include="liquidVS.hlsl">
       <Filter>Shaders\Vertex</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_deltaCS.hlsl">
+      <Filter>Shaders\Compute\delta</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_lambdaCS.hlsl">
+      <Filter>Shaders\Compute\lambda</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_confinementViscosityCS.hlsl">
+      <Filter>Shaders\Compute\vorticity, viscosity</Filter>
+    </FxCompile>
+    <FxCompile Include="GSM_vorticity.hlsl">
+      <Filter>Shaders\Compute\vorticity, viscosity</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

@@ -131,7 +131,7 @@ using namespace Egg::Math;
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 70, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation	
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -159,8 +159,8 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = Float3(-17.0f, -13.0f, -17.0f); // adjustable collision boundary
-	Float3 boxMax = Float3(17.0f, 20.0f, 17.0f); // adjustable collision boundary
+	Float3 boxMin = gridMin; // adjustable collision boundary
+	Float3 boxMax = gridMax; // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 6; // how many newton steps to take per frame
@@ -233,6 +233,11 @@ protected:
 	ComputeShader::P updateVelocityShader;// update velocity from displacement: v = (p* - x) / dt
 	ComputeShader::P vorticityShader; // estimate per-particle vorticity (curl of velocity), store in omega
 	ComputeShader::P confinementViscosityShader; // vorticity confinement + XSPH viscosity in one neighbor pass
+	// GSM-boosted counterparts loaded alongside the plain shaders; dispatched when gsmEnabled is true.
+	ComputeShader::P gsmLambdaShader;
+	ComputeShader::P gsmDeltaShader;
+	ComputeShader::P gsmVorticityShader;
+	ComputeShader::P gsmConfinementViscosityShader;
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 	ComputeShader::P clearDtcReductionShader; // zero lodReduction accumulator before dtcReductionShader
@@ -266,6 +271,7 @@ protected:
 
 	uint64_t frameCount = 0; // indexes each frame
 	bool fpsCapped = false; // toggled from ImGui
+	bool gsmEnabled = false; // use GSM-boosted shaders for lambda, delta, vorticity, confinementViscosity
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 
 	// LOD mode: which per-particle LOD assignment method to use each frame
@@ -325,7 +331,7 @@ protected:
 	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
 	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
 
-	int shadingMode = SHADING_LIQUID; // current particle shading mode, driven by ImGui
+	int shadingMode = SHADING_UNICOLOR; // current particle shading mode, driven by ImGui
 
 	// Create the two window-resolution depth textures and their 2-slot DSV heap.
 	// Called from CreateSwapChainResources (and again on resize). Both textures start in COMMON state.
@@ -1513,6 +1519,28 @@ protected:
 			vector<TableBinding>{ {1, &posSnapshotActiveHandle}, {2, &gridSnapshotActiveHandle}, {3, &densityVolumeHandle} },
 			vector<P>{},   // no UAV-barrier inputs (snapshot buffers are SRV-state when we arrive)
 			vector<P>{}); // no UAV-barrier outputs (UAV->SRV_ALL transition acts as synchronization)
+
+		// GSM-boosted variants: same bindings as the plain shaders, different CSO.
+		gsmLambdaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle}, {3, &lodHandle} },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer), std::addressof(lodBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_LAMBDA]), std::addressof(particleFields[PF_DENSITY]) });
+
+		gsmDeltaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle}, {3, &lodHandle} },
+			vector<P>{ std::addressof(particleFields[PF_PREDICTED_POSITION]), std::addressof(particleFields[PF_LAMBDA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer), std::addressof(lodBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
+
+		gsmVorticityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_OMEGA]) });
+
+		gsmConfinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,
+			vector<TableBinding>{ {1, &particleFieldsHandle}, {2, &gridHandle} },
+			vector<P>{ std::addressof(particleFields[PF_POSITION]), std::addressof(particleFields[PF_VELOCITY]),
+			std::addressof(particleFields[PF_OMEGA]), std::addressof(cellCountBuffer), std::addressof(cellPrefixSumBuffer) },
+			vector<P>{ std::addressof(particleFields[PF_SCRATCH]) });
 	}
 
 	void PrepareComputeCommandList() {
@@ -1739,6 +1767,8 @@ protected:
 		// exactly where each cell's particles live in the buffer, so neighbor lookups
 		// use simple arithmetic: particles[cellPrefixSum[ci] + s] for s in [0, cellCount[ci])
 		for (int iter = 0; iter < solverIterations; iter++) {
+			(gsmEnabled ? gsmLambdaShader : lambdaShader)->dispatch_then_barrier(computeList.Get(), numGroups); // compute lambda and density
+			(gsmEnabled ? gsmDeltaShader : deltaShader)->dispatch_then_barrier(computeList.Get(), numGroups); // delta_p -> scratch
 			lambdaShader->dispatch_then_barrier(computeList.Get(), numGroups); // compute lambda and density
 			deltaShader->dispatch_then_barrier(computeList.Get(), numGroups); // delta_p -> scratch
 			positionFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> predictedPosition
@@ -1746,8 +1776,9 @@ protected:
 		}
 
 		updateVelocityShader->dispatch_then_barrier(computeList.Get(), numGroups); // v = (p* - x) / dt
+		(gsmEnabled ? gsmVorticityShader : vorticityShader)->dispatch_then_barrier(computeList.Get(), numGroups); // estimate curl(v) -> omega
 		vorticityShader->dispatch_then_barrier(computeList.Get(), numGroups); // estimate curl(v) -> omega
-		confinementViscosityShader->dispatch_then_barrier(computeList.Get(), numGroups); // vorticity confinement + XSPH viscosity -> scratch
+		(gsmEnabled ? gsmConfinementViscosityShader : confinementViscosityShader)->dispatch_then_barrier(computeList.Get(), numGroups); // vorticity confinement + XSPH viscosity -> scratch
 		velocityFromScratchShader->dispatch_then_barrier(computeList.Get(), numGroups); // scratch -> velocity
 		updatePositionShader->dispatch_then_barrier(computeList.Get(), numGroups); // position = predictedPosition
 
@@ -2063,9 +2094,11 @@ protected:
 		ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
 		ImGui::InputFloat("Vorticity epsilon", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
 		ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
-		ImGui::Checkbox("Fountain", &fountainEnabled);		
+		ImGui::Checkbox("Fountain", &fountainEnabled);
 		ImGui::SameLine();
 		ImGui::Checkbox("FPS cap", &fpsCapped);
+		ImGui::SameLine();
+		ImGui::Checkbox("GSM", &gsmEnabled);
 		ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 		// show derived values as read-only text for reference
 		ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
