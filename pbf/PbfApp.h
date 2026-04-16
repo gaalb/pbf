@@ -65,6 +65,69 @@ using namespace Egg::Math;
 //   BuildGraphicsPipelines
 //   BuildComputePipelines
 // InitImGui
+//
+// Notes about double buffering:
+// We have several double buffered resources. This is due to the fact that the graphics
+// command queue and the compute command queue are parallel. While the compute queue is
+// calculating particle data for frame N, the graphics queue is running graphics pipeline
+// commands to display frame N-1. We have double buffered resources so that these two
+// command queues can have their own copies of resources to overwrite or read without
+// fear of the other queue messing with them. However, due to differences in implementation
+// of how resources are *bound*, we have different ways of handling double buffering.
+// We start out with two ID3D12Resource objects, usually in an array. The writer always
+// writes to one, while the reader can consume the other. As of writing this comment,
+// the double buffered resources that the compute queue writes and the graphics queue
+// reads are position, density, LOD, cell count, cell prefix sum. There is one resource
+// that goes the other way (graphics writes, compute reads). particle depth.
+// In addition, we are double buffering the sorted and unsorted particles, so that
+// we can spare a copy from the sorted fields into the particle fields, and we read
+// from these resources alternating.
+// 
+// Pattern 1: CopyDescriptorsSimple (overwrite a fixed descriptor slot's content)
+// This binding is fixed a pipeline-build time to a specific heap slot. The GPU 
+// handle pointing to that slot never changes. Each frame, CopyDescriptorsSimple
+// physically overwrites the CPU-side descriptor at that slot to point at whichever
+// resource should be active. The GPU sees the same slot address; it's the content
+// underneath that has been swapped.
+// It can be used when the binding infrastructure bakes in a fixed GPU handle at 
+// build time - specifically the Egg material system (SetSrvHeap). The fixed handle
+// must point to the shader-visible main heap, we copy descriptors to the appropriate
+// heap slots from the CPU-only staging heap. 
+// This is what we use for the position, density and lod snapshot buffers, since
+// these are buffers that the particle material reads in the method described above.
+// 
+// Pattern 2: TableBinding (ComputeShader.h)
+// In ComputeShader.h the binding is a raw pointer to a D3D12_GPU_DESCRIPTOR_HANDLE.
+// At record time, setup() dereferences it: SetComputeRootDescriptorTable(param, *handlePtr).
+// The key insight is that the *pointer* stored never changes, what changes is the 
+// value sitting at the address it points to; this is what makes the bindign self-healing,
+// so that we can re-bind it at record time. We can change the value before dispatch,
+// so the next dereference picks up the updated handle. The descriptors themselves
+// are static, written once during init and never touched again. 
+// So this is the question we must answer when wanting to double buffer a resource that
+// is bound to a ComputeShader: how do we swap the value that handlePtr in a TableBinding
+// points to. Two approaches:
+// Approach A: active handle, uses assignment.
+// Two pre-computed handles live in an indexed array, and a separate "active" variable
+// provides a stable address for the TableBinding to point at permanently. Before dispatch,
+// the active variable is set: activeHandle = handle[readIdx/writeIdx]. 
+// This is how we double buffer resources that ComputeShaders use in their Table bindings.
+// However, there is an exception, which is the sorted particle fields vs the particle fields.
+// Approach B: std::swap
+// This should be used when the two buffers aren't coequal, and we want to always read from
+// one specifically. With the particle fields, we sort them every iteration, and the
+// sorted values go into the sorted particle fields. However, the physics loop works on
+// the particle fields, not the sorted fields, so this would require us to either copy
+// the sorted data back, or to have an index showing which one to read from, or the 
+// third option: std::swap can rotate the values between the two names (regular vs sorted)
+// in place. No index needed, no third "active" variable needed, no copy needed. This, however
+// is only didactically sound if the buffers aren't coequal.
+// 
+// TODO:
+// Approach A and B are mechanically convertible. Maybe merge them
+// Or, better yet, move away from TableBindings and move the bindings of the Compute Shaders
+// to work the same way they do with material, so we can have a single unified way of double
+// buffering.
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
