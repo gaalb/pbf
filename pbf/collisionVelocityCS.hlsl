@@ -56,10 +56,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // solid SDF response
     // The committed position should be clear of the solid (corrected last frame by
-    // collisionPredictedPositionCS). We check d < PUSH_RADIUS to handle the first frame,
+    // collisionPredictedPositionCS). We check d < pushRadius to handle the first frame,
     // a newly moved solid, and numerical slip.
     float d = SampleSdf(pos);
-    if (d < PUSH_RADIUS) {
+    if (d < pushRadius) {
         float3 normal = normalize(SdfGradient(pos)); // outward surface normal in world space
         float vn = dot(v, normal);
         if (vn < 0.0f) { // particle heading into the solid

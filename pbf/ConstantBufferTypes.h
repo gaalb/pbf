@@ -74,7 +74,7 @@ __declspec(align(16)) struct ComputeCb {
 	Float4x4 viewProjTransform; // offset 208: world-to-clip transform for DTVS depth projection
 	float viewportWidth;    // offset 272: render target width in pixels
 	float viewportHeight;   // offset 276: render target height in pixels
-	float _padVp0;          // offset 280
+	float pushRadius;       // offset 280: solid push-out distance; PUSH_RADIUS in particle modes, 0 in liquid mode
 	float _padVp1;          // offset 284
 	// total: 288 bytes
 };

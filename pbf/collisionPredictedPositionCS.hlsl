@@ -42,12 +42,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float3 p = predictedPosition[i];
 
-    // Solid push-out: move p along the outward SDF gradient until it is PUSH_RADIUS world units
+    // Solid push-out: move p along the outward SDF gradient until it is pushRadius world units
     // from the surface.
     float d = SampleSdf(p);
-    if (d < PUSH_RADIUS) {
+    if (d < pushRadius) {
         float3 grad = SdfGradient(p);
-        p += (PUSH_RADIUS - d) * normalize(grad);
+        p += (pushRadius - d) * normalize(grad);
     }
     
     // clamp to bounding box

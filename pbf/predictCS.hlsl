@@ -72,7 +72,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // solid SDF
     float d = SampleSdf(pos);
-    if (d < PUSH_RADIUS) {
+    if (d < pushRadius) {
         float3 normal = normalize(SdfGradient(pos));
         float vn = dot(v, normal);
         if (vn < 0.0f) {

@@ -2304,6 +2304,7 @@ protected:
 		computeCb->viewProjTransform = camera->GetViewMatrix() * camera->GetProjMatrix();
 		computeCb->viewportWidth  = (float)scissorRect.right;
 		computeCb->viewportHeight = (float)scissorRect.bottom;
+		computeCb->pushRadius = (shadingMode == ShadingMode::LIQUID) ? 0.0f : PUSH_RADIUS;
 		computeCb.Upload();
 	}
 

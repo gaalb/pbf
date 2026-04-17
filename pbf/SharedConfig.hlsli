@@ -16,7 +16,7 @@
 
 // Particle radius used for display and SDF push-out distance.
 #define PARTICLE_RADIUS  (PARTICLE_SPACING * 0.4f)
-#define PUSH_RADIUS      (PARTICLE_SPACING * 0.4f)
+#define PUSH_RADIUS      (PARTICLE_SPACING * 0.4f) // default push distance; C++ uses this to init computeCb.pushRadius
 
 // Artificial pressure reference distance and exponent (Macklin & Muller eq. 13).
 #define SCORR_DELTA_Q     (0.2f * H)
@@ -36,7 +36,7 @@
 // Grid world-space half-extent: GRID_DIM cells of width H/CELL_PER_H on each side.
 #define BOX_HALF_EXTENT GRID_DIM * CELL_SIZE / 2.0f
 
-// Shading mode constants — must match the order to the ImGui shadingModeItems[]
+// Shading mode constants ï¿½ must match the order to the ImGui shadingModeItems[]
 #define SHADING_UNICOLOR 0
 #define SHADING_DENSITY  1
 #define SHADING_LOD      2
