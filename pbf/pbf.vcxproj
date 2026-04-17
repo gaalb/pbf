@@ -89,6 +89,7 @@
     <ClCompile Include="..\Common\imgui\imgui_tables.cpp" />
     <ClCompile Include="..\Common\imgui\imgui_widgets.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="PbfApp.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AsyncComputeApp.h" />
