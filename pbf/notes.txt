@@ -1,6 +1,7 @@
 ﻿NOTES: NO SOURCE, JUST NOTES FOR ME
 ---------------------------------------------------------------------------------------
 TODOS:
+-add DX_API("failed") to all places where I forgot them (!)
 -move to specifying voxel size in SharedConfig.hlsli
 -add push distance to a constant buffer and set it to 0 when we use liquid shading
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)

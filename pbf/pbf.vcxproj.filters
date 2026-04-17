@@ -122,6 +122,15 @@
     <ClInclude Include="DescriptorLayout.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="DescriptorAllocator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GpuBuffer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="GpuTexture.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="positionFromScratchCS.hlsl">

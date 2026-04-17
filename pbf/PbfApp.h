@@ -14,7 +14,9 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 #include "SolidObstacle.h"
-#include "DescriptorLayout.h"
+#include "DescriptorAllocator.h"
+#include "GpuBuffer.h"
+#include "GpuTexture.h"
 #include <immintrin.h>
 #include <thread>
 #include "SharedConfig.hlsli"
@@ -189,25 +191,25 @@ protected:
 	// Upload buffers for initial particle data (upload heap, CPU-writable).
 	// Only position and velocity have meaningful initial values; other fields are
 	// overwritten by the simulation before they're first read.
-	com_ptr<ID3D12Resource> positionUploadBuffer;
-	com_ptr<ID3D12Resource> velocityUploadBuffer;	
+	GpuBuffer::P positionUploadBuffer;
+	GpuBuffer::P velocityUploadBuffer;
 
-	com_ptr<ID3D12DescriptorHeap> imguiSrvHeap; // dedicated 1-slot SRV heap for ImGui's font texture
-	com_ptr<ID3D12DescriptorHeap> descriptorHeap; // descriptor heap for shader-visible resources
-	com_ptr<ID3D12DescriptorHeap> snapshotStagingHeap; // CPU-only staging heap: snapshot SRVs used as CopyDescriptors source
+	DescriptorAllocator::P imguiAllocator;    // 1-slot shader-visible heap for ImGui font texture
+	DescriptorAllocator::P mainAllocator;     // shader-visible CBV/SRV/UAV heap
+	DescriptorAllocator::P stagingAllocator;  // CPU-only staging heap for CopyDescriptorsSimple sources
 
 	// particle field buffers (default heap, UAV-accessible by compute shaders): one per attribute
 	// Index with ParticleField enum (PF_POSITION..PF_SCRATCH).
-	com_ptr<ID3D12Resource> particleFields[PF_COUNT];	
+	GpuBuffer::P particleFields[PF_COUNT];
 	// Sorted particle field buffers (default heap, UAV). Same layout as particleFields, only
 	// used as scatter target / scratch pad during sorting
-	com_ptr<ID3D12Resource> sortedFields[PF_COUNT];
-	com_ptr<ID3D12Resource> cellCountBuffer; // default heap: uint per cell, stores how many particles are in each cell
-	com_ptr<ID3D12Resource> cellPrefixSumBuffer; // default heap: exclusive prefix sum of cellCount, used by sortCS and neighbor lookups
-	com_ptr<ID3D12Resource> permBuffer; // default heap: uint per particle, maps old index -> sorted index (computed by sortCS, applied by permutateCS)
-	com_ptr<ID3D12Resource> groupSumBuffer; // default heap: per-group totals scratch for the Blelloch 3-pass prefix sum (numCells / (2*THREAD_GROUP_SIZE) uints)
-	com_ptr<ID3D12Resource> lodBuffer;  // default heap: per-particle LOD countdown (uint per particle)
-	com_ptr<ID3D12Resource> lodReductionBuffer; // default heap: DTC reduction scratch [minDTC bits, maxDTC bits] (2 uints)
+	GpuBuffer::P sortedFields[PF_COUNT];
+	GpuBuffer::P cellCountBuffer;      // default heap: uint per cell, particle count
+	GpuBuffer::P cellPrefixSumBuffer;  // default heap: exclusive prefix sum of cellCount
+	GpuBuffer::P permBuffer;           // default heap: uint per particle, sort permutation
+	GpuBuffer::P groupSumBuffer;       // default heap: Blelloch per-group totals scratch
+	GpuBuffer::P lodBuffer;            // default heap: per-particle LOD countdown (uint)
+	GpuBuffer::P lodReductionBuffer;   // default heap: DTC reduction scratch [minDTC, maxDTC]
 
 	// GPU descriptor handles for the descriptor table ranges, computed once in CacheDescriptorHandles.
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleFieldsHandle; // particle field buffers
@@ -257,10 +259,10 @@ protected:
 	float  solidScale = 2.0f; // uniform scale, driven by ImGui
 
 	// Readback buffers (readback heap, CPU-readable after CopyBufferRegion)
-	com_ptr<ID3D12Resource> densityReadbackBuffer;
+	GpuBuffer::P densityReadbackBuffer;
 	std::vector<float> densityReadbackData;
 	float avgDensity = 0.0f; // average particle density from previous frame's readback
-	com_ptr<ID3D12Resource> lodReadbackBuffer;
+	GpuBuffer::P lodReadbackBuffer;
 	std::vector<uint32_t> lodReadbackData;
 	float avgLod = 0.0f; // average per-particle LOD from previous frame's readback
 
@@ -289,17 +291,18 @@ protected:
 	// Double-buffered snapshot buffers hold position, density, and LOD for the graphics queue.
 	// snapshotWriteIdx is the slot currently being written by the compute queue;
 	// the graphics queue always reads from the OTHER slot (1 - snapshotWriteIdx).
-	com_ptr<ID3D12Resource> snapshotPosition[2]; // position snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
-	com_ptr<ID3D12Resource> snapshotDensity[2];  // density snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
-	com_ptr<ID3D12Resource> snapshotLod[2]; // LOD snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
+	GpuBuffer::P snapshotPosition[2]; // position snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
+	GpuBuffer::P snapshotDensity[2];  // density snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
+	GpuBuffer::P snapshotLod[2];      // LOD snapshot double-buffer (NON_PIXEL_SHADER_RESOURCE home state)
 	int snapshotWriteIdx = 0; // snapshot slot being written by compute, 0 vs 1: graphics reads (1 - snapshotWriteIdx)
 
 	// DTVS: double-buffered window-resolution depth textures. Graphics (cpu frame N) writes
 	// slot readIdx; Compute (cpu frame N) reads slot writeIdx - always different resources,
 	// so no cross-queue serialization is needed.
-	com_ptr<ID3D12Resource> particleDepthTexture[2]; // default heap; recreated on resize
-	com_ptr<ID3D12DescriptorHeap> particleDsvHeap; // 2-slot DSV heap for both textures
-	CD3DX12_GPU_DESCRIPTOR_HANDLE particleDepthHandle[2]; // GPU handles for SRV 
+	GpuTexture::P particleDepthTexture[2]; // default heap; recreated on resize
+	DescriptorAllocator::P particleDsvAllocator; // 2-slot DSV allocator; recreated on resize
+	CD3DX12_GPU_DESCRIPTOR_HANDLE particleDepthHandle[2]; // GPU handles for SRV
+	UINT particleDepthSrvSlot[2] = { UINT_MAX, UINT_MAX }; // allocated once, reused on resize
 	CD3DX12_GPU_DESCRIPTOR_HANDLE particleDepthActiveHandle; // set to [writeIdx] each frame before dispatch
 
 	// DTVS graphics pipeline: reuses particleVS + particleGS with a depth-only PS
@@ -314,9 +317,12 @@ protected:
 	// Liquid surface rendering: single-buffered Texture3D density volume.
 	// R32_TYPELESS resource; R32_UINT UAV for CAS float atomic add by splatDensityVolumeCS,
 	// R32_FLOAT SRV for liquidPS. Home state: COMMON.
-	com_ptr<ID3D12Resource>       densityVolume;          // VOL_DIM^3, R32_TYPELESS
-	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle;    // GPU handle for R32_UINT UAV (slot DENSITY_VOL_UAV)
+	GpuTexture::P                 densityVolume;           // VOL_DIM^3, R32_TYPELESS
+	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle;     // GPU handle for R32_UINT UAV
 	CD3DX12_CPU_DESCRIPTOR_HANDLE densityVolClearCpuHandle; // CPU handle in staging heap for ClearUnorderedAccessViewUint
+	UINT                          liquidTableStartSlot = 0; // first of the 4 contiguous liquidPS SRV slots
+	UINT                          particleSrvTableStart = 0; // first of 3 contiguous SRVs: pos(t0),den(t1),lod(t2)
+	UINT                          cubemapSrvSlot = 0; // slot for the environment cubemap SRV
 	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid snapshots (kept for reference)
 
 	// Splat density pipeline: one per-particle CS writes Poly6 contributions via CAS float atomic add.
@@ -325,8 +331,8 @@ protected:
 	// Grid snapshot buffers: double-buffered copies of cellCountBuffer and cellPrefixSumBuffer.
 	// Compute writes to [writeIdx] via CopyBufferRegion in WriteSnapshot(); graphics reads [readIdx] in densityVolumeCS.
 	// Home state: NON_PIXEL_SHADER_RESOURCE.
-	com_ptr<ID3D12Resource> cellCountSnapshot[2];
-	com_ptr<ID3D12Resource> cellPrefixSumSnapshot[2];
+	GpuBuffer::P cellCountSnapshot[2];
+	GpuBuffer::P cellPrefixSumSnapshot[2];
 
 	// GPU handles for densityVolumeCS SRV tables. posSnapshotGfxHandle[i] points to posSnapshot[i] SRV (t0).
 	// gridSnapshotHandle[i] points to the start of the 2-slot table cellCountSnapshot[i] (t1) + cellPrefixSumSnapshot[i] (t2).

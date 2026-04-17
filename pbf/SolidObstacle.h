@@ -7,6 +7,7 @@
 
 #include <Egg/Common.h>
 #include <Egg/Mesh/Shaded.h>
+#include "DescriptorAllocator.h"
 #include <Egg/Mesh/Material.h>
 #include <Egg/Importer.h>
 #include <Egg/Shader.h>
@@ -37,6 +38,7 @@ GG_CLASS(SolidObstacle)
     Float3 sdfObjMin; // SDF AABB min in object space
     Float3 sdfObjMax; // SDF AABB max in object space
     Float4x4 invTransform; // world-to-object, derived from the current transform
+    D3D12_GPU_DESCRIPTOR_HANDLE sdfGpuHandle{};
 
     // Read a .sdf binary file, allocate GPU resources, and fill the upload buffer.
     // Called internally by Load(). Does NOT record any GPU commands.
@@ -51,9 +53,9 @@ GG_CLASS(SolidObstacle)
         // reinterpret_cast is needed because .read() takes char*, but our data isn't chars
         // 
         // the .sdf file format is a flat binary blob with this layout:
-        // [nx] [ny] [nz] — 3 ints : voxel grid dimensions
-        // [rawMin.x y z][rawMax.x y z] — 6 floats : AABB bounds in object space
-        // [d gx gy gz] ×(nx * ny * nz) — 4 floats per voxel : signed distance + gradient xyz     
+        // [nx] [ny] [nz] ï¿½ 3 ints : voxel grid dimensions
+        // [rawMin.x y z][rawMax.x y z] ï¿½ 6 floats : AABB bounds in object space
+        // [d gx gy gz] ï¿½(nx * ny * nz) ï¿½ 4 floats per voxel : signed distance + gradient xyz     
         int nx, ny, nz; // start with reading the grid resolution (e.g. 64x64x64)
         file.read(reinterpret_cast<char*>(&nx), sizeof(int));
         file.read(reinterpret_cast<char*>(&ny), sizeof(int));
@@ -241,23 +243,24 @@ public:
         sdfUpload = nullptr;
     }
 
-    // Create a Texture3D SRV at the given slot in the shared descriptor heap.
-    void CreateSdfSrv(ID3D12Device* device, ID3D12DescriptorHeap* heap, UINT slot) {
-        UINT descSize = device->GetDescriptorHandleIncrementSize(
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-            heap->GetCPUDescriptorHandleForHeapStart(), slot, descSize);
+    // Allocate one slot from alloc and create a Texture3D SRV for the SDF volume.
+    void CreateSdfSrv(ID3D12Device* device, DescriptorAllocator& alloc) {
+        UINT slot = alloc.Allocate();
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu = alloc.GetCpuHandle(slot);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-        srvDesc.Shader4ComponentMapping  = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture3D.MipLevels = 1;
-        srvDesc.Texture3D.MostDetailedMip = 0;
+        srvDesc.Format                        = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE3D;
+        srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture3D.MipLevels           = 1;
+        srvDesc.Texture3D.MostDetailedMip     = 0;
         srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
 
-        device->CreateShaderResourceView(sdfTexture.Get(), &srvDesc, handle);
+        device->CreateShaderResourceView(sdfTexture.Get(), &srvDesc, cpu);
+        sdfGpuHandle = alloc.GetGpuHandle(slot);
     }
+
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSdfGpuHandle() const { return sdfGpuHandle; }
 
     // Delegate to the underlying shaded mesh.
     void Draw(ID3D12GraphicsCommandList* commandList) {
