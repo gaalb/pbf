@@ -4,9 +4,9 @@
 // Algorithm:
 //   For each particle, compute the bounding box of voxels whose centers lie within
 //   the SPH kernel radius H, then evaluate Poly6 for each candidate voxel and
-//   atomically accumulate the contribution (as a fixed-point uint) into splatAccum.
-//   The resolve pass (splatDensityVolumeResolveCS) converts the accumulator to float
-//   and clears it for the next frame.
+//   atomically accumulate the contribution (as a float stored in raw bits) into splatAccum
+//   via a compare-and-swap loop. The resolve pass (splatDensityVolumeResolveCS) reinterprets
+//   the accumulated bits as float and clears the accumulator for the next frame.
 //
 // This is the inverse of the per-voxel approach (densityVolumeCS): instead of each
 // voxel querying all nearby particles, each particle writes to all nearby voxels.
@@ -15,7 +15,7 @@
 //
 // Dispatched from the GRAPHICS queue (DIRECT command list) in DrawLiquidSurface().
 // In:  posSnapshot[readIdx]  (t0) — StructuredBuffer<float3>, NON_PIXEL|PIXEL SRV state
-// Out: splatAccumTexture      (u0) — RWTexture3D<uint>, UAV state
+// Out: splatAccumTexture      (u0) — RWTexture3D<uint>, UAV state; stores raw float bits
 
 #define SplatDensityVolumeRootSig \
     "CBV(b0), " \
@@ -26,10 +26,24 @@
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli"
 #include "GridUtils.hlsli"
-#include "splatDensityVolumeCommon.hlsli"
 
 StructuredBuffer<float3> position   : register(t0);
-RWTexture3D<uint>        splatAccum : register(u0);
+RWTexture3D<uint>        splatAccum : register(u0); // raw float bits; asfloat(splatAccum[v]) gives density
+
+// Atomically adds 'value' to splatAccum[coord] using a compare-and-swap loop.
+// splatAccum stores raw IEEE 754 float bits as uint. asfloat/asuint are pure bit
+// reinterpretations (no arithmetic conversion), so the float addition is exact.
+// The loop retries if another thread modified the slot between our read and swap.
+// Poly6 contributions are always positive, so asfloat is always >= 0: no sign-bit issues.
+void FloatInterlockedAdd(uint3 coord, float value)
+{
+    uint assumed, old;
+    old = splatAccum[coord];
+    [loop] do {
+        assumed = old;
+        InterlockedCompareExchange(splatAccum[coord], assumed, asuint(asfloat(assumed) + value), old);
+    } while (old != assumed);
+}
 
 [RootSignature(SplatDensityVolumeRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
@@ -66,7 +80,6 @@ void main(uint3 id : SV_DispatchThreadID)
         if (w <= 0.0f)
             continue;
 
-        uint contrib = (uint)(w * SPLAT_SCALE_F + 0.5f);
-        InterlockedAdd(splatAccum[uint3(vx, vy, vz)], contrib);
+        FloatInterlockedAdd(uint3(vx, vy, vz), w);
     }
 }
