@@ -82,7 +82,8 @@ public:
 		DX_API("Failed to create graphics command list")
 			device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
 				commandAllocator.Get(), nullptr, IID_PPV_ARGS(commandList.GetAddressOf()));
-		commandList->Close(); // immediately close, we have no commands for now
+		DX_API("Failed to close graphics command list")
+			commandList->Close(); // immediately close, we have no commands for now
 
 		// App created our graphics command queue, but we need to create the new (compute)
 		// queue by hand, using a description object. Then create allocator and list like above.
@@ -100,7 +101,8 @@ public:
 		DX_API("Failed to create compute command list")
 			device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
 				computeAllocator.Get(), nullptr, IID_PPV_ARGS(computeList.GetAddressOf()));
-		computeList->Close();
+		DX_API("Failed to close compute command list")
+			computeList->Close();
 
 		// One fence per queue: explicit frame values on both signal and wait sides
 		graphicsFence.createResources(device);

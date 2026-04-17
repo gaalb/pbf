@@ -16,7 +16,8 @@ public:
 	// asynchronous call from the CPU's POV: places a signal in the queue,
 	// when the GPU reaches this point, it signals the fence
 	void signal(com_ptr<ID3D12CommandQueue> queue, uint64_t value) {
-		queue->Signal(fence.Get(), value); 
+		DX_API("Failed to signal fence")
+			queue->Signal(fence.Get(), value);
 	}
 
 	// blocking call from the CPU POV- CPU waits until fence reaches value

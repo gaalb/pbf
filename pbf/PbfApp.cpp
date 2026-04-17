@@ -875,11 +875,13 @@ void PbfApp::PrepareComputeCommandList() {
 void PbfApp::PrepareCommandList() {
 	// reset the command allocator, freeing the memory used by the previous frame's commands
 	// this can only be done after the GPU finished executing those commands
-	commandAllocator->Reset();
+	DX_API("Failed to reset graphics command allocator")
+		commandAllocator->Reset();
 
 	// command list must be reset before we start recording commands into it
 	// second param is initial pipeline state, don't need it yet
-	commandList->Reset(commandAllocator.Get(), nullptr);
+	DX_API("Failed to reset graphics command list")
+		commandList->Reset(commandAllocator.Get(), nullptr);
 
 	// tell the GPU what region of the screen to draw to
 	commandList->RSSetViewports(1, &viewPort); // the visible area (full window)
