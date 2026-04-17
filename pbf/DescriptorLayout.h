@@ -111,8 +111,12 @@ namespace HeapSlot {
     constexpr UINT LIQUID_TABLE_GRID_COUNT   = 37; // t2: active cellCount SRV, per-frame
     constexpr UINT LIQUID_TABLE_GRID_PREFIX  = 38; // t3: active cellPrefixSum SRV, per-frame
 
+    // Splat density accumulation texture (R32_UINT): written by splatDensityVolumeCS via
+    // InterlockedAdd, read and cleared by splatDensityVolumeResolveCS each frame.
+    constexpr UINT SPLAT_ACCUM_UAV           = 39;
+
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL                = 39;
+    constexpr UINT TOTAL                = 40;
 
 } // namespace HeapSlot
 

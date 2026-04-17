@@ -67,6 +67,9 @@
     <Filter Include="Shaders\Compute\vorticity, viscosity\unused">
       <UniqueIdentifier>{8f10ca65-0f25-417a-9c56-75a976db5a5f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\density texture">
+      <UniqueIdentifier>{347743d3-bc05-4084-822c-b0d7e83b1541}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -232,9 +235,6 @@
     <FxCompile Include="viscosityCS.hlsl">
       <Filter>Shaders\Compute\vorticity, viscosity\unused</Filter>
     </FxCompile>
-    <FxCompile Include="densityVolumeCS.hlsl">
-      <Filter>Shaders\Compute</Filter>
-    </FxCompile>
     <FxCompile Include="liquidPS.hlsl">
       <Filter>Shaders\Pixel</Filter>
     </FxCompile>
@@ -253,6 +253,15 @@
     <FxCompile Include="GSM_vorticity.hlsl">
       <Filter>Shaders\Compute\vorticity, viscosity</Filter>
     </FxCompile>
+    <FxCompile Include="splatDensityVolumeCS.hlsl">
+      <Filter>Shaders\Compute\density texture</Filter>
+    </FxCompile>
+    <FxCompile Include="splatDensityVolumeResolveCS.hlsl">
+      <Filter>Shaders\Compute\density texture</Filter>
+    </FxCompile>
+    <FxCompile Include="densityVolumeCS.hlsl">
+      <Filter>Shaders\Compute\density texture</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="SphKernels.hlsli">
@@ -269,6 +278,9 @@
     </None>
     <None Include="SharedConfig.hlsli">
       <Filter>Shaders\Include</Filter>
+    </None>
+    <None Include="splatDensityVolumeCommon.hlsli">
+      <Filter>Shaders\Compute\density texture</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

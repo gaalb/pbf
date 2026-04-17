@@ -42,8 +42,10 @@
 #define SHADING_LOD      2
 #define SHADING_LIQUID   3
 
-// Density volume resolution: VOL_DIM voxels per axis.
-#define VOL_DIM (GRID_DIM * 4)
+// Density volume resolution
+#define VOXEL_SIZE PARTICLE_SPACING
+#define VOL_DIM (uint)(GRID_DIM * CELL_SIZE / VOXEL_SIZE)
+#define H_IN_VOXEL H / VOXEL_SIZE
 
 // How coarsely to take the average density and LOD for ImGui display
 #define AVG_COARSENESS 100

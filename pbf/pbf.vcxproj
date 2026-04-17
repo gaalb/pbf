@@ -229,6 +229,14 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.4</ShaderModel>
     </FxCompile>
+    <FxCompile Include="splatDensityVolumeCS.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.4</ShaderModel>
+    </FxCompile>
+    <FxCompile Include="splatDensityVolumeResolveCS.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.4</ShaderModel>
+    </FxCompile>
     <FxCompile Include="updatePositionCS.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">6.4</ShaderModel>
@@ -288,6 +296,7 @@
     <None Include="SharedConfig.hlsli" />
     <None Include="SolidSdf.hlsli" />
     <None Include="SphKernels.hlsli" />
+    <None Include="splatDensityVolumeCommon.hlsli" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="notes.txt" />
