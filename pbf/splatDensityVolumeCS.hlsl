@@ -4,9 +4,9 @@
 // Algorithm:
 //   For each particle, compute the bounding box of voxels whose centers lie within
 //   the SPH kernel radius H, then evaluate Poly6 for each candidate voxel and
-//   atomically accumulate the contribution (as a float stored in raw bits) into splatAccum
-//   via a compare-and-swap loop. The resolve pass (splatDensityVolumeResolveCS) reinterprets
-//   the accumulated bits as float and clears the accumulator for the next frame.
+//   atomically accumulate the contribution (as a float stored in raw bits) into densityVolume
+//   via a compare-and-swap loop. After the draw, DrawLiquidSurface clears densityVolume to 0
+//   via ClearUnorderedAccessViewUint, ready for the next frame.
 //
 // This is the inverse of the per-voxel approach (densityVolumeCS): instead of each
 // voxel querying all nearby particles, each particle writes to all nearby voxels.
@@ -15,7 +15,7 @@
 //
 // Dispatched from the GRAPHICS queue (DIRECT command list) in DrawLiquidSurface().
 // In:  posSnapshot[readIdx]  (t0) — StructuredBuffer<float3>, NON_PIXEL|PIXEL SRV state
-// Out: splatAccumTexture      (u0) — RWTexture3D<uint>, UAV state; stores raw float bits
+// Out: densityVolume          (u0) — RWTexture3D<uint>, UAV state; stores raw float bits (asfloat gives density)
 
 #define SplatDensityVolumeRootSig \
     "CBV(b0), " \
@@ -28,20 +28,20 @@
 #include "GridUtils.hlsli"
 
 StructuredBuffer<float3> position   : register(t0);
-RWTexture3D<uint>        splatAccum : register(u0); // raw float bits; asfloat(splatAccum[v]) gives density
+RWTexture3D<uint>        densityVolume : register(u0); // raw float bits; asfloat(densityVolume[v]) gives density
 
-// Atomically adds 'value' to splatAccum[coord] using a compare-and-swap loop.
-// splatAccum stores raw IEEE 754 float bits as uint. asfloat/asuint are pure bit
+// Atomically adds 'value' to densityVolume[coord] using a compare-and-swap loop.
+// densityVolume stores raw IEEE 754 float bits as uint. asfloat/asuint are pure bit
 // reinterpretations (no arithmetic conversion), so the float addition is exact.
 // The loop retries if another thread modified the slot between our read and swap.
 // Poly6 contributions are always positive, so asfloat is always >= 0: no sign-bit issues.
 void FloatInterlockedAdd(uint3 coord, float value)
 {
     uint assumed, old;
-    old = splatAccum[coord];
+    old = densityVolume[coord];
     [loop] do {
         assumed = old;
-        InterlockedCompareExchange(splatAccum[coord], assumed, asuint(asfloat(assumed) + value), old);
+        InterlockedCompareExchange(densityVolume[coord], assumed, asuint(asfloat(assumed) + value), old);
     } while (old != assumed);
 }
 

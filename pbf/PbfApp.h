@@ -306,20 +306,16 @@ protected:
 	ComputeShader::P dtvsReductionShader; // accumulate max DTVS into lodReduction[0]
 	ComputeShader::P dtvsLodShader; // assign per-particle LOD from DTVS / maxDTVS
 
-	// Liquid surface rendering: single-buffered Texture3D density+gradient volume.
-	// Graphics fills it (densityVolumeCS dispatch) and reads it (liquidPS draw) sequentially in the same frame.
-	// No double-buffering needed: fill -> UAV barrier -> SRV use all happen on the graphics queue. Home state: COMMON.
-	com_ptr<ID3D12Resource> densityVolume; // VOL_DIM^3, R32G32B32A32_FLOAT, float4(rho, gradX, gradY, gradZ)
-	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle; // GPU handle for the UAV descriptor (slot DENSITY_VOL_UAV)
+	// Liquid surface rendering: single-buffered Texture3D density volume.
+	// R32_TYPELESS resource; R32_UINT UAV for CAS float atomic add by splatDensityVolumeCS,
+	// R32_FLOAT SRV for liquidPS. Home state: COMMON.
+	com_ptr<ID3D12Resource>       densityVolume;          // VOL_DIM^3, R32_TYPELESS
+	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle;    // GPU handle for R32_UINT UAV (slot DENSITY_VOL_UAV)
+	CD3DX12_CPU_DESCRIPTOR_HANDLE densityVolClearCpuHandle; // CPU handle in staging heap for ClearUnorderedAccessViewUint
 	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid snapshots (kept for reference)
 
-	// Splat density pipeline
-	// splatAccumTexture accumulates fixed-point Poly6 contributions via InterlockedAdd;
-	// splatResolveShader converts them to float and clears the accumulator each frame.
-	com_ptr<ID3D12Resource>         splatAccumTexture; // VOL_DIM^3, R32_UINT, fixed-point density accumulator
-	CD3DX12_GPU_DESCRIPTOR_HANDLE   splatAccumHandle;  // GPU handle for UAV at SPLAT_ACCUM_UAV
-	ComputeShader::P                splatDensityShader; // per-particle: Poly6 splat into splatAccumTexture
-	ComputeShader::P                splatResolveShader; // per-voxel: resolve splatAccum → densityVolume, clear
+	// Splat density pipeline: one per-particle CS writes Poly6 contributions via CAS float atomic add.
+	ComputeShader::P splatDensityShader; // per-particle: Poly6 splat into densityVolume (R32_UINT UAV)
 
 	// Grid snapshot buffers: double-buffered copies of cellCountBuffer and cellPrefixSumBuffer.
 	// Compute writes to [writeIdx] via CopyBufferRegion in WriteSnapshot(); graphics reads [readIdx] in densityVolumeCS.
@@ -336,7 +332,7 @@ protected:
 	CD3DX12_GPU_DESCRIPTOR_HANDLE posSnapshotActiveHandle;
 	CD3DX12_GPU_DESCRIPTOR_HANDLE gridSnapshotActiveHandle;
 	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
-	float liquidIsoThreshold = 0.75f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
+	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
 
 	int shadingMode = SHADING_UNICOLOR; // current particle shading mode, driven by ImGui
 
@@ -945,11 +941,11 @@ protected:
 	}
 
 	// Create the single-buffered density volume texture and its descriptors.
-	// The volume is a VOL_DIM^3 Texture3D<R32_FLOAT> (one float per voxel: density only).
-	// Gradient is no longer stored here; liquidPS computes it via SPH at the surface point.
-	// UAV at DENSITY_VOL_UAV (slot 27): written by densityVolumeCS dispatched from the graphics queue.
-	// SRV at DENSITY_VOL_SRV (slot 28): read by liquidPS in the same frame, immediately after the dispatch.
-	// Both descriptors live in the main shader-visible heap. Home state: COMMON.
+	// The volume is a VOL_DIM^3 R32_TYPELESS Texture3D.
+	// R32_UINT UAV (slot DENSITY_VOL_UAV): splatDensityVolumeCS writes float bits via CAS atomic add.
+	// R32_FLOAT SRV (slot DENSITY_VOL_SRV): liquidPS reads the same memory as float density.
+	// CPU UAV in staging heap (slot DENSITY_VOL_UAV_CLEAR): required by ClearUnorderedAccessViewUint.
+	// Home state: COMMON. Committed DEFAULT resource → zero-initialized by OS (= 0.0f for first frame).
 	void InitDensityVolume() {
 		const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
 		UINT sz = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -957,34 +953,40 @@ protected:
 		const UINT volDim = (UINT)VOL_DIM;
 
 		D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex3D(
-			DXGI_FORMAT_R32_FLOAT,                    // one float per voxel: rho only (gradient moved to liquidPS)
-			volDim, volDim, volDim,                   // VOL_DIM on each axis
-			1,                                        // single mip level
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS); // UAV write by densityVolumeCS
+			DXGI_FORMAT_R32_TYPELESS,                 // typeless: allows both R32_UINT UAV and R32_FLOAT SRV
+			volDim, volDim, volDim,
+			1,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
 		DX_API("Failed to create density volume texture")
 			device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
-				D3D12_RESOURCE_STATE_COMMON, nullptr, // COMMON: graphics transitions to UAV before filling
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
 				IID_PPV_ARGS(densityVolume.ReleaseAndGetAddressOf()));
 		densityVolume->SetName(L"Density Volume");
 
-		// UAV in main heap at slot DENSITY_VOL_UAV: densityVolumeCS writes here (u16)
+		// R32_UINT UAV in main heap: splatDensityVolumeCS writes raw float bits via CAS
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-		uavDesc.Format = DXGI_FORMAT_R32_FLOAT;
-		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+		uavDesc.Format                = DXGI_FORMAT_R32_UINT;
+		uavDesc.ViewDimension         = D3D12_UAV_DIMENSION_TEXTURE3D;
 		uavDesc.Texture3D.MipSlice    = 0;
 		uavDesc.Texture3D.FirstWSlice = 0;
-		uavDesc.Texture3D.WSize       = volDim; // all depth slices
+		uavDesc.Texture3D.WSize       = volDim;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE uavCpu(
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::DENSITY_VOL_UAV, sz);
 		device->CreateUnorderedAccessView(densityVolume.Get(), nullptr, &uavDesc, uavCpu);
 
-		// SRV in main heap at slot DENSITY_VOL_SRV: liquidPS reads here (t0). Set once; no dynamic redirect needed
-		// because fill and draw are sequential on the same queue in the same frame.
+		// CPU-only R32_UINT UAV in the staging heap: required by ClearUnorderedAccessViewUint
+		// (that API needs a CPU descriptor from a non-shader-visible heap alongside the GPU one)
+		CD3DX12_CPU_DESCRIPTOR_HANDLE clearCpu(
+			snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::DENSITY_VOL_UAV_CLEAR, sz);
+		device->CreateUnorderedAccessView(densityVolume.Get(), nullptr, &uavDesc, clearCpu);
+		densityVolClearCpuHandle = clearCpu;
+
+		// R32_FLOAT SRV in main heap: liquidPS reads density as float (t0)
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Format                        = DXGI_FORMAT_R32_FLOAT;
+		srvDesc.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE3D;
+		srvDesc.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		srvDesc.Texture3D.MostDetailedMip     = 0;
 		srvDesc.Texture3D.MipLevels           = 1;
 		srvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
@@ -993,38 +995,12 @@ protected:
 		device->CreateShaderResourceView(densityVolume.Get(), &srvDesc, srvCpu);
 
 		// Duplicate SRV at LIQUID_TABLE_DENSITY (slot 35, t0 of the 4-slot liquidPS table).
-		// Set once here; never changes because fill and draw are sequential on the same queue.
 		CD3DX12_CPU_DESCRIPTOR_HANDLE liquidTableDensityCpu(
 			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::LIQUID_TABLE_DENSITY, sz);
 		device->CreateShaderResourceView(densityVolume.Get(), &srvDesc, liquidTableDensityCpu);
 
-		// GPU handle cache: bound to root param 3 (u16) before each densityVolumeCS dispatch
 		densityVolumeHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
 			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::DENSITY_VOL_UAV, sz);
-
-		// Splat accumulation texture: R32_UINT Texture3D. Committed DEFAULT-heap resource →
-		// zero-initialized by the OS, so no explicit clear is needed before the first frame.
-		D3D12_RESOURCE_DESC splatDesc = CD3DX12_RESOURCE_DESC::Tex3D(
-			DXGI_FORMAT_R32_UINT, volDim, volDim, volDim, 1,
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-		DX_API("Failed to create splat accum texture")
-			device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &splatDesc,
-				D3D12_RESOURCE_STATE_COMMON, nullptr,
-				IID_PPV_ARGS(splatAccumTexture.ReleaseAndGetAddressOf()));
-		splatAccumTexture->SetName(L"Splat Accum Texture");
-
-		D3D12_UNORDERED_ACCESS_VIEW_DESC splatUavDesc = {};
-		splatUavDesc.Format                    = DXGI_FORMAT_R32_UINT;
-		splatUavDesc.ViewDimension             = D3D12_UAV_DIMENSION_TEXTURE3D;
-		splatUavDesc.Texture3D.MipSlice        = 0;
-		splatUavDesc.Texture3D.FirstWSlice     = 0;
-		splatUavDesc.Texture3D.WSize           = volDim;
-		CD3DX12_CPU_DESCRIPTOR_HANDLE splatUavCpu(
-			descriptorHeap->GetCPUDescriptorHandleForHeapStart(), HeapSlot::SPLAT_ACCUM_UAV, sz);
-		device->CreateUnorderedAccessView(splatAccumTexture.Get(), nullptr, &splatUavDesc, splatUavCpu);
-
-		splatAccumHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
-			descriptorHeap->GetGPUDescriptorHandleForHeapStart(), HeapSlot::SPLAT_ACCUM_UAV, sz);
 	}
 
 	// Load the cubemap texture create GPU resources and descriptors.
@@ -1576,20 +1552,12 @@ protected:
 			vector<P>{},
 			vector<P>{});
 
-		// Splat: per-particle shader. One thread per particle writes Poly6 contributions to splatAccum.
-		// splatAccumTexture is listed in outputs so dispatch_then_barrier emits the UAV barrier automatically.
+		// Splat: per-particle shader. Each thread writes Poly6 to densityVolume via CAS float atomic add.
+		// densityVolume is listed in outputs so dispatch_then_barrier emits the UAV barrier automatically.
 		splatDensityShader = ComputeShader::Create(device.Get(), "Shaders/splatDensityVolumeCS.cso", cbv,
-			vector<TableBinding>{ {1, &posSnapshotActiveHandle}, {2, &splatAccumHandle} },
+			vector<TableBinding>{ {1, &posSnapshotActiveHandle}, {2, &densityVolumeHandle} },
 			vector<P>{},
-			vector<P>{ std::addressof(splatAccumTexture) });
-
-		// Resolve: per-voxel shader. Reads splatAccum, writes densityVolume (float), clears splatAccum.
-		// No outputs: the UAV→SRV_ALL on densityVolume and UAV→COMMON on splatAccum (in DrawLiquidSurface)
-		// act as the synchronization barriers.
-		splatResolveShader = ComputeShader::Create(device.Get(), "Shaders/splatDensityVolumeResolveCS.cso", cbv,
-			vector<TableBinding>{ {1, &densityVolumeHandle}, {2, &splatAccumHandle} },
-			vector<P>{},
-			vector<P>{});
+			vector<P>{ std::addressof(densityVolume) });
 
 		// GSM-boosted variants: same bindings as the plain shaders, different CSO.
 		gsmLambdaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
@@ -2085,28 +2053,16 @@ protected:
 			CD3DX12_CPU_DESCRIPTOR_HANDLE(snapshotStagingHeap->GetCPUDescriptorHandleForHeapStart(), StagingSlot::SNAPSHOT_GRID_COUNT_0 + readIdx * 2, sz),
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		// Transition both textures from COMMON to UAV for the splat and resolve passes.
-		D3D12_RESOURCE_BARRIER bothToUav[2] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(densityVolume.Get(),
-				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-			CD3DX12_RESOURCE_BARRIER::Transition(splatAccumTexture.Get(),
-				D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		};
-		commandList->ResourceBarrier(2, bothToUav);
+		// Transition densityVolume from COMMON to UAV for the splat pass.
+		D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		commandList->ResourceBarrier(1, &toUav);
 
-		// Splat: one thread per particle; each writes Poly6 contributions to splatAccum via InterlockedAdd.
-		// dispatch_then_barrier emits a UAV barrier on splatAccumTexture (it's in outputs), which
-		// ensures all splat writes are visible to the resolve pass that follows.
+		// Splat: one thread per particle; each writes Poly6 to densityVolume via CAS float atomic add.
+		// dispatch_then_barrier emits a UAV barrier on densityVolume (it's in outputs), ensuring all
+		// splat writes are visible to the liquidPS SRV read that follows.
 		UINT numGroups = ((UINT)numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
 		splatDensityShader->dispatch_then_barrier(commandList.Get(), numGroups);
-
-		// Resolve: one thread per voxel; reads splatAccum, writes densityVolume (float), clears splatAccum.
-		// VOL_DIM = 256 → (32, 32, 64) thread groups, matching [numthreads(8, 8, 4)].
-		constexpr UINT gx = (VOL_DIM + 7) / 8;
-		constexpr UINT gy = (VOL_DIM + 7) / 8;
-		constexpr UINT gz = (VOL_DIM + 3) / 4;
-		splatResolveShader->dispatch3d_then_barrier(commandList.Get(), gx, gy, gz);
-		// outputs is empty → no auto UAV barriers; the transitions below synchronize both textures.
 
 		// Transition densityVolume UAV → combined SRV state for liquidPS.
 		// Both NON_PIXEL_SHADER_RESOURCE and PIXEL_SHADER_RESOURCE bits must be set:
@@ -2146,16 +2102,24 @@ protected:
 		};
 		commandList->ResourceBarrier(2, snapToNonPixel);
 
-		// Return both textures to COMMON home state.
-		// The UAV→COMMON on splatAccum flushes the resolve shader's clear writes,
-		// guaranteeing splatAccum is zero when the next frame's splat pass begins.
-		D3D12_RESOURCE_BARRIER bothToCommon[2] = {
-			CD3DX12_RESOURCE_BARRIER::Transition(densityVolume.Get(),
-				SRV_ALL, D3D12_RESOURCE_STATE_COMMON),
-			CD3DX12_RESOURCE_BARRIER::Transition(splatAccumTexture.Get(),
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
-		};
-		commandList->ResourceBarrier(2, bothToCommon);
+		// Transition densityVolume SRV → UAV so we can clear it for the next frame's splat pass.
+		D3D12_RESOURCE_BARRIER srvToUav = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume.Get(), SRV_ALL, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		commandList->ResourceBarrier(1, &srvToUav);
+
+		// Clear densityVolume to 0u (= 0.0f in IEEE 754) so the next frame starts with an empty accumulator.
+		// ClearUnorderedAccessViewUint requires both a GPU descriptor (shader-visible heap) and a CPU
+		// descriptor (non-shader-visible heap, stored in the staging heap at DENSITY_VOL_UAV_CLEAR).
+		const UINT clearVal[4] = { 0u, 0u, 0u, 0u };
+		commandList->ClearUnorderedAccessViewUint(
+			densityVolumeHandle, densityVolClearCpuHandle,
+			densityVolume.Get(), clearVal, 0, nullptr);
+
+		// Return densityVolume to COMMON home state. The implicit UAV→COMMON flush guarantees the clear
+		// is visible when the next frame's splat pass transitions the texture back to UAV.
+		D3D12_RESOURCE_BARRIER uavToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+			densityVolume.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+		commandList->ResourceBarrier(1, &uavToCommon);
 	}
 
 	// Record the DTVS depth-only particle draw into the already-open graphics command list.

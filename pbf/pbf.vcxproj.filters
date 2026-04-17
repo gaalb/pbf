@@ -256,9 +256,6 @@
     <FxCompile Include="splatDensityVolumeCS.hlsl">
       <Filter>Shaders\Compute\density texture</Filter>
     </FxCompile>
-    <FxCompile Include="splatDensityVolumeResolveCS.hlsl">
-      <Filter>Shaders\Compute\density texture</Filter>
-    </FxCompile>
     <FxCompile Include="densityVolumeCS.hlsl">
       <Filter>Shaders\Compute\density texture</Filter>
     </FxCompile>
@@ -278,9 +275,6 @@
     </None>
     <None Include="SharedConfig.hlsli">
       <Filter>Shaders\Include</Filter>
-    </None>
-    <None Include="splatDensityVolumeCommon.hlsli">
-      <Filter>Shaders\Compute\density texture</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

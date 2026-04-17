@@ -17,7 +17,7 @@
 // slot 24     LOD_REDUCTION_UAV    (APBF)            – DTC min/max reduction scratch (2 uints)
 // slot 25     PARTICLE_DEPTH_SRV_0 (DTVS)            – R32_FLOAT SRV of particleDepthTexture[0]
 // slot 26     PARTICLE_DEPTH_SRV_1 (DTVS)            – R32_FLOAT SRV of particleDepthTexture[1]
-// slot 27     DENSITY_VOL_UAV      (liquid)          – UAV for densityVolume, R32_FLOAT (written by densityVolumeCS on graphics queue)
+// slot 27     DENSITY_VOL_UAV      (liquid)          – R32_UINT UAV view of R32_TYPELESS densityVolume; splatDensityVolumeCS writes via CAS float atomic add
 // slot 28     DENSITY_VOL_SRV      (liquid)          – static SRV for densityVolume, R32_FLOAT (t0 in liquidPS)
 // slot 29     SNAP_POS_GFX_SRV_0   (liquid)          – SRV for posSnapshot[0] (t0 in graphics-side densityVolumeCS)
 // slot 30     SNAP_POS_GFX_SRV_1   (liquid)          – SRV for posSnapshot[1]
@@ -42,6 +42,7 @@
 // slot  7     SNAPSHOT_GRID_PREFIX_0  cellPrefixSumSnapshot[0] SRV
 // slot  8     SNAPSHOT_GRID_COUNT_1   cellCountSnapshot[1]    SRV
 // slot  9     SNAPSHOT_GRID_PREFIX_1  cellPrefixSumSnapshot[1] SRV
+// slot 10     DENSITY_VOL_UAV_CLEAR   densityVolume R32_UINT UAV (CPU-only; required by ClearUnorderedAccessViewUint)
 
 
 namespace HeapSlot {
@@ -86,9 +87,10 @@ namespace HeapSlot {
     constexpr UINT PARTICLE_DEPTH_SRV_0 = 25; // slot for particleDepthTexture[0]
     constexpr UINT PARTICLE_DEPTH_SRV_1 = 26; // slot for particleDepthTexture[1]
 
-    // Liquid surface density volume: single Texture3D<R32_FLOAT> (density only; gradient computed in liquidPS).
-    // Graphics fills it via densityVolumeCS dispatch, then reads it via liquidPS in the same frame.
-    constexpr UINT DENSITY_VOL_UAV      = 27; // UAV written by densityVolumeCS (u16)
+    // Liquid surface density volume: Texture3D (R32_TYPELESS resource).
+    // R32_UINT UAV (slot 27): splatDensityVolumeCS writes via CAS float atomic add.
+    // R32_FLOAT SRV (slot 28): liquidPS reads the same memory as float density.
+    constexpr UINT DENSITY_VOL_UAV      = 27; // R32_UINT UAV; written by splatDensityVolumeCS
     constexpr UINT DENSITY_VOL_SRV      = 28; // static SRV read by liquidPS (t0); set once at init
 
     // Position snapshot SRVs in the main (shader-visible) heap, used as t0 for the
@@ -111,12 +113,8 @@ namespace HeapSlot {
     constexpr UINT LIQUID_TABLE_GRID_COUNT   = 37; // t2: active cellCount SRV, per-frame
     constexpr UINT LIQUID_TABLE_GRID_PREFIX  = 38; // t3: active cellPrefixSum SRV, per-frame
 
-    // Splat density accumulation texture (R32_UINT): written by splatDensityVolumeCS via
-    // InterlockedAdd, read and cleared by splatDensityVolumeResolveCS each frame.
-    constexpr UINT SPLAT_ACCUM_UAV           = 39;
-
     // Total size of the main shader-visible heap
-    constexpr UINT TOTAL                = 40;
+    constexpr UINT TOTAL                = 39;
 
 } // namespace HeapSlot
 
@@ -141,7 +139,12 @@ namespace StagingSlot {
     constexpr UINT SNAPSHOT_GRID_COUNT_1   =  8; // cellCountSnapshot[1]    SRV
     constexpr UINT SNAPSHOT_GRID_PREFIX_1  =  9; // cellPrefixSumSnapshot[1] SRV
 
+    // CPU-only R32_UINT UAV for densityVolume, required by ClearUnorderedAccessViewUint.
+    // ClearUnorderedAccessViewUint needs both a CPU descriptor (non-shader-visible heap) and
+    // a GPU descriptor (shader-visible heap, i.e. HeapSlot::DENSITY_VOL_UAV).
+    constexpr UINT DENSITY_VOL_UAV_CLEAR   = 10;
+
     // Total size of the CPU-only snapshot staging heap
-    constexpr UINT TOTAL              = 10;
+    constexpr UINT TOTAL              = 11;
 
 } // namespace StagingSlot
