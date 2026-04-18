@@ -7,14 +7,14 @@
 // Out: predictedPosition
 
 
-#define PositionFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u9, numDescriptors = 1))"
+#define PositionFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<float3> scratch : register(u6);
-RWStructuredBuffer<uint> lod : register(u9);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<float3> scratch           : register(u1);
+RWStructuredBuffer<uint>   lod               : register(u2);
 
 [RootSignature(PositionFromScratchRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

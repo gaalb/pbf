@@ -8,13 +8,13 @@
 // In: predictedPosition
 // Out: position
 
-#define UpdatePositionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7))"
+#define UpdatePositionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> position : register(u0);
-RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<float3> position          : register(u0);
+RWStructuredBuffer<float3> predictedPosition : register(u1);
 
 [RootSignature(UpdatePositionRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

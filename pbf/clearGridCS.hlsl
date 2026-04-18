@@ -12,13 +12,13 @@
 // see the related note in ComputeShader::barrier_then_dispatch
 //
 
-#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define ClearGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "GridUtils.hlsli"
 
-RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<uint> cellCount : register(u0);
 
 [RootSignature(ClearGridRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

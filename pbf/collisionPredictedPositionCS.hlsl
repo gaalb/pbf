@@ -14,7 +14,7 @@
 
 #define CollisionPositionRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u9, numDescriptors = 1), SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 1)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -25,8 +25,8 @@
 #include "ComputeCb.hlsli"
 #include "SolidSdf.hlsli"
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<uint> lod : register(u9);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<uint> lod : register(u1);
 
 [RootSignature(CollisionPositionRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

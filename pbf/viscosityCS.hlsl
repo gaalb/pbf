@@ -13,18 +13,18 @@
 // In: position, velocity, cellCount, cellPrefixSum
 // Out: scratch (new velocity)
 
-#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
+#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // Poly6
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<float3> position : register(u0);
-RWStructuredBuffer<float3> velocity : register(u1);
-RWStructuredBuffer<float3> scratch : register(u6);
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
+RWStructuredBuffer<float3> position      : register(u0);
+RWStructuredBuffer<float3> velocity      : register(u1);
+RWStructuredBuffer<float3> scratch       : register(u2);
+RWStructuredBuffer<uint>   cellCount     : register(u3);
+RWStructuredBuffer<uint>   cellPrefixSum : register(u4);
 
 [RootSignature(ViscosityRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

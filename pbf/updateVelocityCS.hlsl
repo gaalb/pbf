@@ -7,13 +7,13 @@
 // In: predictedPosition, position
 // Out: velocity
 
-#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7))"
+#define UpdateVelocityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> position : register(u0);
-RWStructuredBuffer<float3> velocity : register(u1);
+RWStructuredBuffer<float3> position          : register(u0);
+RWStructuredBuffer<float3> velocity          : register(u1);
 RWStructuredBuffer<float3> predictedPosition : register(u2);
 
 [RootSignature(UpdateVelocityRootSig)]

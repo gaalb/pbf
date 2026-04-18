@@ -4,13 +4,13 @@
 // In: scratch
 // Out: velocity
 
-#define VelocityFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7))"
+#define VelocityFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> velocity : register(u1);
-RWStructuredBuffer<float3> scratch : register(u6);
+RWStructuredBuffer<float3> velocity : register(u0);
+RWStructuredBuffer<float3> scratch  : register(u1);
 
 [RootSignature(VelocityFromScratchRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

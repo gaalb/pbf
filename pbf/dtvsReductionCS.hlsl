@@ -8,14 +8,14 @@
 // In: predictedPosition, lodReduction
 // Out: lodReduction
 
-#define DtvsReductionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 1), SRV(t0, numDescriptors = 1))"
+#define DtvsReductionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3>          predictedPosition   : register(u2);
-globallycoherent RWStructuredBuffer<uint> lodReduction  : register(u7);
-Texture2D<float>                    particleDepthTex    : register(t0);
+RWStructuredBuffer<float3>                predictedPosition : register(u0);
+globallycoherent RWStructuredBuffer<uint> lodReduction      : register(u1);
+Texture2D<float>                          particleDepthTex  : register(t0);
 
 [RootSignature(DtvsReductionRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

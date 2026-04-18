@@ -17,9 +17,7 @@
 //
 // Dispatch: 1 group of PASS2_THREAD_COUNT threads.
 
-#define PrefixSumPass2RootSig \
-    "CBV(b0), " \
-    "DescriptorTable(UAV(u9, numDescriptors = 1))"
+#define PrefixSumPass2RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -30,7 +28,7 @@
 #define PASS2_NUM_ELEMENTS (GRID_DIM * GRID_DIM * GRID_DIM / (THREAD_GROUP_SIZE * 2))
 #define PASS2_THREAD_COUNT (PASS2_NUM_ELEMENTS / 2)
 
-RWStructuredBuffer<uint> groupSums : register(u9);
+RWStructuredBuffer<uint> groupSums : register(u0);
 
 groupshared uint s[PASS2_NUM_ELEMENTS];
 

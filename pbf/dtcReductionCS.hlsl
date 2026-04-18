@@ -3,12 +3,12 @@
 // In: predictedPosition, lodReduction
 // Out: lodReduction
 
-#define DtcReductionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 1))"
+#define DtcReductionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
 // uint buffer, even though it's really storing float values, because
 // InterlockedMin/Max only works on uints
 // the globallycoherent qualifier ensures that all threads must make
@@ -16,7 +16,7 @@ RWStructuredBuffer<float3> predictedPosition : register(u2);
 // the potentially stale L1 group level cacjes
 // technically this isn't necessary for correctness here, since
 // InterlockedXXX already does this out of the box - but I like to remind myself :)
-globallycoherent RWStructuredBuffer<uint> lodReduction : register(u7);
+globallycoherent RWStructuredBuffer<uint> lodReduction : register(u1);
 
 [RootSignature(DtcReductionRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

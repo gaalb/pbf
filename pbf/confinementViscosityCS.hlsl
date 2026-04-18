@@ -22,19 +22,19 @@
 // In: position, velocity, omega, cellCount, cellPrefixSum
 // Out: scratch (new velocity, Jacobi mode) or velocity (Gauss-Seidel mode)
 
-#define ConfinementViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
+#define ConfinementViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 6))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad, Poly6
 #include "GridUtils.hlsli"  // posToCell(), cellIndex(), NeighborCellIndices()
 
-RWStructuredBuffer<float3> position     : register(u0);
-RWStructuredBuffer<float3> velocity     : register(u1);
-RWStructuredBuffer<float3> omega        : register(u5);
-RWStructuredBuffer<float3> scratch      : register(u6);
-RWStructuredBuffer<uint>   cellCount    : register(u7);
-RWStructuredBuffer<uint>   cellPrefixSum: register(u8);
+RWStructuredBuffer<float3> position      : register(u0);
+RWStructuredBuffer<float3> velocity      : register(u1);
+RWStructuredBuffer<float3> omega         : register(u2);
+RWStructuredBuffer<float3> scratch       : register(u3);
+RWStructuredBuffer<uint>   cellCount     : register(u4);
+RWStructuredBuffer<uint>   cellPrefixSum : register(u5);
 
 [RootSignature(ConfinementViscosityRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

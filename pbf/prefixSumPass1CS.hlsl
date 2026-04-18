@@ -21,7 +21,7 @@
 // Dispatch: numCells / ELEMENTS_PER_GROUP groups.
 // For gridDim=32: 32768 / 512 = 64 groups of 256 threads.
 
-#define PrefixSumPass1RootSig "CBV(b0), DescriptorTable(UAV(u7, numDescriptors = 2), UAV(u9, numDescriptors = 1))"
+#define PrefixSumPass1RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "SharedConfig.hlsli"   // THREAD_GROUP_SIZE = 256
 #include "ComputeCb.hlsli"
@@ -29,9 +29,9 @@
 // Each group processes 2 * THREAD_GROUP_SIZE = 512 elements (2 per thread).
 #define ELEMENTS_PER_GROUP (THREAD_GROUP_SIZE * 2)
 
-RWStructuredBuffer<uint> cellCount     : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-RWStructuredBuffer<uint> groupSums     : register(u9);
+RWStructuredBuffer<uint> cellCount     : register(u0);
+RWStructuredBuffer<uint> cellPrefixSum : register(u1);
+RWStructuredBuffer<uint> groupSums     : register(u2);
 
 groupshared uint s[ELEMENTS_PER_GROUP];
 

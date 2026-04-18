@@ -14,15 +14,15 @@
 // Dispatch: same as pass 1 (numCells / ELEMENTS_PER_GROUP groups).
 // For gridDim=32: 64 groups of 256 threads.
 
-#define PrefixSumPass3RootSig "CBV(b0), DescriptorTable(UAV(u8, numDescriptors = 1), UAV(u9, numDescriptors = 1))"
+#define PrefixSumPass3RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
 #define ELEMENTS_PER_GROUP (THREAD_GROUP_SIZE * 2)
 
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-RWStructuredBuffer<uint> groupSums     : register(u9);
+RWStructuredBuffer<uint> cellPrefixSum : register(u0);
+RWStructuredBuffer<uint> groupSums     : register(u1);
 
 [RootSignature(PrefixSumPass3RootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

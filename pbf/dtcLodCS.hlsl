@@ -4,14 +4,14 @@
 // In: predictedPosition, lodReduction
 // Out: lod
 
-#define LodRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 1), UAV(u8, numDescriptors = 1))"
+#define LodRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<uint>   lod               : register(u7);
-RWStructuredBuffer<uint>   lodReduction      : register(u8);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<uint>   lod               : register(u1);
+RWStructuredBuffer<uint>   lodReduction      : register(u2);
 
 [RootSignature(LodRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

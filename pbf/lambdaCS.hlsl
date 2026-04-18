@@ -15,19 +15,19 @@
 //
 // In: predictedPosition, cellCount, cellPreficSum, lod
 // Out: lambda, density
-#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2), UAV(u9, numDescriptors = 1))"
+#define LambdaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 6))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // Poly6, SpikyGrad
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<float> lambda : register(u3);
-RWStructuredBuffer<float> density : register(u4);
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-RWStructuredBuffer<uint> lod : register(u9);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<float>  lambda            : register(u1);
+RWStructuredBuffer<float>  density           : register(u2);
+RWStructuredBuffer<uint>   cellCount         : register(u3);
+RWStructuredBuffer<uint>   cellPrefixSum     : register(u4);
+RWStructuredBuffer<uint>   lod               : register(u5);
 
 [RootSignature(LambdaRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

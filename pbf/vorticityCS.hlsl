@@ -7,18 +7,18 @@
 //
 // In: cellCount, cellPrefixSum, position, velocity
 // Out: omega
-#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
+#define VorticityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 5))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<float3> position : register(u0);
-RWStructuredBuffer<float3> velocity : register(u1);
-RWStructuredBuffer<float3> omega : register(u5);
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
+RWStructuredBuffer<float3> position      : register(u0);
+RWStructuredBuffer<float3> velocity      : register(u1);
+RWStructuredBuffer<float3> omega         : register(u2);
+RWStructuredBuffer<uint>   cellCount     : register(u3);
+RWStructuredBuffer<uint>   cellPrefixSum : register(u4);
 
 [RootSignature(VorticityRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

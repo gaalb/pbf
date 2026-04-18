@@ -24,7 +24,7 @@
 // In:  position snapshot (t0), cellCount snapshot (t1), cellPrefixSum snapshot (t2)
 // Out: densityVolume (u16)
 
-#define DensityVolumeRootSig "CBV(b0), DescriptorTable(SRV(t0, numDescriptors = 1), SRV(t1, numDescriptors = 2), UAV(u16, numDescriptors = 1))"
+#define DensityVolumeRootSig "CBV(b0), DescriptorTable(SRV(t0, numDescriptors = 3), UAV(u0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -34,7 +34,7 @@
 StructuredBuffer<float3>  position        : register(t0);
 StructuredBuffer<uint>    cellCount       : register(t1);
 StructuredBuffer<uint>    cellPrefixSum   : register(t2);
-RWTexture3D<float>        densityVolume   : register(u16);
+RWTexture3D<float>        densityVolume   : register(u0);
 
 [RootSignature(DensityVolumeRootSig)]
 [numthreads(8, 8, 4)]  // 8*8*4 = 256 threads per group, same total as THREAD_GROUP_SIZE

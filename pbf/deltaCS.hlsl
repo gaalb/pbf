@@ -13,19 +13,19 @@
 // In: predictedPosition, lambda, cellCount, cellPrefixSum, lod
 // Out: scratch (new predicted position)
 
-#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2), UAV(u9, numDescriptors = 1))"
+#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 6))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "SphKernels.hlsli" // SpikyGrad, Poly6
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<float> lambda : register(u3);
-RWStructuredBuffer<float3> scratch : register(u6);
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-RWStructuredBuffer<uint> lod : register(u9);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<float>  lambda            : register(u1);
+RWStructuredBuffer<float3> scratch           : register(u2);
+RWStructuredBuffer<uint>   cellCount         : register(u3);
+RWStructuredBuffer<uint>   cellPrefixSum     : register(u4);
+RWStructuredBuffer<uint>   lod               : register(u5);
 
 [RootSignature(DeltaRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

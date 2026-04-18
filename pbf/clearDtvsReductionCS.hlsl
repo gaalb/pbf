@@ -3,9 +3,7 @@
 // In: -
 // Out: lodReduction
 
-#define ClearDtvsReductionRootSig \
-    "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 1))"
+#define ClearDtvsReductionRootSig  "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

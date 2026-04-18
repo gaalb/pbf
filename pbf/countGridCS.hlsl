@@ -4,14 +4,14 @@
 // In: predictedPosition, cellCount
 // Out: cellCount
 
-#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
+#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-RWStructuredBuffer<uint> cellCount : register(u7);
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<uint> cellCount : register(u1);
 
 [RootSignature(CountGridRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

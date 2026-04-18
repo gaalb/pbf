@@ -8,22 +8,17 @@
 // In: cellCount (as atomic counter), cellPrefixSum, predictedPosition
 // Out: perm (old index -> new sorted index), cellCount (side-effect of InterlockedAdd)
 
-#define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2), UAV(u16, numDescriptors = 1))"
+#define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 4))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
 #include "GridUtils.hlsli" // posToCell(), cellIndex()
 
-// Only predictedPosition (u2) is read from the particle fields table; the
-// rest of u0..u6 are bound but unused by this shader.
-RWStructuredBuffer<float3> predictedPosition : register(u2);
-
-// Grid buffers
-RWStructuredBuffer<uint> cellCount : register(u7);
-RWStructuredBuffer<uint> cellPrefixSum : register(u8);
-
+RWStructuredBuffer<float3> predictedPosition : register(u0);
+RWStructuredBuffer<uint>   cellCount         : register(u1);
+RWStructuredBuffer<uint>   cellPrefixSum     : register(u2);
 // Permutation output: perm[i] = sorted destination index for particle i
-RWStructuredBuffer<uint> perm : register(u16);
+RWStructuredBuffer<uint>   perm              : register(u3);
 
 [RootSignature(SortRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]

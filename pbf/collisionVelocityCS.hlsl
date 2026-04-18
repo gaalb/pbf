@@ -20,7 +20,7 @@
 
 #define CollisionVelocityRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7), SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 1)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \

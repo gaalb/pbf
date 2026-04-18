@@ -9,7 +9,7 @@
 // Out: sortedPosition, sortedVelocity, sortedPredictedPosition,
 //      sortedLambda, sortedDensity, sortedOmega, sortedScratch
 
-#define GatherRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u9, numDescriptors = 7), UAV(u16, numDescriptors = 1))"
+#define GatherRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 15))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"
@@ -24,16 +24,16 @@ RWStructuredBuffer<float3> omega             : register(u5);
 RWStructuredBuffer<float3> scratch           : register(u6);
 
 // Sorted particle field buffers (write)
-RWStructuredBuffer<float3> sortedPosition          : register(u9);
-RWStructuredBuffer<float3> sortedVelocity          : register(u10);
-RWStructuredBuffer<float3> sortedPredictedPosition : register(u11);
-RWStructuredBuffer<float>  sortedLambda            : register(u12);
-RWStructuredBuffer<float>  sortedDensity           : register(u13);
-RWStructuredBuffer<float3> sortedOmega             : register(u14);
-RWStructuredBuffer<float3> sortedScratch           : register(u15);
+RWStructuredBuffer<float3> sortedPosition          : register(u7);
+RWStructuredBuffer<float3> sortedVelocity          : register(u8);
+RWStructuredBuffer<float3> sortedPredictedPosition : register(u9);
+RWStructuredBuffer<float>  sortedLambda            : register(u10);
+RWStructuredBuffer<float>  sortedDensity           : register(u11);
+RWStructuredBuffer<float3> sortedOmega             : register(u12);
+RWStructuredBuffer<float3> sortedScratch           : register(u13);
 
 // Permutation table (read): perm[i] is the sorted destination for particle i
-RWStructuredBuffer<uint> perm : register(u16);
+RWStructuredBuffer<uint> perm : register(u14);
 
 [RootSignature(GatherRootSig)]
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
