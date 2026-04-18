@@ -11,6 +11,7 @@ GG_CLASS(GpuBuffer)
     com_ptr<ID3D12Resource> resource;
     UINT elementCount = 0;
     UINT stride       = 0;
+    D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_CPU_DESCRIPTOR_HANDLE uavCpuHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE uavGpuHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle{};
@@ -21,7 +22,7 @@ public:
               const wchar_t* name,
               D3D12_RESOURCE_STATES initialState,
               D3D12_HEAP_TYPE heapType)
-        : elementCount(elems), stride(elemStride)
+        : elementCount(elems), stride(elemStride), currentState(initialState)
     {
         UINT64 bufSize = (UINT64)elems * elemStride;
         D3D12_RESOURCE_FLAGS flags = (heapType == D3D12_HEAP_TYPE_DEFAULT)
@@ -46,13 +47,14 @@ public:
     // Swap internals (resource + all handles) of two GpuBuffer objects in-place,
     // preserving each shared_ptr's identity so stored com_ptr* pointers remain valid.
     static void SwapInternals(P& a, P& b) {
-        std::swap(a->resource,     b->resource);
-        std::swap(a->elementCount, b->elementCount);
-        std::swap(a->stride,       b->stride);
-        std::swap(a->uavCpuHandle, b->uavCpuHandle);
-        std::swap(a->uavGpuHandle, b->uavGpuHandle);
-        std::swap(a->srvCpuHandle, b->srvCpuHandle);
-        std::swap(a->srvGpuHandle, b->srvGpuHandle);
+        std::swap(a->resource,      b->resource);
+        std::swap(a->elementCount,  b->elementCount);
+        std::swap(a->stride,        b->stride);
+        std::swap(a->currentState,  b->currentState);
+        std::swap(a->uavCpuHandle,  b->uavCpuHandle);
+        std::swap(a->uavGpuHandle,  b->uavGpuHandle);
+        std::swap(a->srvCpuHandle,  b->srvCpuHandle);
+        std::swap(a->srvGpuHandle,  b->srvGpuHandle);
     }
 
     // Auto-allocate one slot and create a structured UAV.
@@ -94,6 +96,13 @@ public:
         device->CreateShaderResourceView(resource.Get(), &d, cpu);
         srvCpuHandle = cpu;
         srvGpuHandle = gpu;
+    }
+
+    void Transition(D3D12_RESOURCE_STATES destState, ID3D12GraphicsCommandList* cmdList) {
+        if (currentState == destState) return;
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource.Get(), currentState, destState);
+        cmdList->ResourceBarrier(1, &barrier);
+        currentState = destState;
     }
 
     ID3D12Resource* Get() const { return resource.Get(); }

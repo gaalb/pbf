@@ -9,6 +9,7 @@ GG_CLASS(GpuTexture)
     UINT width = 0, height = 0, depth = 1;
     DXGI_FORMAT resourceFormat = DXGI_FORMAT_UNKNOWN;
     bool is3D = false;
+    D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_CPU_DESCRIPTOR_HANDLE uavCpuHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE uavGpuHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle{};
@@ -30,11 +31,12 @@ public:
         P tex = std::make_shared<GpuTexture>();
         tex->width = w; tex->height = h; tex->depth = 1;
         tex->resourceFormat = format; tex->is3D = false;
+        tex->currentState = initialState;
 
         DX_API("Failed to create 2D texture")
             device->CreateCommittedResource(
 				&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), // default heap for GPU read/write access
-                D3D12_HEAP_FLAG_NONE, 
+                D3D12_HEAP_FLAG_NONE,
                 &CD3DX12_RESOURCE_DESC::Tex2D(format, w, h, 1, 1, 1, 0, flags),
                 initialState, nullptr, // nullptr here means no clear value
 				IID_PPV_ARGS(tex->resource.ReleaseAndGetAddressOf())); // fill the com_ptr with the created resource
@@ -50,6 +52,7 @@ public:
         P tex = std::make_shared<GpuTexture>();
         tex->width = w; tex->height = h; tex->depth = 1;
         tex->resourceFormat = format; tex->is3D = false;
+        tex->currentState = initialState;
 
         DX_API("Failed to create 2D texture")
             device->CreateCommittedResource(
@@ -69,6 +72,7 @@ public:
         P tex = std::make_shared<GpuTexture>();
         tex->width = w; tex->height = h; tex->depth = d;
         tex->resourceFormat = format; tex->is3D = true;
+        tex->currentState = initialState;
 
         DX_API("Failed to create 3D texture")
             device->CreateCommittedResource(
@@ -163,6 +167,13 @@ public:
         device->CreateShaderResourceView(resource.Get(), &d, cpu);
         srvCpuHandle = cpu;
         srvGpuHandle = gpu;
+    }
+
+    void Transition(D3D12_RESOURCE_STATES destState, ID3D12GraphicsCommandList* cmdList) {
+        if (currentState == destState) return;
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource.Get(), currentState, destState);
+        cmdList->ResourceBarrier(1, &barrier);
+        currentState = destState;
     }
 
     ID3D12Resource* Get() const { return resource.Get(); }

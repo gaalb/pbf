@@ -306,18 +306,9 @@ void PbfApp::UploadAll() {
 // Copy initial particle positions into both snapshot slots so particles are visible
 // before physics starts. Expects command list to be recording.
 void PbfApp::RecordSnapshotUpload() {
-	// Copy initial positions into both snapshot slots so particles are visible before physics starts.
-	D3D12_RESOURCE_BARRIER barriers[3];
-	barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
-		particleFieldDB[PF_POSITION]->getFront()->Get(),
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
-		positionSnapshotDB->getFront()->Get(),
-		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-	barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
-		positionSnapshotDB->getBack()->Get(),
-		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-	commandList->ResourceBarrier(3, barriers);
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, commandList.Get());
+	positionSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	positionSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
 
 	const UINT64 posBytes = (UINT64)numParticles * sizeof(Float3);
 	commandList->CopyBufferRegion(positionSnapshotDB->getFront()->Get(), 0,
@@ -325,59 +316,31 @@ void PbfApp::RecordSnapshotUpload() {
 	commandList->CopyBufferRegion(positionSnapshotDB->getBack()->Get(), 0,
 		particleFieldDB[PF_POSITION]->getFront()->Get(), 0, posBytes);
 
-	barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(
-		particleFieldDB[PF_POSITION]->getFront()->Get(),
-		D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(
-		positionSnapshotDB->getFront()->Get(),
-		D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	barriers[2] = CD3DX12_RESOURCE_BARRIER::Transition(
-		positionSnapshotDB->getBack()->Get(),
-		D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	commandList->ResourceBarrier(3, barriers);
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	positionSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	positionSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 
 	// Transition all remaining snapshot buffers from COMMON to their home NON_PIXEL_SHADER_RESOURCE state.
-	D3D12_RESOURCE_BARRIER toSrv[8] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(densitySnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(densitySnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(lodSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(lodSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-	};
-	commandList->ResourceBarrier(8, toSrv);
+	densitySnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	densitySnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	lodSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	cellCountSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	cellCountSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	cellPrefixSumSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 }
 
 // Sets all depth pixels in both depth texture slots to 1.0 (far plane)
 void PbfApp::RecordDepthTextureClear() {
-	D3D12_RESOURCE_BARRIER toWrite[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleDepthDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleDepthDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE),
-	};
-	commandList->ResourceBarrier(2, toWrite);
+	particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
+	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
 	commandList->ClearDepthStencilView(
 		particleDepthDB->getFront()->GetDsvCpuHandle(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 	commandList->ClearDepthStencilView(
 		particleDepthDB->getBack()->GetDsvCpuHandle(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-	D3D12_RESOURCE_BARRIER toCommon[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleDepthDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleDepthDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON),
-	};
-	commandList->ResourceBarrier(2, toCommon);
+	particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
+	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
 }
 
 // Sets frameCount = 1 and signals computeFence to 1 so the
@@ -589,21 +552,12 @@ void PbfApp::FillUploadBuffers(const ParticleInitData& initData) {
 // Record copy commands for particle data into the already-open command list.
 // The command list must have been Reset() before calling this.
 void PbfApp::RecordParticleUpload() {
-	// In order to copy to them, we must transition position and velocity buffers to COPY_DEST
-	// That's done by inserting transition type resource barriers to the command list.
 	// Copy to both front and back so that the CPU-side flip() at the start of the first physics
 	// frame leaves a valid initial state in whichever buffer becomes the new front.
-	D3D12_RESOURCE_BARRIER toCopyDest[4] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_VELOCITY]->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_VELOCITY]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
-	};
-	commandList->ResourceBarrier(4, toCopyDest);
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
 	commandList->CopyBufferRegion(particleFieldDB[PF_POSITION]->getFront()->Get(), 0,
 		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
 	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getFront()->Get(), 0,
@@ -612,18 +566,10 @@ void PbfApp::RecordParticleUpload() {
 		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
 	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getBack()->Get(), 0,
 		velocityUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
-
-	D3D12_RESOURCE_BARRIER toUav[4] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_VELOCITY]->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_VELOCITY]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-	};
-	commandList->ResourceBarrier(4, toUav);
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 }
 
 // Create all compute shader PSOs and wire each shader to its contiguous descriptor region.
@@ -1288,20 +1234,10 @@ void PbfApp::WriteSnapshot() {
 	// Copy position and density into the back snapshot buffers.
 	// After this frame's flip(), back becomes the new front for graphics to read.
 	// Sorted particle data lives in back (permutateCS wrote there; flip happens CPU-side in Render()).
-	D3D12_RESOURCE_BARRIER toCopySrc[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_DENSITY]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-	};
-	D3D12_RESOURCE_BARRIER snapToDest[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(positionSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
-		CD3DX12_RESOURCE_BARRIER::Transition(densitySnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
-	};
-	computeList->ResourceBarrier(2, toCopySrc);
-	computeList->ResourceBarrier(2, snapToDest);
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	particleFieldDB[PF_DENSITY]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	positionSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
+	densitySnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
 
 	computeList->CopyBufferRegion(positionSnapshotDB->getBack()->Get(), 0,
 		particleFieldDB[PF_POSITION]->getBack()->Get(), 0, (UINT64)numParticles * sizeof(Float3));
@@ -1311,36 +1247,16 @@ void PbfApp::WriteSnapshot() {
 	computeList->CopyBufferRegion(densityReadbackBuffer->Get(), 0,
 		particleFieldDB[PF_DENSITY]->getBack()->Get(), 0, (UINT64)numParticles * sizeof(float));
 
-	D3D12_RESOURCE_BARRIER toUav[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_POSITION]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		CD3DX12_RESOURCE_BARRIER::Transition(particleFieldDB[PF_DENSITY]->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-	};
-	D3D12_RESOURCE_BARRIER snapToSrv[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(positionSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(densitySnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-	};
-	computeList->ResourceBarrier(2, toUav);
-	computeList->ResourceBarrier(2, snapToSrv);
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	particleFieldDB[PF_DENSITY]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	positionSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
+	densitySnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 
 	// Copy grid buffers into the back grid snapshot slots.
-	D3D12_RESOURCE_BARRIER gridToCopySrc[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountBuffer->Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumBuffer->Get(),
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-	};
-	D3D12_RESOURCE_BARRIER gridSnapToDest[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST),
-	};
-	computeList->ResourceBarrier(2, gridToCopySrc);
-	computeList->ResourceBarrier(2, gridSnapToDest);
+	cellCountBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	cellPrefixSumBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	cellCountSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
+	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
 
 	const UINT64 gridBufSize = (UINT64)numCells * sizeof(UINT);
 	computeList->CopyBufferRegion(cellCountSnapshotDB->getBack()->Get(), 0,
@@ -1348,20 +1264,10 @@ void PbfApp::WriteSnapshot() {
 	computeList->CopyBufferRegion(cellPrefixSumSnapshotDB->getBack()->Get(), 0,
 		cellPrefixSumBuffer->Get(), 0, gridBufSize);
 
-	D3D12_RESOURCE_BARRIER gridBackToUav[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountBuffer->Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumBuffer->Get(),
-			D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-	};
-	D3D12_RESOURCE_BARRIER gridSnapToSrv[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getBack()->Get(),
-			D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-	};
-	computeList->ResourceBarrier(2, gridBackToUav);
-	computeList->ResourceBarrier(2, gridSnapToSrv);
+	cellCountBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	cellPrefixSumBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	cellCountSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
+	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 }
 
 void PbfApp::CalculateLod() {
@@ -1375,41 +1281,27 @@ void PbfApp::CalculateLod() {
 	else if (lodMode == LodMode::DTVS) {
 		// particleDepthDB->getFront() = last frame's depth written by graphics.
 		// Descriptor slot is already correct (registered as front target in BuildComputePipelines).
-		D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-			particleDepthDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		computeList->ResourceBarrier(1, &toSrv);
+		particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 
 		clearDtvsReductionShader->dispatch_then_barrier(computeList.Get(), 1);
 		dtvsReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 		dtvsLodShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
-		D3D12_RESOURCE_BARRIER backToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
-			particleDepthDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-		computeList->ResourceBarrier(1, &backToCommon);
+		particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_COMMON, computeList.Get());
 	}
 	else {
 		setLodMaxShader->dispatch_then_barrier(computeList.Get(), numGroups);
 	}
 
 	// Snapshot LOD before solver loop decrements it. Write into back LOD snapshot.
-	D3D12_RESOURCE_BARRIER toLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
-		lodBuffer->Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-	D3D12_RESOURCE_BARRIER toLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
-		lodSnapshotDB->getBack()->Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-	computeList->ResourceBarrier(1, &toLodSrc);
-	computeList->ResourceBarrier(1, &toLodDest);
+	lodBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
 	computeList->CopyBufferRegion(lodSnapshotDB->getBack()->Get(), 0,
 		lodBuffer->Get(), 0, (UINT64)numParticles * sizeof(UINT));
 	computeList->CopyBufferRegion(lodReadbackBuffer->Get(), 0,
 		lodBuffer->Get(), 0, (UINT64)numParticles * sizeof(UINT));
-	D3D12_RESOURCE_BARRIER fromLodSrc = CD3DX12_RESOURCE_BARRIER::Transition(
-		lodBuffer->Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	D3D12_RESOURCE_BARRIER fromLodDest = CD3DX12_RESOURCE_BARRIER::Transition(
-		lodSnapshotDB->getBack()->Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	computeList->ResourceBarrier(1, &fromLodSrc);
-	computeList->ResourceBarrier(1, &fromLodDest);
+	lodBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 }
 
 void PbfApp::RecordGraphicsCommands() {
@@ -1421,21 +1313,14 @@ void PbfApp::RecordGraphicsCommands() {
 	// Promote positionSnapshot front to pixel-visible before any draw that uses it from the pixel stage.
 	constexpr D3D12_RESOURCE_STATES SRV_ALL =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	if (shadingMode == ShadingMode::LIQUID) {
-		D3D12_RESOURCE_BARRIER snapPosToPixel = CD3DX12_RESOURCE_BARRIER::Transition(
-			positionSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, SRV_ALL);
-		commandList->ResourceBarrier(1, &snapPosToPixel);
-	}
+	if (shadingMode == ShadingMode::LIQUID)
+		positionSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
 
 	if (lodMode == LodMode::DTVS) DrawParticleDepth();
 
 	if (shadingMode == ShadingMode::LIQUID) {
 		DrawLiquidSurface();
-		D3D12_RESOURCE_BARRIER snapPosToNonPixel = CD3DX12_RESOURCE_BARRIER::Transition(
-			positionSnapshotDB->getFront()->Get(),
-			SRV_ALL, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		commandList->ResourceBarrier(1, &snapPosToNonPixel);
+		positionSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 	}
 	else {
 		particleMesh->Draw(commandList.Get());
@@ -1450,9 +1335,7 @@ void PbfApp::RecordGraphicsCommands() {
 void PbfApp::DrawLiquidSurface() {
 	// liquidTableStartSlot +1/+2/+3 are updated by snapshot DB flip() — no CopyDescriptorsSimple needed.
 
-	D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(
-		densityVolume->Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	commandList->ResourceBarrier(1, &toUav);
+	densityVolume->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 
 	// Splat: one thread per particle; each writes Poly6 to densityVolume via CAS float atomic add.
 	// dispatch_then_barrier emits a UAV barrier on densityVolume (it's in outputs), ensuring all
@@ -1465,54 +1348,29 @@ void PbfApp::DrawLiquidSurface() {
 	// D3D12 validates that descriptor-table SRVs carry both flags (#538 error otherwise).
 	constexpr D3D12_RESOURCE_STATES SRV_ALL =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-		densityVolume->Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, SRV_ALL);
-	commandList->ResourceBarrier(1, &toSrv);
-
-	D3D12_RESOURCE_BARRIER snapToPixel[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-	};
-	commandList->ResourceBarrier(2, snapToPixel);
+	densityVolume->Transition(SRV_ALL, commandList.Get());
+	cellCountSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
+	cellPrefixSumSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
 
 	liquidMesh->Draw(commandList.Get());
 
-	D3D12_RESOURCE_BARRIER snapToNonPixel[2] = {
-		CD3DX12_RESOURCE_BARRIER::Transition(cellCountSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-		CD3DX12_RESOURCE_BARRIER::Transition(cellPrefixSumSnapshotDB->getFront()->Get(),
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-	};
-	commandList->ResourceBarrier(2, snapToNonPixel);
-
-	D3D12_RESOURCE_BARRIER srvToUav = CD3DX12_RESOURCE_BARRIER::Transition(
-		densityVolume->Get(), SRV_ALL, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	commandList->ResourceBarrier(1, &srvToUav);
+	cellCountSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	cellPrefixSumSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
+	densityVolume->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 
 	const UINT clearVal[4] = { 0u, 0u, 0u, 0u };
 	commandList->ClearUnorderedAccessViewUint(
 		densityVolumeHandle, densityVolClearCpuHandle,
 		densityVolume->Get(), clearVal, 0, nullptr);
 
-	D3D12_RESOURCE_BARRIER uavToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
-		densityVolume->Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-	commandList->ResourceBarrier(1, &uavToCommon);
+	densityVolume->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
 }
 
 // Record the DTVS depth-only particle draw into the already-open graphics command list.
 // Writes into particleDepthDB->getBack() (graphics writes back, compute reads front next frame).
 // Leaves the texture in COMMON state so compute can read it via the front SRV next frame.
 void PbfApp::DrawParticleDepth() {
-	D3D12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
-		particleDepthDB->getBack()->Get(),
-		D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-	commandList->ResourceBarrier(1, &toDepthWrite);
+	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
 
 	D3D12_CPU_DESCRIPTOR_HANDLE dsv = particleDepthDB->getBack()->GetDsvCpuHandle();
 
@@ -1534,10 +1392,7 @@ void PbfApp::DrawParticleDepth() {
 		rtvDescriptorHandleIncrementSize);
 	commandList->OMSetRenderTargets(1, &rtv, FALSE, &mainDsv);
 
-	D3D12_RESOURCE_BARRIER toCommon = CD3DX12_RESOURCE_BARRIER::Transition(
-		particleDepthDB->getBack()->Get(),
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COMMON);
-	commandList->ResourceBarrier(1, &toCommon);
+	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
 }
 
 void PbfApp::BuildImGui() {
