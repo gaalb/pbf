@@ -14,9 +14,7 @@
 
 #define CollisionPositionRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7)), " \
-    "DescriptorTable(UAV(u9, numDescriptors = 1)), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u9, numDescriptors = 1), SRV(t0, numDescriptors = 1)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \

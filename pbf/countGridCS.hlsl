@@ -4,7 +4,7 @@
 // In: predictedPosition, cellCount
 // Out: cellCount
 
-#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define CountGridRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

@@ -8,11 +8,7 @@
 // In: predictedPosition, lodReduction
 // Out: lodReduction
 
-#define DtvsReductionRootSig \
-    "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 7)), " \
-    "DescriptorTable(UAV(u7, numDescriptors = 1)), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 1))"
+#define DtvsReductionRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 1), SRV(t0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

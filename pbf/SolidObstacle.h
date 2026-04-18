@@ -39,6 +39,7 @@ GG_CLASS(SolidObstacle)
     Float3 sdfObjMax; // SDF AABB max in object space
     Float4x4 invTransform; // world-to-object, derived from the current transform
     D3D12_GPU_DESCRIPTOR_HANDLE sdfGpuHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE sdfCpuHandle{};
 
     // Read a .sdf binary file, allocate GPU resources, and fill the upload buffer.
     // Called internally by Load(). Does NOT record any GPU commands.
@@ -258,9 +259,11 @@ public:
 
         device->CreateShaderResourceView(sdfTexture.Get(), &srvDesc, cpu);
         sdfGpuHandle = alloc.GetGpuHandle(slot);
+        sdfCpuHandle = cpu;
     }
 
     D3D12_GPU_DESCRIPTOR_HANDLE GetSdfGpuHandle() const { return sdfGpuHandle; }
+    D3D12_CPU_DESCRIPTOR_HANDLE GetSdfCpuHandle() const { return sdfCpuHandle; }
 
     // Delegate to the underlying shaded mesh.
     void Draw(ID3D12GraphicsCommandList* commandList) {

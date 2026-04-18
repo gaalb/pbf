@@ -13,7 +13,7 @@
 // In: position, omega, cellCount, cellPrefixSum, velocity
 // Out: velocity
 
-#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define ConfinementRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

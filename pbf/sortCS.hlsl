@@ -8,7 +8,7 @@
 // In: cellCount (as atomic counter), cellPrefixSum, predictedPosition
 // Out: perm (old index -> new sorted index), cellCount (side-effect of InterlockedAdd)
 
-#define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u16, numDescriptors = 1))"
+#define SortRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2), UAV(u16, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

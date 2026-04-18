@@ -9,7 +9,7 @@
 // Out: sortedPosition, sortedVelocity, sortedPredictedPosition,
 //      sortedLambda, sortedDensity, sortedOmega, sortedScratch
 
-#define GatherRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u9, numDescriptors = 7)), DescriptorTable(UAV(u16, numDescriptors = 1))"
+#define GatherRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u9, numDescriptors = 7), UAV(u16, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

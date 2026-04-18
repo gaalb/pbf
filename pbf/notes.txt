@@ -1,6 +1,10 @@
 ﻿NOTES: NO SOURCE, JUST NOTES FOR ME
 ---------------------------------------------------------------------------------------
 TODOS:
+-fix compute shader root signatures to be in sync with new binding (contiguous, only 1 descr table)
+-make the buffer/texture class handle its own transitions: bundle the transition construction calls,
+ with the resource keeping track of the last dispatched state, and the dispatches as well
+ so that each time we want to transition, we just call one line: myResource.Transition(newState, commandList)
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)
 -cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?
 -pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 

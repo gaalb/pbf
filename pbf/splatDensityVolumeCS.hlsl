@@ -17,10 +17,7 @@
 // In:  posSnapshot[readIdx]  (t0) — StructuredBuffer<float3>, NON_PIXEL|PIXEL SRV state
 // Out: densityVolume          (u0) — RWTexture3D<uint>, UAV state; stores raw float bits (asfloat gives density)
 
-#define SplatDensityVolumeRootSig \
-    "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 1))"
+#define SplatDensityVolumeRootSig "CBV(b0), DescriptorTable(SRV(t0, numDescriptors = 1), UAV(u0, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

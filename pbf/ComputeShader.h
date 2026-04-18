@@ -5,66 +5,42 @@
 #include <vector>
 #include <string>
 
-// Encapsulates a single compute shader: its PSO, root signature, descriptor table bindings,
+// Encapsulates a single compute shader: its PSO, root signature, a fixed descriptor table handle,
 // and the resource lists used to insert UAV barriers before or after dispatch.
-// As per the Egg GG_CLASS patters: store as ComputeShader::P (shared_ptr), create via ComputeShader::Create(...)
+// As per the Egg GG_CLASS pattern: store as ComputeShader::P (shared_ptr), create via ComputeShader::Create(...)
 GG_CLASS(ComputeShader)
     com_ptr<ID3D12PipelineState> pso;
     com_ptr<ID3D12RootSignature> rootSig;
 
 public:
-    // inputs and outputs are raw pointers to com_ptrs pointing to the
-    // actual com_ptrs used by PbfApp. The reasoning behind the double
-    // indirectio is so that PbfApp can play around with what resources  
-    // the com_ptrs point to during double buffering:
-    // for (UINT f = 0; f < PF_COUNT; f++)	std::swap(particleFields[f], sortedFields[f]);
-    // This way, when we call functions of ComputeShader that want to
-    // access the inputs/outputs, we re-query the com_ptrs in the indirection,
-    // rather than pointing to the same underlying object, which would
-    // be the case if we just stored ID3D12Resource* pointers.
-    // 
-    // Resources read by this shader. Used by barrier_then_dispatch to flush
-    // prior writes before the dispatch begins.
+    // Pointers-to-com_ptrs rather than raw resource pointers. GpuBuffer::SwapInternals changes the
+    // value held inside the GpuBuffer (i.e. the com_ptr's value) without moving the GpuBuffer object,
+    // so these addresses stay valid across flip() calls while still resolving to the current resource.
     std::vector<com_ptr<ID3D12Resource>*> inputs;
-
-    // Resources written by this shader. Used by dispatch_then_barrier to flush
-    // this shader's writes before the next consumer runs.
     std::vector<com_ptr<ID3D12Resource>*> outputs;
 
     // Address of the shared ComputeCb constant buffer. Always bound to root param 0.
     D3D12_GPU_VIRTUAL_ADDRESS cbvAddress = 0;
 
-    // Descriptor table bindings applied before every dispatch.
-    struct TableBinding {
-        UINT rootParam; // root parameter index in this shader's root signature
-        // Pointer to the handle member in PbfApp, resolved at record time via *handlePtr.
-        // This lets the caller swap the handle value (e.g. particleFieldsHandle <-> sortedFieldsHandle)
-        // between dispatches to re-route subsequent commands to different descriptor ranges,
-        // without modifying the descriptor heap or rebuilding the pipeline, same way
-        // as above described with the input/outputs
-        D3D12_GPU_DESCRIPTOR_HANDLE* handlePtr;
-    };
-    std::vector<TableBinding> tableBindings;
+    // GPU handle to the start of this shader's contiguous descriptor region in the main heap.
+    // Baked at construction time; setup() always binds it to root param 1.
+    D3D12_GPU_DESCRIPTOR_HANDLE fixedHandle{};
 
-    // Loads the compiled shader object (.cso), extracts the embedded root signature,
-    // creates the compute PSO, and stores all binding metadata.
     ComputeShader(
         ID3D12Device* device,
         const std::string& csoPath,
         D3D12_GPU_VIRTUAL_ADDRESS cbv,
-        std::vector<TableBinding> tbs,
+        D3D12_GPU_DESCRIPTOR_HANDLE table,
         std::vector<com_ptr<ID3D12Resource>*> ins,
         std::vector<com_ptr<ID3D12Resource>*> outs)
         : cbvAddress(cbv)
-        , tableBindings(std::move(tbs)) // move: avoid copy
-        , inputs(std::move(ins)) // move: avoid copy
-        , outputs(std::move(outs)) // move: avoid copy
+        , fixedHandle(table)
+        , inputs(std::move(ins))
+        , outputs(std::move(outs))
     {
-        // extract roog signature
         com_ptr<ID3DBlob> shader = Egg::Shader::LoadCso(csoPath);
         rootSig = Egg::Shader::LoadRootSignature(device, shader.Get());
 
-        // create the pipeline state object using the root signature and shader bytecode
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.pRootSignature = rootSig.Get();
         psoDesc.CS = CD3DX12_SHADER_BYTECODE(shader.Get());
@@ -73,7 +49,6 @@ public:
     }
 
     // Dispatches the shader, then inserts a UAV barrier on every output resource.
-    // Use this pattern (current pipeline) to ensure writes are visible to the next pass.
     void dispatch_then_barrier(ID3D12GraphicsCommandList* cmd, UINT numGroups)
     {
         setup(cmd);
@@ -82,9 +57,8 @@ public:
             cmd->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(r->Get()));
     }
 
-    // 3D variant of dispatch_then_barrier. Use when a 1D dispatch would exceed the
-    // D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION (65535) limit on a single axis.
-    // The caller is responsible for choosing (gx, gy, gz) such that each dimension fits.
+    // 3D variant of dispatch_then_barrier. Use when a 1D dispatch would exceed
+    // D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION (65535) on a single axis.
     void dispatch3d_then_barrier(ID3D12GraphicsCommandList* cmd, UINT gx, UINT gy, UINT gz)
     {
         setup(cmd);
@@ -94,31 +68,6 @@ public:
     }
 
     // Inserts a UAV barrier on every input resource, then dispatches the shader.
-    // Use this pattern (future "wait-calculate" ordering) to ensure prior writes
-    // to inputs are complete before this shader reads them.
-    //
-    // Note: using this instead of dispatch_then_barrier is an interesting idea, but
-    // needs further consideration, due to it leading to WAR hazards. Specifically,
-    // we had this:
-    // 1. countGridShader -> writes cellCount(atomic increment per particle)
-    // 2. prefixSumShader -> reads cellCount, writes cellPrefixSum
-    // 3. clearGridShader -> zeroes cellCount
-    // 4. sortShader      -> reads cellPrefixSum, cellCount, predictedPosition
-    //
-    // If we used barrier_then_dispatch here, then steps 2 and 3 *think* they
-    // can run concurrently, because prefixSumShader waits for all operations
-    // on cellCount to finish before dispatching, which is good. However, since
-    // clearGridShader doesn't *read* cellCount, it didn't declare it as an input,
-    // and therefore doesn't wait for reads and writes on it to be finished before
-    // dispatching. This makes it possible for clearGridShader to start immediately
-    // after prefixSumShader, and lets them run concurrently, which is incorrect,
-    // because clearGridShader overwrites cell data taht prefixSumShader hasn't yet
-    // had time to read. So, we must redefine "input" from "data this shader reads"
-    // to "buffer that must be stable before shader is launched". This has already been
-    // done in clearGridShader, cellCount was added as an input, but I haven't yet
-    // thought this through for the other shaders. It's simpler to just use
-    // dispatch_then_barrier, which is free of such issues (I think?)
-    //
     void barrier_then_dispatch(ID3D12GraphicsCommandList* cmd, UINT numGroups)
     {
         for (auto* r : inputs)
@@ -128,16 +77,13 @@ public:
     }
 
 private:
-    // Binds the root signature, CBV, descriptor tables, and PSO onto the command list.
-    // handlePtr is dereferenced here at record time, so callers can swap the handle value
-    // (e.g. particleFieldsHandle <-> sortedFieldsHandle) between dispatches to re-route
-    // subsequent commands to a different descriptor range without modifying the heap.
+    // SetComputeRootSignature resets all compute root bindings, so setup() must be called
+    // before every dispatch even though fixedHandle never changes.
     void setup(ID3D12GraphicsCommandList* cmd)
     {
         cmd->SetComputeRootSignature(rootSig.Get());
         cmd->SetComputeRootConstantBufferView(0, cbvAddress);
-        for (auto& b : tableBindings)
-            cmd->SetComputeRootDescriptorTable(b.rootParam, *b.handlePtr);
+        cmd->SetComputeRootDescriptorTable(1, fixedHandle);
         cmd->SetPipelineState(pso.Get());
     }
 GG_ENDCLASS

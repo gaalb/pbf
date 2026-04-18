@@ -13,7 +13,7 @@
 // In: position, velocity, cellCount, cellPrefixSum
 // Out: scratch (new velocity)
 
-#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define ViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

@@ -26,7 +26,7 @@
 // In: predictedPosition, lambda, cellCount, cellPrefixSum
 // Out: scratch (new predicted position, Jacobi-style; copied to predictedPosition by positionFromScratchCS)
 
-#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2)), DescriptorTable(UAV(u9, numDescriptors = 1))"
+#define DeltaRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2), UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

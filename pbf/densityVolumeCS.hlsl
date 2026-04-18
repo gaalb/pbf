@@ -24,11 +24,7 @@
 // In:  position snapshot (t0), cellCount snapshot (t1), cellPrefixSum snapshot (t2)
 // Out: densityVolume (u16)
 
-#define DensityVolumeRootSig \
-    "CBV(b0), " \
-    "DescriptorTable(SRV(t0, numDescriptors = 1)), " \
-    "DescriptorTable(SRV(t1, numDescriptors = 2)), " \
-    "DescriptorTable(UAV(u16, numDescriptors = 1))"
+#define DensityVolumeRootSig "CBV(b0), DescriptorTable(SRV(t0, numDescriptors = 1), SRV(t1, numDescriptors = 2), UAV(u16, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

@@ -119,9 +119,6 @@
     <ClInclude Include="AsyncComputeApp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="DescriptorLayout.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="DescriptorAllocator.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -129,6 +126,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="GpuTexture.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DoubleBufferGpuBuffer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DoubleBufferGpuTexture.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

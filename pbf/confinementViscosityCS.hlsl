@@ -22,7 +22,7 @@
 // In: position, velocity, omega, cellCount, cellPrefixSum
 // Out: scratch (new velocity, Jacobi mode) or velocity (Gauss-Seidel mode)
 
-#define ConfinementViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7)), DescriptorTable(UAV(u7, numDescriptors = 2))"
+#define ConfinementViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 7), UAV(u7, numDescriptors = 2))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

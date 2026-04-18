@@ -14,10 +14,7 @@
 // Dispatch: same as pass 1 (numCells / ELEMENTS_PER_GROUP groups).
 // For gridDim=32: 64 groups of 256 threads.
 
-#define PrefixSumPass3RootSig \
-    "CBV(b0), " \
-    "DescriptorTable(UAV(u8, numDescriptors = 1)), " \
-    "DescriptorTable(UAV(u9, numDescriptors = 1))"
+#define PrefixSumPass3RootSig "CBV(b0), DescriptorTable(UAV(u8, numDescriptors = 1), UAV(u9, numDescriptors = 1))"
 
 #include "SharedConfig.hlsli"
 #include "ComputeCb.hlsli"

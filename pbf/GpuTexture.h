@@ -98,16 +98,20 @@ public:
     }
 
     // Auto-allocate one slot in a DSV allocator and create a DSV.
-	// DSVs go into a separate dedicated DSV-type heap, so we don't need GPU handles for them,
-	// and this function doesn't delegate to a CreateDsvAt like CreateUav/CreateSrv do.
     void CreateDsv(ID3D12Device* device, DescriptorAllocator& dsvAlloc,
                    DXGI_FORMAT dsvFormat = DXGI_FORMAT_D32_FLOAT) {
         UINT slot = dsvAlloc.Allocate();
-        D3D12_DEPTH_STENCIL_VIEW_DESC d = {}; 
+        CreateDsvAt(device, dsvAlloc.GetCpuHandle(slot), dsvFormat);
+    }
+
+    // Create a DSV at an already-allocated CPU handle (used for resize to reuse existing slots).
+    void CreateDsvAt(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE cpu,
+                     DXGI_FORMAT dsvFormat = DXGI_FORMAT_D32_FLOAT) {
+        D3D12_DEPTH_STENCIL_VIEW_DESC d = {};
         d.Format = dsvFormat;
         d.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
         d.Flags = D3D12_DSV_FLAG_NONE;
-        dsvCpuHandle = dsvAlloc.GetCpuHandle(slot);
+        dsvCpuHandle = cpu;
         device->CreateDepthStencilView(resource.Get(), &d, dsvCpuHandle);
     }
 

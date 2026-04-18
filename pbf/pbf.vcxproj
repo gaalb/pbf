@@ -96,7 +96,8 @@
     <ClInclude Include="ComputeShader.h" />
     <ClInclude Include="ConstantBufferTypes.h" />
     <ClInclude Include="DescriptorAllocator.h" />
-    <ClInclude Include="DescriptorLayout.h" />
+    <ClInclude Include="DoubleBufferGpuBuffer.h" />
+    <ClInclude Include="DoubleBufferGpuTexture.h" />
     <ClInclude Include="Fence.h" />
     <ClInclude Include="GpuBuffer.h" />
     <ClInclude Include="GpuTexture.h" />
