@@ -1,25 +1,18 @@
-// Parallel exclusive prefix sum (Blelloch scan) — pass 1 of 3.
+// Parallel exclusive prefix sum (Blelloch scan) — local scan kernel.
+// Used for both pass 1 (N groups) and pass 2 (M groups) of the 5-pass design,
+// with different descriptor bindings each time:
 //
-//   Up-sweep (reduce): builds partial sums bottom-up in log2(N) steps.
-//     After the last step, s[N-1] holds the total sum of the entire block.
+//   Pass 1: u0=cellCount, u1=cellPrefixSum, u2=groupSums        (N groups)
+//   Pass 2: u0=groupSums, u1=groupPrefixSum, u2=superGroupSums  (M groups)
 //
-//   Down-sweep: propagates prefix sums top-down in log2(N) steps.
-//     Before starting, s[N-1] is set to 0 (this is what makes it exclusive).
+// Each group of THREAD_GROUP_SIZE (256) threads processes ELEMENTS_PER_GROUP (512)
+// consecutive entries: each thread is responsible for two adjacent elements.
+// The local exclusive prefix sum is written to u1[]. Cross-group offsets are NOT
+// added here; passes 4 and 5 propagate them via prefixSumPass4CS.
+// The per-group total is stored in u2[groupID.x] for the next level's scan.
 //
-// Each thread group of THREAD_GROUP_SIZE (256) threads processes ELEMENTS_PER_GROUP (512)
-// consecutive cellCount entries: each thread is responsible for two adjacent elements.
-// The local exclusive prefix sum is written to cellPrefixSum[].  Cross-group offsets
-// are NOT added here; that is done in pass 3 after pass 2 has scanned the group totals.
-//
-// The per-group total (s[ELEMENTS_PER_GROUP-1] before zeroing) is stored in groupSums[groupID.x]
-// so that pass 2 can scan those 64 totals into global exclusive offsets.
-//
-// In:  cellCount[u7]      — particle count per cell, written by countGridCS
-// Out: cellPrefixSum[u8]  — intra-group exclusive prefix sum (global offsets added in pass 3)
-//      groupSums[u9]      — total particle count per group, passed to pass 2
-//
-// Dispatch: numCells / ELEMENTS_PER_GROUP groups.
-// For gridDim=32: 32768 / 512 = 64 groups of 256 threads.
+// Dispatch: N = numCells / ELEMENTS_PER_GROUP groups (pass 1),
+//           M = N / ELEMENTS_PER_GROUP groups (pass 2).
 
 #define PrefixSumPass1RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 

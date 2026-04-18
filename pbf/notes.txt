@@ -1,7 +1,6 @@
 ﻿NOTES: NO SOURCE, JUST NOTES FOR ME
 ---------------------------------------------------------------------------------------
 TODOS:
--reorganize constant buffers to have less padding
 -make it possible to have a larger grid (64x64x64 is the max for now, due to restrictions in the blelloch scan)
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)
 -cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?

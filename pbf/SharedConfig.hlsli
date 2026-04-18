@@ -23,7 +23,7 @@
 #define SCORR_N           3.0f
 
 // Grid dimensions: gridDim cells per axis, each of width H/CELL_PER_H.
-#define GRID_DIM          64 // blelloch scan limitation: currently can't be bigger than 64 
+#define GRID_DIM          128 // cells per axis; SpatialGrid supports up to 128 (5-pass Blelloch)
 
 // SPH kernel normalization coefficients, precomputed from H.
 #define PBF_PI            3.14159265358979323846f

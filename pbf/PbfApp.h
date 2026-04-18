@@ -19,6 +19,7 @@
 #include "GpuTexture.h"
 #include "DoubleBufferGpuBuffer.h"
 #include "DoubleBufferGpuTexture.h"
+#include "SpatialGrid.h"
 #include <immintrin.h>
 #include <thread>
 #include "SharedConfig.hlsli"
@@ -56,7 +57,7 @@ struct ParticleInitData {
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 100, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 75, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -83,12 +84,12 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = Float3(-17.0f, -13.0f, -17.0f); // adjustable collision boundary
-	Float3 boxMax = Float3(17.0f, 20.0f, 17.0f); // adjustable collision boundary
+	Float3 boxMin = Float3(-25.0f, -13.0f, -25.0f); // adjustable collision boundary
+	Float3 boxMax = Float3(25.0f, 40.0f, 25.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 6; // how many newton steps to take per frame
-	int minLOD = 2;  // minimum solver iterations for the farthest particles
+	int minLOD = 3;  // minimum solver iterations for the farthest particles
 	float epsilon = 4.0f; // constraint force mixing relaxation parameter, higher value = softer constraints
 	float viscosity = 0.005f; // // XSPH viscosity coefficient, higher value = "thicker" fluid, M&M: 0.01
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension,
@@ -120,10 +121,7 @@ protected:
 	// flip() is called once per frame (after cpuWaitForCompute) to promote the sorted back to front.
 	DoubleBufferGpuBuffer::P particleFieldDB[PF_COUNT];
 
-	GpuBuffer::P cellCountBuffer;      // default heap: uint per cell, particle count
-	GpuBuffer::P cellPrefixSumBuffer;  // default heap: exclusive prefix sum of cellCount
-	GpuBuffer::P permBuffer;           // default heap: uint per particle, sort permutation
-	GpuBuffer::P groupSumBuffer;       // default heap: Blelloch per-group totals scratch
+	SpatialGrid::P spatialGrid;        // owns grid buffers and all grid/sort shaders
 	GpuBuffer::P lodBuffer;            // default heap: per-particle LOD countdown (uint)
 	GpuBuffer::P lodReductionBuffer;   // default heap: DTC reduction scratch [minDTC, maxDTC]
 
@@ -131,14 +129,6 @@ protected:
 	// table handle, and input/output resource lists for UAV barrier insertion.
 	ComputeShader::P predictShader; // apply forces + velocity collision response + predict p* in one per-particle pass
 	ComputeShader::P collisionPredictedPositionShader; // clamp p* to box; runs pre-sort and every solver iteration
-	ComputeShader::P clearGridShader; // zero cellCount array
-	ComputeShader::P countGridShader; // count particles per cell (first grid-build pass)
-	ComputeShader::P prefixSumPass1Shader; // Blelloch pass 1: intra-group exclusive scan + save group totals
-	ComputeShader::P prefixSumPass2Shader; // Blelloch pass 2: exclusive scan of the group totals
-	ComputeShader::P prefixSumPass3Shader; // Blelloch pass 3: add global group offsets to intra-group sums
-	ComputeShader::P prefixSumShader; // exclusive prefix sum of cellCount -> cellPrefixSum
-	ComputeShader::P sortShader; // each particle computes its sorted destination index -> perm[]
-	ComputeShader::P permutateShader; // applies perm[] to scatter all particle fields to sorted positions
 	ComputeShader::P lambdaShader; // compute lambda per particle
 	ComputeShader::P deltaShader; // compute delta_p, write to scratch
 	ComputeShader::P positionFromScratchShader; // copy scratch -> predictedPosition (Jacobi commit during solver loop)
@@ -162,7 +152,7 @@ protected:
 	D3D12_CPU_DESCRIPTOR_HANDLE sdfCpuHandle{}; // CPU handle for SDF SRV in staticAllocator (source for CopyDescriptorsSimple)
 	Float3 solidPosition = Float3(0.0f, -13.0f, 0.0f); // world-space translation, driven by ImGui
 	Float3 solidEulerDeg = Float3(0.0f, 30.0f, 0.0f); // XYZ Euler rotation in degrees, driven by ImGui
-	float  solidScale = 2.0f; // uniform scale, driven by ImGui
+	float  solidScale = 3.5f; // uniform scale, driven by ImGui
 
 	// Readback buffers (readback heap, CPU-readable after CopyBufferRegion)
 	GpuBuffer::P densityReadbackBuffer;
@@ -259,15 +249,6 @@ protected:
 	// particleFieldDB[]: one DoubleBufferGpuBuffer per particle attribute.
 	// positionUploadBuffer / velocityUploadBuffer: CPU-writable staging for initial data.
 	void InitParticleFields();
-
-	// permBuffer: uint per particle - sortCS writes each particle's sorted destination index here;
-	// permutateCS reads it to scatter all fields into their sorted positions.
-	void InitPermBuffer();
-
-	// cellCountBuffer: uint per cell, particle count / running atomic counter for sorting.
-	// cellPrefixSumBuffer: exclusive prefix sum of cellCount, gives each cell's start offset.
-	// groupSumBuffer: per-group totals scratch for the 3-pass Blelloch parallel prefix sum.
-	void InitGridBuffers();
 
 	// lodBuffer: uint per particle - LOD countdown, written by lod shader, decremented by solver.
 	// lodReductionBuffer: 2 uints [minDTC bits, maxDTC bits] - DTC/DTVS reduction accumulator.
@@ -371,8 +352,6 @@ protected:
 	void ExecuteGraphics();
 
 	void ExecuteCompute();
-
-	void SortParticles();
 
 	// Override Render() to decouple physics (compute queue) from graphics (direct queue).
 	//

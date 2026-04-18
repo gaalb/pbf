@@ -70,6 +70,9 @@
     <Filter Include="Shaders\Compute\density texture">
       <UniqueIdentifier>{347743d3-bc05-4084-822c-b0d7e83b1541}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\Compute\sort\prefixSum\unused">
+      <UniqueIdentifier>{d53d111d-a044-4769-aa21-5b7c0014a708}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -134,6 +137,9 @@
     <ClInclude Include="DoubleBufferGpuTexture.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="SpatialGrid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="positionFromScratchCS.hlsl">
@@ -175,10 +181,7 @@
     <FxCompile Include="lambdaCS.hlsl">
       <Filter>Shaders\Compute\lambda</Filter>
     </FxCompile>
-    <FxCompile Include="prefixSumPass1CS.hlsl">
-      <Filter>Shaders\Compute\sort\prefixSum</Filter>
-    </FxCompile>
-    <FxCompile Include="prefixSumPass2CS.hlsl">
+    <FxCompile Include="prefixSumPass1_2CS.hlsl">
       <Filter>Shaders\Compute\sort\prefixSum</Filter>
     </FxCompile>
     <FxCompile Include="prefixSumPass3CS.hlsl">
@@ -273,6 +276,12 @@
     </FxCompile>
     <FxCompile Include="densityVolumeCS.hlsl">
       <Filter>Shaders\Compute\density texture</Filter>
+    </FxCompile>
+    <FxCompile Include="prefixSumPass4_5CS.hlsl">
+      <Filter>Shaders\Compute\sort\prefixSum</Filter>
+    </FxCompile>
+    <FxCompile Include="prefixSumPass2CS.hlsl">
+      <Filter>Shaders\Compute\sort\prefixSum\unused</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>

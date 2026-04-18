@@ -1,4 +1,9 @@
-// Parallel exclusive prefix sum (Blelloch scan) — pass 2 of 3.
+// SUPERSEDED. The 5-pass uniform design (pass1-5CS) replaces the old 3-pass design.
+// Pass 2 is now served by prefixSumPass1CS.cso with groupSums/groupPrefixSum/superGroupSums bindings.
+// Pass 3 (middle single-group scan) is now prefixSumPass3CS.hlsl.
+// This file is kept for reference only but not compiled
+//
+// Parallel exclusive prefix sum (Blelloch scan) — pass 2 of 3 (old 3-pass design).
 //
 // Performs an in-place exclusive Blelloch scan on the groupSums[] array that pass 1
 // produced.  After this pass, groupSums[g] holds the exclusive global offset for group g:
@@ -23,10 +28,15 @@
 #include "ComputeCb.hlsli"
 
 // Number of groups produced by pass 1: numCells / (2 * THREAD_GROUP_SIZE).
-// Derived from GRID_DIM so it tracks any change to the grid size in SharedConfig.hlsli.
-// Constraint: must be <= 2 * THREAD_GROUP_SIZE = 512, i.e. GRID_DIM <= 64.
+// For GRID_DIM > 64, numthreads would exceed 1024 — use prefixSumMiddleCS instead.
+// This shader stubs out for GRID_DIM > 64 so the project still compiles; it is never dispatched.
+#if GRID_DIM <= 64
 #define PASS2_NUM_ELEMENTS (GRID_DIM * GRID_DIM * GRID_DIM / (THREAD_GROUP_SIZE * 2))
 #define PASS2_THREAD_COUNT (PASS2_NUM_ELEMENTS / 2)
+#else
+#define PASS2_NUM_ELEMENTS 2
+#define PASS2_THREAD_COUNT 1
+#endif
 
 RWStructuredBuffer<uint> groupSums : register(u0);
 

@@ -107,35 +107,6 @@ void PbfApp::InitParticleFields() {
 	particleSrvTableStart = mainAllocator->Allocate(3);
 }
 
-// permBuffer: uint per particle - sortCS writes sorted destination index; permutateCS reads it.
-void PbfApp::InitPermBuffer() {
-	permBuffer = GpuBuffer::Create(
-		device.Get(), numParticles, sizeof(UINT),
-		L"Permutation Buffer",
-		D3D12_RESOURCE_STATE_COMMON,
-		D3D12_HEAP_TYPE_DEFAULT);
-	permBuffer->CreateUav(device.Get(), *staticAllocator);
-}
-
-// cellCountBuffer, cellPrefixSumBuffer, groupSumBuffer.
-void PbfApp::InitGridBuffers() {
-	cellCountBuffer = GpuBuffer::Create(
-		device.Get(), numCells, sizeof(UINT),
-		L"Cell Count Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-	cellCountBuffer->CreateUav(device.Get(), *staticAllocator);
-
-	cellPrefixSumBuffer = GpuBuffer::Create(
-		device.Get(), numCells, sizeof(UINT),
-		L"Cell Prefix Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-	cellPrefixSumBuffer->CreateUav(device.Get(), *staticAllocator);
-
-	UINT numPass1Groups = numCells / (2 * THREAD_GROUP_SIZE);
-	groupSumBuffer = GpuBuffer::Create(
-		device.Get(), numPass1Groups, sizeof(UINT),
-		L"Prefix Sum Group Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-	groupSumBuffer->CreateUav(device.Get(), *staticAllocator);
-}
-
 // lodBuffer: uint per particle - LOD countdown.
 // lodReductionBuffer: 2 uints [minDTC bits, maxDTC bits].
 void PbfApp::InitLodBuffers() {
@@ -583,14 +554,10 @@ void PbfApp::BuildComputePipelines() {
 		device->CopyDescriptorsSimple(1, mainAllocator->GetCpuHandle(slot), src,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	};
-	auto regFront = [&](UINT start) {
-		for (UINT f = 0; f < PF_COUNT; f++)
-			particleFieldDB[f]->registerFrontTarget(mainAllocator->GetCpuHandle(start + f), /*isSrv*/false);
-	};
-	auto regBack = [&](UINT start) {
-		for (UINT f = 0; f < PF_COUNT; f++)
-			particleFieldDB[f]->registerBackTarget(mainAllocator->GetCpuHandle(start + f), /*isSrv*/false);
-	};
+	// SpatialGrid owns cellCount/cellPrefixSum/perm/groupSum buffers and all grid+sort shaders.
+	// Must be created first: solver shaders below reference the grid buffers via GetCellCountBuffer()/GetPrefixSumBuffer().
+	spatialGrid = SpatialGrid::Create(device.Get(), numCells, numParticles,
+		*mainAllocator, *staticAllocator, cbv, particleFieldDB);
 
 	// ---------- predictCS: UAV(u0-2) SRV(t0) = 4 slots ----------
 	// [0]=position, [1]=velocity, [2]=predictedPosition, [3]=SDF SRV
@@ -675,64 +642,6 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- clearGridCS: UAV(u0) = 1 slot ----------
-	{
-		UINT s = mainAllocator->Allocate(1);
-		copy1(s, cellCountBuffer->GetUavCpuHandle());
-		clearGridShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/clearGridCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ cellCountBuffer->GetResourcePtr() },
-			std::vector<P>{ cellCountBuffer->GetResourcePtr() });
-	}
-
-	// ---------- prefixSumPass1CS: UAV(u0-2) = 3 slots ----------
-	// [0]=cellCount, [1]=cellPrefixSum, [2]=groupSums
-	{
-		UINT s = mainAllocator->Allocate(3);
-		copy1(s,     cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 1, cellPrefixSumBuffer->GetUavCpuHandle());
-		copy1(s + 2, groupSumBuffer->GetUavCpuHandle());
-		prefixSumPass1Shader = std::make_shared<ComputeShader>(device.Get(), "Shaders/prefixSumPass1CS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ cellCountBuffer->GetResourcePtr() },
-			std::vector<P>{ cellPrefixSumBuffer->GetResourcePtr(), groupSumBuffer->GetResourcePtr() });
-	}
-
-	// ---------- prefixSumPass2CS: UAV(u0) = 1 slot ----------
-	{
-		UINT s = mainAllocator->Allocate(1);
-		copy1(s, groupSumBuffer->GetUavCpuHandle());
-		prefixSumPass2Shader = std::make_shared<ComputeShader>(device.Get(), "Shaders/prefixSumPass2CS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ groupSumBuffer->GetResourcePtr() },
-			std::vector<P>{ groupSumBuffer->GetResourcePtr() });
-	}
-
-	// ---------- prefixSumPass3CS: UAV(u0-1) = 2 slots ----------
-	// [0]=cellPrefixSum, [1]=groupSums
-	{
-		UINT s = mainAllocator->Allocate(2);
-		copy1(s,     cellPrefixSumBuffer->GetUavCpuHandle());
-		copy1(s + 1, groupSumBuffer->GetUavCpuHandle());
-		prefixSumPass3Shader = std::make_shared<ComputeShader>(device.Get(), "Shaders/prefixSumPass3CS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ groupSumBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr() },
-			std::vector<P>{ cellPrefixSumBuffer->GetResourcePtr() });
-	}
-
-	// ---------- countGridCS: UAV(u0-1) = 2 slots ----------
-	// [0]=predictedPosition front, [1]=cellCount
-	{
-		UINT s = mainAllocator->Allocate(2);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, cellCountBuffer->GetUavCpuHandle());
-		countGridShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/countGridCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr() },
-			std::vector<P>{ cellCountBuffer->GetResourcePtr() });
-	}
-
 	// ---------- lambdaCS: UAV(u0-5) = 6 slots ----------
 	// [0]=predictedPosition, [1]=lambda, [2]=density, [3]=cellCount, [4]=cellPrefixSum, [5]=lod
 	{
@@ -740,13 +649,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
 		lambdaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr(),
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
@@ -759,14 +669,15 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
 		deltaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr(),
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
@@ -778,13 +689,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		vorticityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/vorticityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr() },
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_OMEGA]->getBack()->GetResourcePtr() });
 	}
 
@@ -796,45 +708,16 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
-		copy1(s + 4, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 5, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		confinementViscosityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_OMEGA]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr() },
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
-	}
-
-	// ---------- sortCS: UAV(u0-3) = 4 slots ----------
-	// [0]=predictedPosition front, [1]=cellCount, [2]=cellPrefixSum, [3]=perm
-	{
-		UINT s = mainAllocator->Allocate(4);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 2, cellPrefixSumBuffer->GetUavCpuHandle());
-		copy1(s + 3, permBuffer->GetUavCpuHandle());
-		sortShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/sortCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr(),
-			                cellPrefixSumBuffer->GetResourcePtr(), cellCountBuffer->GetResourcePtr() },
-			std::vector<P>{ permBuffer->GetResourcePtr(), cellCountBuffer->GetResourcePtr() });
-	}
-
-	// ---------- permutateCS: UAV(u0-14) = 15 slots ----------
-	// [0-6]=pf front (inputs), [7-13]=pf back (outputs), [14]=perm
-	{
-		UINT s = mainAllocator->Allocate(15);
-		regFront(s);
-		regBack(s + 7);
-		copy1(s + 14, permBuffer->GetUavCpuHandle());
-		std::vector<P> permIn, permOut;
-		for (UINT f = 0; f < PF_COUNT; f++) permIn.push_back(particleFieldDB[f]->getFront()->GetResourcePtr());
-		permIn.push_back(permBuffer->GetResourcePtr());
-		for (UINT f = 0; f < PF_COUNT; f++) permOut.push_back(particleFieldDB[f]->getBack()->GetResourcePtr());
-		permutateShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/permutateCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s), std::move(permIn), std::move(permOut));
 	}
 
 	// ---------- clearDtcReductionCS: UAV(u0) = 1 slot ----------
@@ -957,13 +840,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
 		gsmLambdaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr(),
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
@@ -975,14 +859,15 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
 		gsmDeltaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr(),
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
@@ -993,13 +878,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		copy1(s + 3, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 4, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmVorticityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr() },
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_OMEGA]->getBack()->GetResourcePtr() });
 	}
 
@@ -1010,14 +896,15 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
-		copy1(s + 4, cellCountBuffer->GetUavCpuHandle());
-		copy1(s + 5, cellPrefixSumBuffer->GetUavCpuHandle());
+		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmConfinementViscosityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_OMEGA]->getBack()->GetResourcePtr(),
-			                cellCountBuffer->GetResourcePtr(), cellPrefixSumBuffer->GetResourcePtr() },
+			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
+			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
 }
@@ -1105,41 +992,6 @@ void PbfApp::ExecuteCompute() {
 	computeCommandQueue->ExecuteCommandLists(_countof(computeCls), computeCls);
 }
 
-void PbfApp::SortParticles() {
-	// ceil(numParticles / THREAD_GROUP_SIZE) groups cover all particles; the shader discards extra threads
-	UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
-	// ceil(numCells / THREAD_GROUP_SIZE) groups cover all cells; the shader discards extra threads
-	UINT numCellGroups = (numCells + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
-
-	// zero the cell count
-	clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
-
-	// count particles per cell (each particle does InterlockedAdd on its cell)
-	// after this call, the ith element in cellCount indicates how many particles
-	// are in that cell
-	countGridShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-	// Parallel exclusive prefix sum of cellCount -> cellPrefixSum via the Blelloch algorithm.
-	// Three passes are required because the full array (32768 cells) doesn't fit in one
-	// thread group's shared memory; each group processes 512 cells independently, then
-	// a second pass scans the 64 group totals, and a third pass propagates them back.
-	// After the three passes, cellPrefixSum[i] = sum of cellCount[0..i-1] for all i.
-	UINT numPass1Groups = numCells / (2 * THREAD_GROUP_SIZE); // = 64 for gridDim=32
-	prefixSumPass1Shader->dispatch_then_barrier(computeList.Get(), numPass1Groups); // local Blelloch + group totals
-	prefixSumPass2Shader->dispatch_then_barrier(computeList.Get(), 1);              // scan group totals into global offsets
-	prefixSumPass3Shader->dispatch_then_barrier(computeList.Get(), numPass1Groups); // add global offsets to local sums
-
-	// zero cell counts again so sortCS can use them as per-cell atomic counters
-	clearGridShader->dispatch_then_barrier(computeList.Get(), numCellGroups);
-
-	// compute perm[i] = sorted destination index for each particle i
-	sortShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-	// scatter all particle fields to their sorted positions using perm[]
-	permutateShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-}
-
 // Override Render() to decouple physics (compute queue) from graphics (direct queue).
 //
 // Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
@@ -1206,7 +1058,7 @@ void PbfApp::RecordComputeCommands() {
 
 	predictShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
-	SortParticles();
+	spatialGrid->Build(computeList.Get());
 
 	// collisionPredictedPositionCS moved to after sort: grid posToCell() clamps OOB positions to
 	// boundary cells, so sorting against unclamped predictions is safe; collision corrects afterward.
@@ -1253,19 +1105,19 @@ void PbfApp::WriteSnapshot() {
 	densitySnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 
 	// Copy grid buffers into the back grid snapshot slots.
-	cellCountBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
-	cellPrefixSumBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	spatialGrid->GetCellCountBuffer()->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+	spatialGrid->GetPrefixSumBuffer()->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
 	cellCountSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
 	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
 
 	const UINT64 gridBufSize = (UINT64)numCells * sizeof(UINT);
 	computeList->CopyBufferRegion(cellCountSnapshotDB->getBack()->Get(), 0,
-		cellCountBuffer->Get(), 0, gridBufSize);
+		spatialGrid->GetCellCountBuffer()->Get(), 0, gridBufSize);
 	computeList->CopyBufferRegion(cellPrefixSumSnapshotDB->getBack()->Get(), 0,
-		cellPrefixSumBuffer->Get(), 0, gridBufSize);
+		spatialGrid->GetPrefixSumBuffer()->Get(), 0, gridBufSize);
 
-	cellCountBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
-	cellPrefixSumBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	spatialGrid->GetCellCountBuffer()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+	spatialGrid->GetPrefixSumBuffer()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
 	cellCountSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 }
@@ -1632,8 +1484,6 @@ void PbfApp::CreateResources() {
 	InitConstantBuffers();
 	InitCamera();
 	InitParticleFields();
-	InitPermBuffer();
-	InitGridBuffers();
 	InitLodBuffers();
 	InitReadbackBuffers();
 	InitSnapshotBuffers();
