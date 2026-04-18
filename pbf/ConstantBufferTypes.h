@@ -59,22 +59,16 @@ __declspec(align(16)) struct ComputeCb {
 	Float3 externalForce;   // offset 48: horizontal acceleration from arrow keys (m/s^2)
 	UINT fountainEnabled;   // offset 60: 1 = fountain jet active, 0 = off
 	float adhesion;         // offset 64: tangential velocity damping on wall contact
-	float _pad0;            // offset 68
-	float _pad1;            // offset 72
-	float _pad2;            // offset 76
+	float viewportWidth;    // offset 68: render target width in pixels
+	float viewportHeight;   // offset 72: render target height in pixels
+	float pushRadius;       // offset 76: solid push-out distance; PUSH_RADIUS in particle modes, 0 in liquid mode
 	Float4x4 solidInvTransform; // offset  80: world-to-object transform for SDF sampling
-	Float4 sdfMin;          // offset 144: object-space SDF AABB min (xyz = min corner, w unused)
-	Float4 sdfMax;          // offset 160: object-space SDF AABB max (xyz = max corner, w unused)
+	Float3 sdfMin;          // offset 144: object-space SDF AABB minimum corner
+	UINT minLOD;            // offset 156: minimum solver iterations (farthest particles)
+	Float3 sdfMax;          // offset 160: object-space SDF AABB maximum corner
+	UINT maxLOD;            // offset 172: maximum solver iterations (= solverIterations, closest)
 	Float3 cameraPos;       // offset 176: camera world position for DTC LOD computation
-	UINT minLOD;            // offset 188: minimum solver iterations (farthest particles)
-	UINT maxLOD;            // offset 192: maximum solver iterations (= solverIterations, closest)
-	float _padLod0;         // offset 196
-	float _padLod1;         // offset 200
-	float _padLod2;         // offset 204
-	Float4x4 viewProjTransform; // offset 208: world-to-clip transform for DTVS depth projection
-	float viewportWidth;    // offset 272: render target width in pixels
-	float viewportHeight;   // offset 276: render target height in pixels
-	float pushRadius;       // offset 280: solid push-out distance; PUSH_RADIUS in particle modes, 0 in liquid mode
-	float _padVp1;          // offset 284
-	// total: 288 bytes
+	float _pad;             // offset 188
+	Float4x4 viewProjTransform; // offset 192: world-to-clip transform for DTVS depth projection
+	// total: 256 bytes
 };

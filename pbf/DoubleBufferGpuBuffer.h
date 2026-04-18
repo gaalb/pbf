@@ -23,22 +23,29 @@
 //
 // Static heap: the CPU-only staging heap. Both UAV and SRV descriptors for both resources
 // are created here at construction time and never modified. They serve as CopyDescriptorsSimple sources.
+// Main heap: the GPU-visible heap. Target slots here are registered via registerFront/BackTarget(),
+// and are updated on every flip to point to the currently active resource's descriptor in the static
+// heap. The mental image should be that of a switchboard, where signals have origins, and targets,
+// where we connect the signals. A double buffer is what allows us to have two sets of signal origins,
+// which we can flip between. It keeps a list of the signal targets, i.e. the main heap slots that need 
+// to be updated on every flip. The origin is the static heap.
 GG_CLASS(DoubleBufferGpuBuffer)
-    GpuBuffer::P front;
-    GpuBuffer::P back;
+    GpuBuffer::P buffers[2];
+    UINT frontIdx = 0;
     ID3D12Device* device = nullptr;
 
     struct Target {
-        D3D12_CPU_DESCRIPTOR_HANDLE mainCpuHandle;
+		D3D12_CPU_DESCRIPTOR_HANDLE mainCpuHandle; // the slot in the main heap to update on flip()
         bool isSrv;
         bool isFront;
     };
-    std::vector<Target> targets;
+	std::vector<Target> targets; // which main heap slots observe this double buffer
 
+	// Wire the appropriate static heap descriptor (front or back, UAV or SRV) to the target slot in the main heap.
     void copyToTarget(const Target& t) const {
-        D3D12_CPU_DESCRIPTOR_HANDLE src;
-        const GpuBuffer::P& buf = t.isFront ? front : back;
-        src = t.isSrv ? buf->GetSrvCpuHandle() : buf->GetUavCpuHandle();
+		const GpuBuffer::P& buf = buffers[t.isFront ? frontIdx : frontIdx ^ 1]; // the GpuBuffer that holds the relevant static heap descriptors
+        D3D12_CPU_DESCRIPTOR_HANDLE src; // the static heap descriptor to copy from
+		src = t.isSrv ? buf->GetSrvCpuHandle() : buf->GetUavCpuHandle(); // choose UAV vs SRV descriptor
         device->CopyDescriptorsSimple(1, t.mainCpuHandle, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
@@ -54,16 +61,16 @@ public:
         P db = std::make_shared<DoubleBufferGpuBuffer>();
         db->device = device;
 
-        db->front = GpuBuffer::Create(device, elems, stride, frontName, initialState, D3D12_HEAP_TYPE_DEFAULT);
-        db->back  = GpuBuffer::Create(device, elems, stride, backName,  initialState, D3D12_HEAP_TYPE_DEFAULT);
+        db->buffers[0] = GpuBuffer::Create(device, elems, stride, frontName, initialState, D3D12_HEAP_TYPE_DEFAULT);
+        db->buffers[1] = GpuBuffer::Create(device, elems, stride, backName,  initialState, D3D12_HEAP_TYPE_DEFAULT);
 
         if (needUav) {
-            db->front->CreateUav(device, staticAlloc);
-            db->back->CreateUav(device, staticAlloc);
+            db->buffers[0]->CreateUav(device, staticAlloc);
+            db->buffers[1]->CreateUav(device, staticAlloc);
         }
         if (needSrv) {
-            db->front->CreateSrv(device, staticAlloc);
-            db->back->CreateSrv(device, staticAlloc);
+            db->buffers[0]->CreateSrv(device, staticAlloc);
+            db->buffers[1]->CreateSrv(device, staticAlloc);
         }
 
         return db;
@@ -72,23 +79,23 @@ public:
     // Register a slot that always receives the FRONT resource's descriptor.
     // Performs an immediate initial copy so the slot is ready before first use.
     void registerFrontTarget(D3D12_CPU_DESCRIPTOR_HANDLE mainCpuHandle, bool isSrv) {
-        targets.push_back({ mainCpuHandle, isSrv, /*isFront=*/true });
-        copyToTarget(targets.back());
+        targets.push_back({ mainCpuHandle, isSrv, /*isFront=*/true }); // register wiring rules
+		copyToTarget(targets.back()); // perform initial copy so the slot is populated right away
     }
 
     // Register a slot that always receives the BACK resource's descriptor.
     void registerBackTarget(D3D12_CPU_DESCRIPTOR_HANDLE mainCpuHandle, bool isSrv) {
-        targets.push_back({ mainCpuHandle, isSrv, /*isFront=*/false });
-        copyToTarget(targets.back());
+		targets.push_back({ mainCpuHandle, isSrv, /*isFront=*/false }); // register wiring rules
+		copyToTarget(targets.back()); // perform initial copy so the slot is populated right away
     }
 
     void flip() {
-        GpuBuffer::SwapInternals(front, back);
-        for (const auto& t : targets)
+		frontIdx ^= 1; // swap which buffer is considered front
+        for (const auto& t : targets) // update wiring
             copyToTarget(t);
     }
 
-    GpuBuffer::P getFront() const { return front; }
-    GpuBuffer::P getBack()  const { return back;  }
+    GpuBuffer::P getFront() const { return buffers[frontIdx]; }
+    GpuBuffer::P getBack()  const { return buffers[frontIdx ^ 1]; }
 
 GG_ENDCLASS

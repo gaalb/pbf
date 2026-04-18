@@ -1520,8 +1520,8 @@ void PbfApp::UpdateComputeCb(float dt) {
 	computeCb->solidInvTransform = solidObstacle->GetInvTransform();
 	Float3 smin = solidObstacle->GetSdfMin();
 	Float3 smax = solidObstacle->GetSdfMax();
-	computeCb->sdfMin = Float4(smin, 0.0f);
-	computeCb->sdfMax = Float4(smax, 0.0f);
+	computeCb->sdfMin = smin;
+	computeCb->sdfMax = smax;
 	computeCb->cameraPos = camera->GetEyePosition();
 	computeCb->minLOD = (UINT)minLOD;
 	computeCb->maxLOD = (UINT)solverIterations;

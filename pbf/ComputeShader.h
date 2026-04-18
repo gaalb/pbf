@@ -5,7 +5,7 @@
 #include <vector>
 #include <string>
 
-// Encapsulates a single compute shader: its PSO, root signature, a fixed descriptor table handle,
+// Encapsulates a single compute shader: its PSO, root signature, a fdescriptor table handle,
 // and the resource lists used to insert UAV barriers before or after dispatch.
 // As per the Egg GG_CLASS pattern: store as ComputeShader::P (shared_ptr), create via ComputeShader::Create(...)
 GG_CLASS(ComputeShader)
@@ -13,9 +13,13 @@ GG_CLASS(ComputeShader)
     com_ptr<ID3D12RootSignature> rootSig;
 
 public:
-    // Pointers-to-com_ptrs rather than raw resource pointers. GpuBuffer::SwapInternals changes the
-    // value held inside the GpuBuffer (i.e. the com_ptr's value) without moving the GpuBuffer object,
-    // so these addresses stay valid across flip() calls while still resolving to the current resource.
+    // Pointers-to-com_ptrs rather than raw resource pointers.
+	// GpuBuffer stores a com_ptr to the ID3D12Resource, and GpuBuffer::GetResourcePtr() returns 
+	// std::addressof(resource), intended to be passed directly to these vectors. GpuBuffer::SwapInternals 
+    // swaps the com_ptrs inside the GpuBuffers, while the pointers-to-the-com_ptrs still point to the same
+    // memory address, but the underlying com_ptr has been changed. This way, when we dereference the 
+	// pointers-to-com_ptrs at dispatch time, we get the current resource even if the GpuBuffers have been 
+    // flipped since the ComputeShader was created.
     std::vector<com_ptr<ID3D12Resource>*> inputs;
     std::vector<com_ptr<ID3D12Resource>*> outputs;
 
@@ -24,7 +28,7 @@ public:
 
     // GPU handle to the start of this shader's contiguous descriptor region in the main heap.
     // Baked at construction time; setup() always binds it to root param 1.
-    D3D12_GPU_DESCRIPTOR_HANDLE fixedHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE descriptorTableHandle{};
 
     ComputeShader(
         ID3D12Device* device,
@@ -34,9 +38,9 @@ public:
         std::vector<com_ptr<ID3D12Resource>*> ins,
         std::vector<com_ptr<ID3D12Resource>*> outs)
         : cbvAddress(cbv)
-        , fixedHandle(table)
-        , inputs(std::move(ins))
-        , outputs(std::move(outs))
+        , descriptorTableHandle(table)
+		, inputs(std::move(ins)) // avoid copy constructor
+		, outputs(std::move(outs)) // avoid copy constructor
     {
         com_ptr<ID3DBlob> shader = Egg::Shader::LoadCso(csoPath);
         rootSig = Egg::Shader::LoadRootSignature(device, shader.Get());
@@ -57,8 +61,7 @@ public:
             cmd->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::UAV(r->Get()));
     }
 
-    // 3D variant of dispatch_then_barrier. Use when a 1D dispatch would exceed
-    // D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION (65535) on a single axis.
+    // 3D variant of dispatch_then_barrier.
     void dispatch3d_then_barrier(ID3D12GraphicsCommandList* cmd, UINT gx, UINT gy, UINT gz)
     {
         setup(cmd);
@@ -78,12 +81,12 @@ public:
 
 private:
     // SetComputeRootSignature resets all compute root bindings, so setup() must be called
-    // before every dispatch even though fixedHandle never changes.
+    // before every dispatch even though descriptorTableHandle never changes.
     void setup(ID3D12GraphicsCommandList* cmd)
     {
         cmd->SetComputeRootSignature(rootSig.Get());
         cmd->SetComputeRootConstantBufferView(0, cbvAddress);
-        cmd->SetComputeRootDescriptorTable(1, fixedHandle);
+        cmd->SetComputeRootDescriptorTable(1, descriptorTableHandle);
         cmd->SetPipelineState(pso.Get());
     }
 GG_ENDCLASS

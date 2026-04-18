@@ -47,36 +47,16 @@ struct ParticleInitData {
 // Initialization flow:
 // main.cpp first creates the window handle, command queue, d3d12 device and swap chain,
 // then initializes the pbf App by calling these methods:
-//	(which in turn call the methods indented under them like so)
-//
 // SetDevice / SetCommandQueue / SetSwapChain
-// CreateSwapChainResources
-//   AsyncComputeApp::CreateSwapChainResources
-//   InitParticleDepthTextures  - depth texture resources + DSV heap + DSVs
-// CreateResources
-//   AsyncComputeApp::CreateResources
-//   InitDescriptorHeaps  - main, imgui, and snapshot staging heaps
-//   InitConstantBuffers  - upload-heap CBs
-//   InitCamera
-//   InitParticleFields - buffers, UAVs, position/density SRVs, GPU handles
-//   InitPermBuffer - permutation buffer, UAV, GPU handle
-//   InitGridBuffers - cellCount, cellPrefixSum, groupSum buffers+UAVs+handles
-//   InitLodBuffers - LOD + reduction buffers, UAVs, LOD SRV, GPU handles
-//   InitReadbackBuffers - density + LOD readback buffers
-//   InitSnapshotBuffers - snapshot buffers + staging SRVs
-//   InitBackground - cubemap SRV
-//   InitObstacle - solid obstacle SDF SRV + sdfHandle
-//   InitParticleDepthSrvs - depth SRVs into main heap, GPU handle cache
-// LoadAssets
-//   UploadAll
-//   BuildGraphicsPipelines
-//   BuildComputePipelines
-// InitImGui
+// CreateSwapChainResources: creates RTV heap and render target views for the swap chain back buffers
+// CreateResources: creates command allocators and lists for both queues, PSO manager, fences, etc.
+// LoadAssets: uploads initial data to the GPU and builds rendering/compute pipelines.
+// InitImGui: sets up the ImGui context and its Win32 + D3D12 backends
 
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 75, particlesY = 75, particlesZ = 75; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 100, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,

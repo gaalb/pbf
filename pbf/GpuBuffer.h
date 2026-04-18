@@ -10,7 +10,7 @@
 GG_CLASS(GpuBuffer)
     com_ptr<ID3D12Resource> resource;
     UINT elementCount = 0;
-    UINT stride       = 0;
+    UINT stride  = 0;
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_CPU_DESCRIPTOR_HANDLE uavCpuHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE uavGpuHandle{};
@@ -47,14 +47,14 @@ public:
     // Swap internals (resource + all handles) of two GpuBuffer objects in-place,
     // preserving each shared_ptr's identity so stored com_ptr* pointers remain valid.
     static void SwapInternals(P& a, P& b) {
-        std::swap(a->resource,      b->resource);
-        std::swap(a->elementCount,  b->elementCount);
-        std::swap(a->stride,        b->stride);
-        std::swap(a->currentState,  b->currentState);
-        std::swap(a->uavCpuHandle,  b->uavCpuHandle);
-        std::swap(a->uavGpuHandle,  b->uavGpuHandle);
-        std::swap(a->srvCpuHandle,  b->srvCpuHandle);
-        std::swap(a->srvGpuHandle,  b->srvGpuHandle);
+        std::swap(a->resource, b->resource);
+        std::swap(a->elementCount, b->elementCount);
+        std::swap(a->stride, b->stride);
+        std::swap(a->currentState, b->currentState);
+        std::swap(a->uavCpuHandle, b->uavCpuHandle);
+        std::swap(a->uavGpuHandle, b->uavGpuHandle);
+        std::swap(a->srvCpuHandle, b->srvCpuHandle);
+        std::swap(a->srvGpuHandle, b->srvGpuHandle);
     }
 
     // Auto-allocate one slot and create a structured UAV.
