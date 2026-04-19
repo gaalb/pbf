@@ -1,17 +1,13 @@
-// Parallel exclusive prefix sum — pass 4 of 5 (and pass 5 of 5).
+// Pass 4 and 5 of the 5-pass parallel prefix sum are very simple: each thread 
+// just adds the global offset for its group, which was calculated by the previous pass, 
+// into its local prefix sums. 
+// 
+// Pass 4 (M groups): adds superGroupSums offsets into groupPrefixSum
+//  u0 = groupPrefixSum, u1 = superGroupSums
 //
-// Propagates higher-level exclusive offsets into the lower-level local prefix sums produced
-// by a pass-1-style local scan. Dispatched twice per frame with different descriptor bindings:
+// Pass 5 (N groups): adds groupPrefixSum offsets into cellPrefixSum
+//  u0 = cellPrefixSum,  u1 = groupPrefixSum
 //
-//   Pass 4 (M groups): adds superGroupSums offsets into groupPrefixSum
-//     u0 = groupPrefixSum, u1 = superGroupSums
-//
-//   Pass 5 (N groups): adds groupPrefixSum offsets into cellPrefixSum
-//     u0 = cellPrefixSum,  u1 = groupPrefixSum
-//
-// Each thread adds the global exclusive offset for its group to two consecutive elements.
-//
-// Dispatch: M or N groups of THREAD_GROUP_SIZE threads.
 
 #define PrefixSumPass4RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 2))"
 

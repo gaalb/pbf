@@ -15,11 +15,11 @@
 //
 // The prefix sum is a uniform 5-pass Blelloch scan (requires GRID_DIM >= 64):
 //
-//   Pass 1 (N groups): local scan of cellCount        -> cellPrefixSum   + groupSums
-//   Pass 2 (M groups): local scan of groupSums        -> groupPrefixSum  + superGroupSums
+//   Pass 1 (N groups): local scan of cellCount -> cellPrefixSum   + groupSums
+//   Pass 2 (M groups): local scan of groupSums -> groupPrefixSum  + superGroupSums
 //   Pass 3 (1  group): global scan of superGroupSums  -> in-place
-//   Pass 4 (M groups): propagate superGroupSums       -> groupPrefixSum  (add offsets)
-//   Pass 5 (N groups): propagate groupPrefixSum       -> cellPrefixSum   (add offsets)
+//   Pass 4 (M groups): propagate superGroupSums -> groupPrefixSum  (add offsets)
+//   Pass 5 (N groups): propagate groupPrefixSum -> cellPrefixSum   (add offsets)
 //
 // N = numCells / ELEMENTS_PER_GROUP  (512 for 64^3, 4096 for 128^3)
 // M = N / ELEMENTS_PER_GROUP         (1    for 64^3,    8  for 128^3)
@@ -42,11 +42,11 @@ GG_CLASS(SpatialGrid)
 
     ComputeShader::P clearGridShader;
     ComputeShader::P countGridShader;
-    ComputeShader::P pass1Shader;   // prefixSumPass1CS.cso — local scan of cellCount,       N groups
-    ComputeShader::P pass2Shader;   // prefixSumPass1CS.cso — local scan of groupSums,       M groups
-    ComputeShader::P pass3Shader;   // prefixSumPass3CS.cso — global scan of superGroupSums, 1 group
-    ComputeShader::P pass4Shader;   // prefixSumPass4CS.cso — propagate superGroupSums,      M groups
-    ComputeShader::P pass5Shader;   // prefixSumPass4CS.cso — propagate groupPrefixSum,      N groups
+    ComputeShader::P pass1Shader; // prefixSumPass1CS.cso — local scan of cellCount, N groups
+    ComputeShader::P pass2Shader; // prefixSumPass1CS.cso — local scan of groupSums, M groups
+    ComputeShader::P pass3Shader; // prefixSumPass3CS.cso — global scan of superGroupSums, 1 group
+    ComputeShader::P pass4Shader; // prefixSumPass4CS.cso — propagate superGroupSums, M groups
+    ComputeShader::P pass5Shader; // prefixSumPass4CS.cso — propagate groupPrefixSum, N groups
     ComputeShader::P sortShader;
     ComputeShader::P permutateShader;
 
@@ -62,14 +62,19 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS cbv,
         DoubleBufferGpuBuffer::P* particleFields)
     {
-        using ResPtr = com_ptr<ID3D12Resource>*;
-        static constexpr UINT EPG = THREAD_GROUP_SIZE * 2; // elements per group
+        using ResPtr = com_ptr<ID3D12Resource>*; // shorthand
+        // One pass of a blelloch scan works on one group of cells, working out their
+        // sum and exclusive prefix sum. The size of such a group is limited by the number
+        // of threads we can launch in one thread group, which is 1024. This is why
+		// we need multiple passes for large grids: each pass reduces the number of groups 
+        // by a factor of EPG.
+        static constexpr UINT EPG = THREAD_GROUP_SIZE * 2; 
 
-        auto sg = std::make_shared<SpatialGrid>();
-        sg->numCells_      = numCells;
-        sg->numParticles_  = numParticles;
-        sg->numPass1Groups_ = numCells / EPG;           // N
-        sg->numPass2Groups_ = sg->numPass1Groups_ / EPG; // M
+        auto gridPtr = std::make_shared<SpatialGrid>();
+        gridPtr->numCells_ = numCells;
+        gridPtr->numParticles_ = numParticles;
+        gridPtr->numPass1Groups_ = numCells / EPG;           // N
+        gridPtr->numPass2Groups_ = gridPtr->numPass1Groups_ / EPG; // M
 
         auto copy1 = [&](UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE src) {
             device->CopyDescriptorsSimple(1, mainAlloc.GetCpuHandle(slot), src,
@@ -80,50 +85,50 @@ public:
         // Buffers
         // -------------------------------------------------------------------------
 
-        sg->cellCountBuffer = GpuBuffer::Create(
+        gridPtr->cellCountBuffer = GpuBuffer::Create(
             device, numCells, sizeof(UINT),
             L"Cell Count Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->cellCountBuffer->CreateUav(device, staticAlloc);
+        gridPtr->cellCountBuffer->CreateUav(device, staticAlloc);
 
-        sg->cellPrefixSumBuffer = GpuBuffer::Create(
+        gridPtr->cellPrefixSumBuffer = GpuBuffer::Create(
             device, numCells, sizeof(UINT),
             L"Cell Prefix Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->cellPrefixSumBuffer->CreateUav(device, staticAlloc);
+        gridPtr->cellPrefixSumBuffer->CreateUav(device, staticAlloc);
 
-        sg->groupSumBuffer = GpuBuffer::Create(
-            device, sg->numPass1Groups_, sizeof(UINT),
+        gridPtr->groupSumBuffer = GpuBuffer::Create(
+            device, gridPtr->numPass1Groups_, sizeof(UINT),
             L"Group Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->groupSumBuffer->CreateUav(device, staticAlloc);
+        gridPtr->groupSumBuffer->CreateUav(device, staticAlloc);
 
-        sg->groupPrefixSumBuffer = GpuBuffer::Create(
-            device, sg->numPass1Groups_, sizeof(UINT),
+        gridPtr->groupPrefixSumBuffer = GpuBuffer::Create(
+            device, gridPtr->numPass1Groups_, sizeof(UINT),
             L"Group Prefix Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->groupPrefixSumBuffer->CreateUav(device, staticAlloc);
+        gridPtr->groupPrefixSumBuffer->CreateUav(device, staticAlloc);
 
         // Allocate max(M, 2) elements: pass 3 always scans at least 2 elements so that
         // PASS3_THREAD_COUNT >= 1 even when M=1 (GRID_DIM=64). The extra slot is zero-
         // initialized by D3D12 and never written by pass 2 or read by pass 4 in that case.
-        UINT superGroupElems = std::max(sg->numPass2Groups_, 2u);
-        sg->superGroupSumBuffer = GpuBuffer::Create(
+        UINT superGroupElems = std::max(gridPtr->numPass2Groups_, 2u);
+        gridPtr->superGroupSumBuffer = GpuBuffer::Create(
             device, superGroupElems, sizeof(UINT),
             L"Super Group Sum Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->superGroupSumBuffer->CreateUav(device, staticAlloc);
+        gridPtr->superGroupSumBuffer->CreateUav(device, staticAlloc);
 
-        sg->permBuffer = GpuBuffer::Create(
+        gridPtr->permBuffer = GpuBuffer::Create(
             device, numParticles, sizeof(UINT),
             L"Permutation Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-        sg->permBuffer->CreateUav(device, staticAlloc);
+        gridPtr->permBuffer->CreateUav(device, staticAlloc);
 
         // -------------------------------------------------------------------------
         // clearGridCS: UAV(u0) = 1 slot
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(1);
-            copy1(s, sg->cellCountBuffer->GetUavCpuHandle());
-            sg->clearGridShader = std::make_shared<ComputeShader>(device, "Shaders/clearGridCS.cso", cbv,
+            copy1(s, gridPtr->cellCountBuffer->GetUavCpuHandle());
+            gridPtr->clearGridShader = std::make_shared<ComputeShader>(device, "Shaders/clearGridCS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->cellCountBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->cellCountBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->cellCountBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->cellCountBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -133,12 +138,12 @@ public:
         {
             UINT s = mainAlloc.Allocate(2);
             particleFields[PF_PREDICTED_POSITION]->registerFrontTarget(mainAlloc.GetCpuHandle(s), false);
-            copy1(s + 1, sg->cellCountBuffer->GetUavCpuHandle());
-            sg->countGridShader = std::make_shared<ComputeShader>(device, "Shaders/countGridCS.cso", cbv,
+            copy1(s + 1, gridPtr->cellCountBuffer->GetUavCpuHandle());
+            gridPtr->countGridShader = std::make_shared<ComputeShader>(device, "Shaders/countGridCS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
                 std::vector<ResPtr>{ particleFields[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr(),
-                                     sg->cellCountBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->cellCountBuffer->GetResourcePtr() });
+                                     gridPtr->cellCountBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->cellCountBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -147,14 +152,14 @@ public:
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(3);
-            copy1(s,     sg->cellCountBuffer->GetUavCpuHandle());
-            copy1(s + 1, sg->cellPrefixSumBuffer->GetUavCpuHandle());
-            copy1(s + 2, sg->groupSumBuffer->GetUavCpuHandle());
-            sg->pass1Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass1_2CS.cso", cbv,
+            copy1(s,     gridPtr->cellCountBuffer->GetUavCpuHandle());
+            copy1(s + 1, gridPtr->cellPrefixSumBuffer->GetUavCpuHandle());
+            copy1(s + 2, gridPtr->groupSumBuffer->GetUavCpuHandle());
+            gridPtr->pass1Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass1_2CS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->cellCountBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->cellPrefixSumBuffer->GetResourcePtr(),
-                                     sg->groupSumBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->cellCountBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->cellPrefixSumBuffer->GetResourcePtr(),
+                                     gridPtr->groupSumBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -163,14 +168,14 @@ public:
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(3);
-            copy1(s,     sg->groupSumBuffer->GetUavCpuHandle());
-            copy1(s + 1, sg->groupPrefixSumBuffer->GetUavCpuHandle());
-            copy1(s + 2, sg->superGroupSumBuffer->GetUavCpuHandle());
-            sg->pass2Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass1_2CS.cso", cbv,
+            copy1(s,     gridPtr->groupSumBuffer->GetUavCpuHandle());
+            copy1(s + 1, gridPtr->groupPrefixSumBuffer->GetUavCpuHandle());
+            copy1(s + 2, gridPtr->superGroupSumBuffer->GetUavCpuHandle());
+            gridPtr->pass2Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass1_2CS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->groupSumBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->groupPrefixSumBuffer->GetResourcePtr(),
-                                     sg->superGroupSumBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->groupSumBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->groupPrefixSumBuffer->GetResourcePtr(),
+                                     gridPtr->superGroupSumBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -179,11 +184,11 @@ public:
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(1);
-            copy1(s, sg->superGroupSumBuffer->GetUavCpuHandle());
-            sg->pass3Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass3CS.cso", cbv,
+            copy1(s, gridPtr->superGroupSumBuffer->GetUavCpuHandle());
+            gridPtr->pass3Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass3CS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->superGroupSumBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->superGroupSumBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->superGroupSumBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->superGroupSumBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -192,13 +197,13 @@ public:
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(2);
-            copy1(s,     sg->groupPrefixSumBuffer->GetUavCpuHandle());
-            copy1(s + 1, sg->superGroupSumBuffer->GetUavCpuHandle());
-            sg->pass4Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass4_5CS.cso", cbv,
+            copy1(s,     gridPtr->groupPrefixSumBuffer->GetUavCpuHandle());
+            copy1(s + 1, gridPtr->superGroupSumBuffer->GetUavCpuHandle());
+            gridPtr->pass4Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass4_5CS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->superGroupSumBuffer->GetResourcePtr(),
-                                     sg->groupPrefixSumBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->groupPrefixSumBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->superGroupSumBuffer->GetResourcePtr(),
+                                     gridPtr->groupPrefixSumBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->groupPrefixSumBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -207,13 +212,13 @@ public:
         // -------------------------------------------------------------------------
         {
             UINT s = mainAlloc.Allocate(2);
-            copy1(s,     sg->cellPrefixSumBuffer->GetUavCpuHandle());
-            copy1(s + 1, sg->groupPrefixSumBuffer->GetUavCpuHandle());
-            sg->pass5Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass4_5CS.cso", cbv,
+            copy1(s,     gridPtr->cellPrefixSumBuffer->GetUavCpuHandle());
+            copy1(s + 1, gridPtr->groupPrefixSumBuffer->GetUavCpuHandle());
+            gridPtr->pass5Shader = std::make_shared<ComputeShader>(device, "Shaders/prefixSumPass4_5CS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
-                std::vector<ResPtr>{ sg->groupPrefixSumBuffer->GetResourcePtr(),
-                                     sg->cellPrefixSumBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->cellPrefixSumBuffer->GetResourcePtr() });
+                std::vector<ResPtr>{ gridPtr->groupPrefixSumBuffer->GetResourcePtr(),
+                                     gridPtr->cellPrefixSumBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->cellPrefixSumBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -223,16 +228,16 @@ public:
         {
             UINT s = mainAlloc.Allocate(4);
             particleFields[PF_PREDICTED_POSITION]->registerFrontTarget(mainAlloc.GetCpuHandle(s), false);
-            copy1(s + 1, sg->cellCountBuffer->GetUavCpuHandle());
-            copy1(s + 2, sg->cellPrefixSumBuffer->GetUavCpuHandle());
-            copy1(s + 3, sg->permBuffer->GetUavCpuHandle());
-            sg->sortShader = std::make_shared<ComputeShader>(device, "Shaders/sortCS.cso", cbv,
+            copy1(s + 1, gridPtr->cellCountBuffer->GetUavCpuHandle());
+            copy1(s + 2, gridPtr->cellPrefixSumBuffer->GetUavCpuHandle());
+            copy1(s + 3, gridPtr->permBuffer->GetUavCpuHandle());
+            gridPtr->sortShader = std::make_shared<ComputeShader>(device, "Shaders/sortCS.cso", cbv,
                 mainAlloc.GetGpuHandle(s),
                 std::vector<ResPtr>{ particleFields[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr(),
-                                     sg->cellPrefixSumBuffer->GetResourcePtr(),
-                                     sg->cellCountBuffer->GetResourcePtr() },
-                std::vector<ResPtr>{ sg->permBuffer->GetResourcePtr(),
-                                     sg->cellCountBuffer->GetResourcePtr() });
+                                     gridPtr->cellPrefixSumBuffer->GetResourcePtr(),
+                                     gridPtr->cellCountBuffer->GetResourcePtr() },
+                std::vector<ResPtr>{ gridPtr->permBuffer->GetResourcePtr(),
+                                     gridPtr->cellCountBuffer->GetResourcePtr() });
         }
 
         // -------------------------------------------------------------------------
@@ -245,16 +250,16 @@ public:
                 particleFields[f]->registerFrontTarget(mainAlloc.GetCpuHandle(s + f),     false);
             for (UINT f = 0; f < PF_COUNT; f++)
                 particleFields[f]->registerBackTarget( mainAlloc.GetCpuHandle(s + 7 + f), false);
-            copy1(s + 14, sg->permBuffer->GetUavCpuHandle());
+            copy1(s + 14, gridPtr->permBuffer->GetUavCpuHandle());
             std::vector<ResPtr> permIn, permOut;
             for (UINT f = 0; f < PF_COUNT; f++) permIn.push_back(particleFields[f]->getFront()->GetResourcePtr());
-            permIn.push_back(sg->permBuffer->GetResourcePtr());
+            permIn.push_back(gridPtr->permBuffer->GetResourcePtr());
             for (UINT f = 0; f < PF_COUNT; f++) permOut.push_back(particleFields[f]->getBack()->GetResourcePtr());
-            sg->permutateShader = std::make_shared<ComputeShader>(device, "Shaders/permutateCS.cso", cbv,
+            gridPtr->permutateShader = std::make_shared<ComputeShader>(device, "Shaders/permutateCS.cso", cbv,
                 mainAlloc.GetGpuHandle(s), std::move(permIn), std::move(permOut));
         }
 
-        return sg;
+        return gridPtr;
     }
 
     // Dispatch the full grid-build and sort sequence.

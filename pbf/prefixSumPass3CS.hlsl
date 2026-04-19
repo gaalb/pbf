@@ -1,17 +1,15 @@
-// Parallel exclusive prefix sum — pass 3 of 5: single-group scan of superGroupSums.
-//
-// After pass 2, superGroupSums[g] holds the total particle count for pass-2 group g.
-// This pass does an in-place exclusive Blelloch scan so that superGroupSums[g] becomes
-// the exclusive global offset for pass-2 group g, ready for pass 4 to propagate down.
+// Parallel prefix sum of superGroupSums.
+// This is pass 3 of the 5-pass prefix sum. Pass 1 calculated sum and prefix sum 
+// of groups, pass 2 calculated the sum and prefix sum of those groups, in turn also
+// in groups, called super groups. This pass takes the sums of the super groups and does an in-place
+// exclusive scan of them, so that the superGroupSums become the global offsets for each super group.
 //
 // PASS3_NUM_ELEMENTS = max(PASS2_GROUPS, 2), so that PASS3_THREAD_COUNT >= 1 always holds:
 //   GRID_DIM=64:  PASS2_GROUPS=1 -> PASS3_NUM_ELEMENTS=2, PASS3_THREAD_COUNT=1
 //   GRID_DIM=128: PASS2_GROUPS=8 -> PASS3_NUM_ELEMENTS=8, PASS3_THREAD_COUNT=4
 //
-// When PASS2_GROUPS=1 the second element (index 1) of superGroupSums is allocated but
-// never written by pass 2 and never read by pass 4, so its value does not affect correctness.
-//
-// In/Out: superGroupSums[u0]
+// In: superGroupSums
+// Out: superGroupSums 
 // Dispatch: 1 group of PASS3_THREAD_COUNT threads.
 
 #define PrefixSumPass3RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 1))"

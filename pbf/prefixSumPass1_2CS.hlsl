@@ -1,19 +1,25 @@
-// Parallel exclusive prefix sum (Blelloch scan) — local scan kernel.
+// Even though the shader runs per thread, threads in a thread group cooperate 
+// closely in this shader. Each thread group of size THREAD_GROUP_SIZE owns 
+// THREAD_GROUP_SIZE*2 *contiguous* cells, let's call them a cell group. What 
+// this shader does is, per cell group, calculates two things:
+// -the cell group's total sum
+// -the cell group's exclusive prefix sum
+//
 // Used for both pass 1 (N groups) and pass 2 (M groups) of the 5-pass design,
 // with different descriptor bindings each time:
 //
-//   Pass 1: u0=cellCount, u1=cellPrefixSum, u2=groupSums        (N groups)
-//   Pass 2: u0=groupSums, u1=groupPrefixSum, u2=superGroupSums  (M groups)
+// Pass 1:  N = numCells / ELEMENTS_PER_GROUP groups, for whom we calculate
+//  u1=cellPrefixSum and u2=groupSums based on u0=cellCount.
 //
-// Each group of THREAD_GROUP_SIZE (256) threads processes ELEMENTS_PER_GROUP (512)
-// consecutive entries: each thread is responsible for two adjacent elements.
-// The local exclusive prefix sum is written to u1[]. Cross-group offsets are NOT
-// added here; passes 4 and 5 propagate them via prefixSumPass4CS.
-// The per-group total is stored in u2[groupID.x] for the next level's scan.
+// Pass 2:  M = N / ELEMENTS_PER_GROUP groups, for whom we calculate
+//  u1=groupPrefixSum and u2=superGroupSums based on u0=groupSums.
 //
-// Dispatch: N = numCells / ELEMENTS_PER_GROUP groups (pass 1),
-//           M = N / ELEMENTS_PER_GROUP groups (pass 2).
-
+// In other words: Pass 1 calculates the prefix sum of cell groups, and
+// their group sums; Pass 2 calculates the prefix sum, and sum of the
+// group sums -> super group sums.
+//
+// In: cellCount
+// Out: cellPrefixSum, groupSums
 #define PrefixSumPass1RootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"
 
 #include "SharedConfig.hlsli"   // THREAD_GROUP_SIZE = 256
