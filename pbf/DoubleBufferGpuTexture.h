@@ -73,7 +73,7 @@ GG_CLASS(DoubleBufferGpuTexture)
     }
 
 public:
-    static P Create2D(
+    DoubleBufferGpuTexture(
         ID3D12Device* device,
         UINT w, UINT h,
         DXGI_FORMAT resourceFormat, D3D12_RESOURCE_FLAGS flags,
@@ -86,43 +86,41 @@ public:
         DXGI_FORMAT uavFmt = DXGI_FORMAT_UNKNOWN,
         DXGI_FORMAT srvFmt = DXGI_FORMAT_UNKNOWN,
         DXGI_FORMAT dsvFmt = DXGI_FORMAT_D32_FLOAT)
+        : device(device),
+          resourceFormat(resourceFormat),
+          uavViewFormat(uavFmt),
+          srvViewFormat(srvFmt),
+          dsvViewFormat(dsvFmt),
+          resourceFlags(flags),
+          initialState(initialState),
+          hasUav(needUav), hasSrv(needSrv), hasDsv(needDsv)
     {
-        P db = std::make_shared<DoubleBufferGpuTexture>();
-        db->device         = device;
-        db->resourceFormat = resourceFormat;
-        db->uavViewFormat  = uavFmt;
-        db->srvViewFormat  = srvFmt;
-        db->dsvViewFormat  = dsvFmt;
-        db->resourceFlags  = flags;
-        db->initialState   = initialState;
-        db->hasUav = needUav; db->hasSrv = needSrv; db->hasDsv = needDsv;
-        db->names[0] = name0 ? name0 : L"";
-        db->names[1] = name1 ? name1 : L"";
-        if (clearValue) { db->storedClearValue = *clearValue; db->hasClearValue = true; }
+        names[0] = name0 ? name0 : L"";
+        names[1] = name1 ? name1 : L"";
+        if (clearValue) { storedClearValue = *clearValue; hasClearValue = true; }
 
         for (UINT i = 0; i < 2; ++i) {
-            const wchar_t* name = db->names[i].empty() ? nullptr : db->names[i].c_str();
+            const wchar_t* name = names[i].empty() ? nullptr : names[i].c_str();
             if (clearValue)
-                db->textures[i] = GpuTexture::Create2DWithClearValue(device, w, h, resourceFormat, flags, name, initialState, clearValue);
+                textures[i] = GpuTexture::Create2DWithClearValue(device, w, h, resourceFormat, flags, name, initialState, clearValue);
             else
-                db->textures[i] = GpuTexture::Create2D(device, w, h, resourceFormat, flags, name, initialState);
+                textures[i] = GpuTexture::Create2D(device, w, h, resourceFormat, flags, name, initialState);
 
             if (needUav) {
                 UINT slot = staticAlloc.Allocate();
-                db->staticUavCpu[i] = staticAlloc.GetCpuHandle(slot);
-                db->textures[i]->CreateUavAt(device, db->staticUavCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, uavFmt);
+                staticUavCpu[i] = staticAlloc.GetCpuHandle(slot);
+                textures[i]->CreateUavAt(device, staticUavCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, uavFmt);
             }
             if (needSrv) {
                 UINT slot = staticAlloc.Allocate();
-                db->staticSrvCpu[i] = staticAlloc.GetCpuHandle(slot);
-                db->textures[i]->CreateSrvAt(device, db->staticSrvCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, srvFmt);
+                staticSrvCpu[i] = staticAlloc.GetCpuHandle(slot);
+                textures[i]->CreateSrvAt(device, staticSrvCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, srvFmt);
             }
             if (needDsv) {
-                db->textures[i]->CreateDsv(device, *dsvAlloc, dsvFmt);
-                db->staticDsvCpu[i] = db->textures[i]->GetDsvCpuHandle();
+                textures[i]->CreateDsv(device, *dsvAlloc, dsvFmt);
+                staticDsvCpu[i] = textures[i]->GetDsvCpuHandle();
             }
         }
-        return db;
     }
 
     // Register a slot that always receives the FRONT resource's descriptor.

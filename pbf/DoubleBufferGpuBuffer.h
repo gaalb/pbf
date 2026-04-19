@@ -50,30 +50,26 @@ GG_CLASS(DoubleBufferGpuBuffer)
     }
 
 public:
-    static P Create(
+    DoubleBufferGpuBuffer(
         ID3D12Device* device,
         UINT elems, UINT stride,
         const wchar_t* frontName, const wchar_t* backName,
         D3D12_RESOURCE_STATES initialState,
         DescriptorAllocator& staticAlloc,
         bool needUav, bool needSrv)
+        : device(device)
     {
-        P db = std::make_shared<DoubleBufferGpuBuffer>();
-        db->device = device;
-
-        db->buffers[0] = GpuBuffer::Create(device, elems, stride, frontName, initialState, D3D12_HEAP_TYPE_DEFAULT);
-        db->buffers[1] = GpuBuffer::Create(device, elems, stride, backName,  initialState, D3D12_HEAP_TYPE_DEFAULT);
+        buffers[0] = GpuBuffer::Create(device, elems, stride, frontName, initialState, D3D12_HEAP_TYPE_DEFAULT);
+        buffers[1] = GpuBuffer::Create(device, elems, stride, backName,  initialState, D3D12_HEAP_TYPE_DEFAULT);
 
         if (needUav) {
-            db->buffers[0]->CreateUav(device, staticAlloc);
-            db->buffers[1]->CreateUav(device, staticAlloc);
+            buffers[0]->CreateUav(device, staticAlloc);
+            buffers[1]->CreateUav(device, staticAlloc);
         }
         if (needSrv) {
-            db->buffers[0]->CreateSrv(device, staticAlloc);
-            db->buffers[1]->CreateSrv(device, staticAlloc);
+            buffers[0]->CreateSrv(device, staticAlloc);
+            buffers[1]->CreateSrv(device, staticAlloc);
         }
-
-        return db;
     }
 
     // Register a slot that always receives the FRONT resource's descriptor.

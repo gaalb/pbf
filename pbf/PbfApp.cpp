@@ -33,7 +33,7 @@ void PbfApp::InitParticleDepthSrvs() {
 	clearValue.Format = DXGI_FORMAT_D32_FLOAT;
 	clearValue.DepthStencil.Depth = 1.0f;
 
-	particleDepthDB = DoubleBufferGpuTexture::Create2D(
+	particleDepthDB = DoubleBufferGpuTexture::Create(
 		device.Get(), width, height,
 		DXGI_FORMAT_R32_TYPELESS,
 		D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
@@ -72,7 +72,7 @@ void PbfApp::InitConstantBuffers() {
 
 void PbfApp::InitCamera() {
 	camera = Egg::Cam::FirstPerson::Create();
-	camera->SetView(Float3(0.0f, 5.0f, -20.0f), Float3(0.0f, 0.0f, 1.0f));
+	camera->SetView(Float3(0.0f, 10.0f, -40.0f), Float3(0.0f, 0.0f, 1.0f));
 	camera->SetSpeed(10.0f);
 	camera->SetAspect(aspectRatio);
 }
