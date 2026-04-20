@@ -87,28 +87,48 @@ public:
 
     com_ptr<ID3D12Resource>* GetResourcePtr() { return std::addressof(resource); }
 
-    // Auto-allocate one slot and create a UAV (optionally with format override).
+    // Auto-allocate one slot from alloc, create a UAV (optionally with format override),
+    // and store the resulting cpu/gpu handle pair as the canonical UAV for this texture.
+    // Retrieve them later via GetUavCpuHandle() / GetUavGpuHandle(). Call at most once
+    // per texture; a second call would overwrite the stored handles. For additional views
+    // at specific locations (e.g. a CPU-only UAV in a non-shader-visible heap), use
+    // CreateUavAt() instead.
     void CreateUav(ID3D12Device* device, DescriptorAllocator& alloc,
                    DXGI_FORMAT viewFormat = DXGI_FORMAT_UNKNOWN) {
         UINT slot = alloc.Allocate();
-        CreateUavAt(device, alloc.GetCpuHandle(slot), alloc.GetGpuHandle(slot), viewFormat);
+        uavCpuHandle = alloc.GetCpuHandle(slot);
+        uavGpuHandle = alloc.GetGpuHandle(slot);
+        CreateUavAt(device, uavCpuHandle, uavGpuHandle, viewFormat);
     }
 
-    // Auto-allocate one slot and create an SRV (optionally with format override).
+    // Auto-allocate one slot from alloc, create an SRV (optionally with format override),
+    // and store the resulting cpu/gpu handle pair as the canonical SRV for this texture.
+    // Retrieve them later via GetSrvCpuHandle() / GetSrvGpuHandle(). Call at most once
+    // per texture; a second call would overwrite the stored handles. For additional views
+    // at specific locations, use CreateSrvAt() instead.
     void CreateSrv(ID3D12Device* device, DescriptorAllocator& alloc,
                    DXGI_FORMAT viewFormat = DXGI_FORMAT_UNKNOWN) {
         UINT slot = alloc.Allocate();
-        CreateSrvAt(device, alloc.GetCpuHandle(slot), alloc.GetGpuHandle(slot), viewFormat);
+        srvCpuHandle = alloc.GetCpuHandle(slot);
+        srvGpuHandle = alloc.GetGpuHandle(slot);
+        CreateSrvAt(device, srvCpuHandle, srvGpuHandle, viewFormat);
     }
 
-    // Auto-allocate one slot in a DSV allocator and create a DSV.
+    // Auto-allocate one slot from dsvAlloc, create a DSV, and store the resulting cpu
+    // handle as the canonical DSV for this texture. DSV is CPU-only (bound via
+    // OMSetRenderTargets, not a root descriptor table), so only a cpu handle is kept.
+    // Call at most once per texture; a second call would overwrite the stored handle.
+    // For re-creating the view at an existing slot (e.g. on resize), use CreateDsvAt().
     void CreateDsv(ID3D12Device* device, DescriptorAllocator& dsvAlloc,
                    DXGI_FORMAT dsvFormat = DXGI_FORMAT_D32_FLOAT) {
         UINT slot = dsvAlloc.Allocate();
         CreateDsvAt(device, dsvAlloc.GetCpuHandle(slot), dsvFormat);
     }
 
-    // Create a DSV at an already-allocated CPU handle (used for resize to reuse existing slots).
+    // Create a DSV at an already-allocated cpu handle and store it.
+    // Unlike CreateUavAt/CreateSrvAt, this DOES store the handle: DSV is always
+    // single-slot (no risk of a secondary view clobbering a canonical one), and
+    // the resize path needs to rewrite the view into the same pre-allocated slot.
     void CreateDsvAt(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                      DXGI_FORMAT dsvFormat = DXGI_FORMAT_D32_FLOAT) {
         D3D12_DEPTH_STENCIL_VIEW_DESC d = {};
@@ -119,16 +139,16 @@ public:
         device->CreateDepthStencilView(resource.Get(), &d, dsvCpuHandle);
     }
 
+    // Create a UAV at a caller-specified cpu/gpu handle pair, optionally reinterpreting
+    // the resource through viewFormat (needed for R32_TYPELESS resources that must be
+    // viewed as e.g. R32_UINT for UAV atomic writes and R32_FLOAT for SRV reads).
+    // Does NOT store the handles — the caller already holds them and is responsible for
+    // keeping them. Use this for secondary / ad-hoc views where
+    // GetUavCpuHandle/GpuHandle should not be affected.
     void CreateUavAt(ID3D12Device* device,
                      D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                      D3D12_GPU_DESCRIPTOR_HANDLE gpu,
                      DXGI_FORMAT viewFormat = DXGI_FORMAT_UNKNOWN) {
-        // If a view format was specified, use it, otherwise fall back to the texture's native format.
-        // In some cases, we might want to view texture data through a different format when viewed
-		// through different descriptors. This can only be done if the underyling resource format is 
-        // compatible with the view format, which means we will create such textures with 
-        // R32_TYPELESS as format. In such cases, we specify the format at descriptor creation time, rather
-		// than resource creation time; we specify the viewFormat in the parameters of CreateUavAt/CreateSrvAt.
         DXGI_FORMAT fmt = (viewFormat != DXGI_FORMAT_UNKNOWN) ? viewFormat : resourceFormat;
         D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
         d.Format = fmt;
@@ -142,10 +162,14 @@ public:
             d.Texture2D.MipSlice     = 0;
         }
         device->CreateUnorderedAccessView(resource.Get(), nullptr, &d, cpu);
-        uavCpuHandle = cpu;
-        uavGpuHandle = gpu;
+        // handles not stored: caller holds cpu/gpu directly
     }
 
+    // Create an SRV at a caller-specified cpu/gpu handle pair, optionally reinterpreting
+    // the resource through viewFormat (needed for R32_TYPELESS resources).
+    // Does NOT store the handles — the caller already holds them and is responsible for
+    // keeping them. Use this for secondary / ad-hoc views where
+    // GetSrvCpuHandle/GpuHandle should not be affected.
     void CreateSrvAt(ID3D12Device* device,
                      D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                      D3D12_GPU_DESCRIPTOR_HANDLE gpu,
@@ -165,8 +189,7 @@ public:
             d.Texture2D.MipLevels             = 1;
         }
         device->CreateShaderResourceView(resource.Get(), &d, cpu);
-        srvCpuHandle = cpu;
-        srvGpuHandle = gpu;
+        // handles not stored: caller holds cpu/gpu directly
     }
 
     void Transition(D3D12_RESOURCE_STATES destState, ID3D12GraphicsCommandList* cmdList) {

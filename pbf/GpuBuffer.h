@@ -57,45 +57,61 @@ public:
         std::swap(a->srvGpuHandle, b->srvGpuHandle);
     }
 
-    // Auto-allocate one slot and create a structured UAV.
+    // Auto-allocate one slot from alloc, create a structured UAV, and store the resulting
+    // cpu/gpu handle pair as the canonical UAV for this buffer. Retrieve them later via
+    // GetUavCpuHandle() / GetUavGpuHandle(). Call at most once per buffer; a second call
+    // would overwrite the stored handles. For additional views at specific locations, use
+    // CreateUavAt() instead.
     void CreateUav(ID3D12Device* device, DescriptorAllocator& alloc) {
         UINT slot = alloc.Allocate();
-        CreateUavAt(device, alloc.GetCpuHandle(slot), alloc.GetGpuHandle(slot));
+        uavCpuHandle = alloc.GetCpuHandle(slot);
+        uavGpuHandle = alloc.GetGpuHandle(slot);
+        CreateUavAt(device, uavCpuHandle, uavGpuHandle);
     }
 
-    // Auto-allocate one slot and create a structured SRV.
+    // Auto-allocate one slot from alloc, create a structured SRV, and store the resulting
+    // cpu/gpu handle pair as the canonical SRV for this buffer. Retrieve them later via
+    // GetSrvCpuHandle() / GetSrvGpuHandle(). Call at most once per buffer; a second call
+    // would overwrite the stored handles. For additional views at specific locations, use
+    // CreateSrvAt() instead.
     void CreateSrv(ID3D12Device* device, DescriptorAllocator& alloc) {
         UINT slot = alloc.Allocate();
-        CreateSrvAt(device, alloc.GetCpuHandle(slot), alloc.GetGpuHandle(slot));
+        srvCpuHandle = alloc.GetCpuHandle(slot);
+        srvGpuHandle = alloc.GetGpuHandle(slot);
+        CreateSrvAt(device, srvCpuHandle, srvGpuHandle);
     }
 
+    // Create a structured UAV at a caller-specified cpu/gpu handle pair.
+    // Does NOT store the handles — the caller already holds them and is responsible
+    // for keeping them. Use this for secondary / ad-hoc views (e.g. a CPU-only UAV
+    // in a non-shader-visible heap) where GetUavCpuHandle/GpuHandle should not be affected.
     void CreateUavAt(ID3D12Device* device,
                      D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                      D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
-        // fill out uav desc for the CreateUnorderedAccessView call
         D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
-		d.Format = DXGI_FORMAT_UNKNOWN; // structured buffer, so format is unknown
-		d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER; // this is a buffer UAV, not a texture UAV
+        d.Format = DXGI_FORMAT_UNKNOWN; // structured buffer, so format is unknown
+        d.ViewDimension = D3D12_UAV_DIMENSION_BUFFER; // this is a buffer UAV, not a texture UAV
         d.Buffer.NumElements = elementCount;
         d.Buffer.StructureByteStride = stride;
         device->CreateUnorderedAccessView(resource.Get(), nullptr, &d, cpu);
-        uavCpuHandle = cpu;
-        uavGpuHandle = gpu;
+        // handles not stored: caller holds cpu/gpu directly
     }
 
+    // Create a structured SRV at a caller-specified cpu/gpu handle pair.
+    // Does NOT store the handles — the caller already holds them and is responsible
+    // for keeping them. Use this for secondary / ad-hoc views where
+    // GetSrvCpuHandle/GpuHandle should not be affected.
     void CreateSrvAt(ID3D12Device* device,
                      D3D12_CPU_DESCRIPTOR_HANDLE cpu,
                      D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
-		// fill out srv desc for the CreateShaderResourceView call
         D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
         d.Format = DXGI_FORMAT_UNKNOWN; // structured buffer, so format is unknown
-		d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; // this is a buffer SRV, not a texture SRV
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; 
+        d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; // this is a buffer SRV, not a texture SRV
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         d.Buffer.NumElements = elementCount;
-        d.Buffer.StructureByteStride  = stride;
+        d.Buffer.StructureByteStride = stride;
         device->CreateShaderResourceView(resource.Get(), &d, cpu);
-        srvCpuHandle = cpu;
-        srvGpuHandle = gpu;
+        // handles not stored: caller holds cpu/gpu directly
     }
 
     void Transition(D3D12_RESOURCE_STATES destState, ID3D12GraphicsCommandList* cmdList) {

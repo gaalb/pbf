@@ -9,6 +9,30 @@ void PbfApp::CreateSwapChainResources() {
 	if (lod) lod->Resize((UINT)scissorRect.right, (UINT)scissorRect.bottom);
 }
 
+// Allocate all GPU resources that persist across frames: descriptor heaps, 
+// buffers for particles and sorting, textures for the environment and obstacle, etc.
+// After this returns, every ID3D12Resource and descriptor heap slot exists,
+// but no data has been uploaded to the GPU yet.
+void PbfApp::CreateResources() {
+	AsyncComputeApp::CreateResources(); // command allocators, command lists, PSO manager, fences for both queues
+
+	// Heaps must be first: all Init functions below write descriptors into them.
+	InitDescriptorHeaps();
+	InitConstantBuffers();
+	InitCamera();
+	InitParticleFields();
+	// Create the LOD subsystem now that both descriptor heaps exist. scissorRect was already
+	// set by the earlier CreateSwapChainResources call, so width/height are correct.
+	lod = LodSubsystem::Create(device.Get(), numParticles,
+		(UINT)scissorRect.right, (UINT)scissorRect.bottom,
+		*mainAllocator, *staticAllocator);
+	InitReadbackBuffers();
+	InitSnapshotBuffers();
+	InitDensityVolume();
+	InitBackground();
+	InitObstacle();
+}
+
 // Create all descriptor allocators. Must be called before any Init function
 // that populates descriptors.
 void PbfApp::InitDescriptorHeaps() {
@@ -32,7 +56,7 @@ void PbfApp::InitConstantBuffers() {
 
 void PbfApp::InitCamera() {
 	camera = Egg::Cam::FirstPerson::Create();
-	camera->SetView(Float3(0.0f, 10.0f, -40.0f), Float3(0.0f, 0.0f, 1.0f));
+	camera->SetView(Float3(0.0f, 10.0f, -40.0f), Float3(0.0f, 0.0f, 1.0f)); // starting position
 	camera->SetSpeed(10.0f);
 	camera->SetAspect(aspectRatio);
 }
@@ -107,9 +131,9 @@ void PbfApp::InitSnapshotBuffers() {
 
 	// Register front SRV targets for the particle graphics SRV table (t0=pos, t1=den, t2=lod).
 	// flip() keeps these slots pointing at the current front automatically.
-	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart),     true);
-	densitySnapshotDB ->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart + 1), true);
-	lodSnapshotDB     ->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart + 2), true);
+	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart), true);
+	densitySnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart + 1), true);
+	lodSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart + 2), true);
 
 	// Grid snapshot DBs (used by densityVolumeCS / splatDensityVolumeCS in liquid mode).
 	cellCountSnapshotDB = DoubleBufferGpuBuffer::Create(
@@ -137,18 +161,22 @@ void PbfApp::InitDensityVolume() {
 		L"Density Volume",
 		D3D12_RESOURCE_STATE_COMMON);
 
-	// R32_UINT UAV in main heap: splatDensityVolumeCS writes via CAS float atomic add.
-	densityVolume->CreateUav(device.Get(), *mainAllocator, DXGI_FORMAT_R32_UINT);
-	densityVolumeHandle = densityVolume->GetUavGpuHandle();
+	// Canonical R32_UINT UAV in the static (non-shader-visible) heap.
+	// Non-shader-visible descriptors are CPU-readable, so this handle can be:
+	//   (a) a CopyDescriptorsSimple source in BuildComputePipelines (via GetUavCpuHandle()), and
+	//   (b) the CPU handle argument to ClearUnorderedAccessViewUint (densityVolClearCpuHandle).
+	densityVolume->CreateUav(device.Get(), *staticAllocator, DXGI_FORMAT_R32_UINT);
+	densityVolClearCpuHandle = densityVolume->GetUavCpuHandle();
 
-	// CPU-only R32_UINT UAV in static heap: required by ClearUnorderedAccessViewUint.
-	UINT clearSlot = staticAllocator->Allocate();
-	densityVolume->CreateUavAt(
-		device.Get(),
-		staticAllocator->GetCpuHandle(clearSlot),
-		{}, // GPU handle unused in CPU-only heap
-		DXGI_FORMAT_R32_UINT);
-	densityVolClearCpuHandle = staticAllocator->GetCpuHandle(clearSlot);
+	// Mirror the UAV into a shader-visible main heap slot.
+	// ClearUnorderedAccessViewUint requires its GPU handle to be in the currently-bound
+	// shader-visible heap; densityVolumeHandle provides that GPU handle.
+	UINT clearGpuSlot = mainAllocator->Allocate();
+	device->CopyDescriptorsSimple(1,
+		mainAllocator->GetCpuHandle(clearGpuSlot),
+		densityVolClearCpuHandle,
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	densityVolumeHandle = mainAllocator->GetGpuHandle(clearGpuSlot);
 
 	// 4-slot contiguous liquid table: [density(t0=+0), pos(+1), gridCount(+2), gridPrefix(+3)].
 	// density SRV (+0) is static. Snapshot DB front targets handle the other three automatically.
@@ -160,8 +188,8 @@ void PbfApp::InitDensityVolume() {
 		DXGI_FORMAT_R32_FLOAT);
 
 	// Register snapshot front targets: flip() will keep +1/+2/+3 pointing at the current front.
-	positionSnapshotDB    ->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 1), true);
-	cellCountSnapshotDB   ->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 2), true);
+	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 1), true);
+	cellCountSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 2), true);
 	cellPrefixSumSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 3), true);
 }
 
@@ -1229,30 +1257,6 @@ void PbfApp::Throttle() {
 
 void PbfApp::ReleaseSwapChainResources()  {
 	AsyncComputeApp::ReleaseSwapChainResources();
-}
-
-// Allocate all GPU resources that persist across frames: descriptor heaps, 
-// buffers for particles and sorting, textures for the environment and obstacle, etc.
-// After this returns, every ID3D12Resource and descriptor heap slot exists,
-// but no data has been uploaded to the GPU yet.
-void PbfApp::CreateResources() {
-	AsyncComputeApp::CreateResources(); // command allocators, command lists, PSO manager, fences for both queues
-
-	// Heaps must be first: all Init functions below write descriptors into them.
-	InitDescriptorHeaps();
-	InitConstantBuffers();
-	InitCamera();
-	InitParticleFields();
-	// Create the LOD subsystem now that both descriptor heaps exist. scissorRect was already
-	// set by the earlier CreateSwapChainResources call, so width/height are correct.
-	lod = LodSubsystem::Create(device.Get(), numParticles,
-		(UINT)scissorRect.right, (UINT)scissorRect.bottom,
-		*mainAllocator, *staticAllocator);
-	InitReadbackBuffers();
-	InitSnapshotBuffers();
-	InitDensityVolume();
-	InitBackground();
-	InitObstacle();
 }
 
 // upload initial data to the GPU and build rendering/compute pipelines.

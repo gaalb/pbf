@@ -184,7 +184,7 @@ protected:
 	// Liquid surface rendering: single-buffered Texture3D density volume.
 	// R32_TYPELESS resource; R32_UINT UAV for CAS float atomic add by splatDensityVolumeCS,
 	// R32_FLOAT SRV for liquidPS. Home state: COMMON.
-	GpuTexture::P  densityVolume;           // VOL_DIM^3, R32_TYPELESS
+	GpuTexture::P  densityVolume; // VOL_DIM^3, R32_TYPELESS
 	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle;     // GPU handle for R32_UINT UAV (used for ClearUnorderedAccessViewUint)
 	CD3DX12_CPU_DESCRIPTOR_HANDLE densityVolClearCpuHandle; // CPU handle in static heap for ClearUnorderedAccessViewUint
 	UINT liquidTableStartSlot = 0; // first of the 4 contiguous liquidPS SRV slots

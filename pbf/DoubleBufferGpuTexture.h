@@ -66,9 +66,12 @@ GG_CLASS(DoubleBufferGpuTexture)
     }
 
     // Wire the appropriate static heap descriptor (front or back, UAV or SRV) to the target slot in the main heap.
+    // Uses staticSrvCpu/staticUavCpu directly: GpuTexture's own getters are not used here because
+    // the textures are created via CreateSrvAt/CreateUavAt (which do not store handles), since
+    // DoubleBufferGpuTexture owns and manages the static-heap slots itself.
     void copyToTarget(const Target& t) const {
-        const GpuTexture::P& tex = t.isFront ? textures[frontIdx] : textures[frontIdx ^ 1]; // the GpuTexture that holds the relevant static heap descriptors
-        D3D12_CPU_DESCRIPTOR_HANDLE src = t.isSrv ? tex->GetSrvCpuHandle() : tex->GetUavCpuHandle(); // choose UAV vs SRV descriptor
+        UINT idx = t.isFront ? frontIdx : (frontIdx ^ 1); // index of the GpuTexture to copy from
+        D3D12_CPU_DESCRIPTOR_HANDLE src = t.isSrv ? staticSrvCpu[idx] : staticUavCpu[idx];
         device->CopyDescriptorsSimple(1, t.mainCpuHandle, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
