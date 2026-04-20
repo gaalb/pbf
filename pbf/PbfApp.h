@@ -20,6 +20,7 @@
 #include "DoubleBufferGpuBuffer.h"
 #include "DoubleBufferGpuTexture.h"
 #include "SpatialGrid.h"
+#include "LodSubsystem.h"
 #include <immintrin.h>
 #include <thread>
 #include "SharedConfig.hlsli"
@@ -112,17 +113,16 @@ protected:
 	GpuBuffer::P positionUploadBuffer;
 	GpuBuffer::P velocityUploadBuffer;
 
-	DescriptorAllocator::P imguiAllocator;   // 1-slot shader-visible heap for ImGui font texture
-	DescriptorAllocator::P mainAllocator;    // shader-visible CBV/SRV/UAV heap
-	DescriptorAllocator::P staticAllocator;  // CPU-only non-shader-visible heap for CopyDescriptorsSimple sources
+	DescriptorAllocator::P imguiAllocator; // 1-slot shader-visible heap for ImGui font texture
+	DescriptorAllocator::P mainAllocator; // shader-visible CBV/SRV/UAV heap
+	DescriptorAllocator::P staticAllocator; // CPU-only non-shader-visible heap for CopyDescriptorsSimple sources
 
 	// Particle field double buffers: front = live data (compute reads), back = sort target (permutateCS writes).
 	// flip() is called once per frame (after cpuWaitForCompute) to promote the sorted back to front.
 	DoubleBufferGpuBuffer::P particleFieldDB[PF_COUNT];
 
-	SpatialGrid::P spatialGrid;        // owns grid buffers and all grid/sort shaders
-	GpuBuffer::P lodBuffer;            // default heap: per-particle LOD countdown (uint)
-	GpuBuffer::P lodReductionBuffer;   // default heap: DTC reduction scratch [minDTC, maxDTC]
+	SpatialGrid::P spatialGrid; // owns grid buffers and all grid/sort shaders
+	LodSubsystem::P lod; // owns LOD buffers, depth textures, and all LOD shaders
 
 	// One ComputeShader per pass. Each holds its own PSO, root signature, fixed descriptor
 	// table handle, and input/output resource lists for UAV barrier insertion.
@@ -141,10 +141,6 @@ protected:
 	ComputeShader::P gsmConfinementViscosityShader;
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
-	ComputeShader::P clearDtcReductionShader; // zero lodReduction accumulator before dtcReductionShader
-	ComputeShader::P lodReductionShader;  // compute per-frame DTC min/max via GPU atomics
-	ComputeShader::P lodShader; // assign per-particle LOD countdown from DTC range
-	ComputeShader::P setLodMaxShader; // fill all lod[i] = maxLOD (used when adaptivity is off)
 
 	// Solid obstacle: owns the renderable mesh and the SDF volume texture
 	SolidObstacle::P solidObstacle;
@@ -175,10 +171,6 @@ protected:
 	bool gsmEnabled = false; // use GSM-boosted shaders for lambda, delta, vorticity, confinementViscosity
 	bool physicsRunning = false; // toggled by spacebar: when false, compute passes are skipped each frame
 
-	// LOD mode: which per-particle LOD assignment method to use each frame
-	enum class LodMode { NONE = 0, DTC = 1, DTVS = 2 };
-	LodMode lodMode = LodMode::DTVS; // default to DTVS
-
 	// arrow key held state for external acceleration input
 	bool arrowLeft = false, arrowRight = false, arrowUp = false, arrowDown = false;
 
@@ -189,29 +181,15 @@ protected:
 	DoubleBufferGpuBuffer::P densitySnapshotDB;  // density snapshot
 	DoubleBufferGpuBuffer::P lodSnapshotDB;       // LOD snapshot
 
-	// DTVS: double-buffered window-resolution depth textures.
-	// Graphics writes to DB->getBack(); flip() (after cpuWaitForGraphics) promotes it to front for compute.
-	DoubleBufferGpuTexture::P particleDepthDB;    // default heap; recreated on resize
-	DescriptorAllocator::P particleDsvAllocator;  // 2-slot DSV allocator; recreated on resize
-
-	// DTVS graphics pipeline: reuses particleVS + particleGS with a depth-only PS
-	com_ptr<ID3D12RootSignature> depthOnlyRootSig;
-	com_ptr<ID3D12PipelineState> depthOnlyPso;
-
-	// DTVS compute shaders
-	ComputeShader::P clearDtvsReductionShader; // reset lodReduction[0] to 0u before DTVS reduction
-	ComputeShader::P dtvsReductionShader; // accumulate max DTVS into lodReduction[0]
-	ComputeShader::P dtvsLodShader; // assign per-particle LOD from DTVS / maxDTVS
-
 	// Liquid surface rendering: single-buffered Texture3D density volume.
 	// R32_TYPELESS resource; R32_UINT UAV for CAS float atomic add by splatDensityVolumeCS,
 	// R32_FLOAT SRV for liquidPS. Home state: COMMON.
-	GpuTexture::P                 densityVolume;           // VOL_DIM^3, R32_TYPELESS
+	GpuTexture::P  densityVolume;           // VOL_DIM^3, R32_TYPELESS
 	CD3DX12_GPU_DESCRIPTOR_HANDLE densityVolumeHandle;     // GPU handle for R32_UINT UAV (used for ClearUnorderedAccessViewUint)
 	CD3DX12_CPU_DESCRIPTOR_HANDLE densityVolClearCpuHandle; // CPU handle in static heap for ClearUnorderedAccessViewUint
-	UINT                          liquidTableStartSlot = 0; // first of the 4 contiguous liquidPS SRV slots
-	UINT                          particleSrvTableStart = 0; // first of 3 contiguous SRVs: pos(t0),den(t1),lod(t2)
-	UINT                          cubemapSrvSlot = 0; // slot for the environment cubemap SRV
+	UINT liquidTableStartSlot = 0; // first of the 4 contiguous liquidPS SRV slots
+	UINT particleSrvTableStart = 0; // first of 3 contiguous SRVs: pos(t0),den(t1),lod(t2)
+	UINT cubemapSrvSlot = 0; // slot for the environment cubemap SRV
 
 	// Splat density pipeline: one per-particle CS writes Poly6 contributions via CAS float atomic add.
 	ComputeShader::P splatDensityShader; // per-particle: Poly6 splat into densityVolume (R32_UINT UAV)
@@ -227,15 +205,6 @@ protected:
 
 	int shadingMode = SHADING_UNICOLOR; // current particle shading mode, driven by ImGui
 
-	// Create the two window-resolution depth textures and their 2-slot DSV heap.
-	// Called from CreateSwapChainResources (and again on resize). Both textures start in COMMON state.
-	// R32_TYPELESS allows both D32_FLOAT DSV writes (graphics) and R32_FLOAT SRV reads (compute DTVS).
-	void InitParticleDepthTextures();
-
-	// Create (or recreate on resize) the R32_FLOAT SRVs for both depth textures in the main
-	// descriptor heap, and update the GPU handle cache. Requires descriptorHeap to exist.
-	void InitParticleDepthSrvs();
-
 	// Create all three descriptor heaps. Must be called before any Init function
 	// that populates descriptors.
 	void InitDescriptorHeaps();
@@ -247,10 +216,6 @@ protected:
 	// particleFieldDB[]: one DoubleBufferGpuBuffer per particle attribute.
 	// positionUploadBuffer / velocityUploadBuffer: CPU-writable staging for initial data.
 	void InitParticleFields();
-
-	// lodBuffer: uint per particle - LOD countdown, written by lod shader, decremented by solver.
-	// lodReductionBuffer: 2 uints [minDTC bits, maxDTC bits] - DTC/DTVS reduction accumulator.
-	void InitLodBuffers();
 
 	// Readback buffers: CPU-readable copies of density and LOD, copied by the compute queue.
 	// These are the way we get data back to the CPU. Currently used to display average density
@@ -286,9 +251,6 @@ protected:
 	// before physics starts. Expects command list to be recording.
 	void RecordSnapshotUpload();
 
-	// Sets all depth pixels in both depth texture slots to 1.0 (far plane)
-	void RecordDepthTextureClear();
-
 	// Sets frameCount = 1 and signals computeFence to 1 so the
 	// graphics queue's GPU-side wait is immediately satisfied on the first frame.
 	//
@@ -314,11 +276,6 @@ protected:
 	// Build the particle rendering pipeline (shaders, material, mesh).
 	// Called after all resources and descriptors are ready.
 	void BuildParticlePipeline();
-
-	// Build the depth-only PSO for the DTVS particle depth pass.
-	// Reuses particleVS + particleGS for correct billboard coverage;
-	// dtvsDepthOnlyPS discards outside the sphere and writes no color.
-	void BuildParticleDepthOnlyPipeline();
 
 	// Build the liquid surface rendering pipeline (liquidVS + liquidPS, fullscreen quad).
 	// The PS ray-marches through the density volume (t0 = densityVol SRV) and writes SV_Depth
@@ -365,18 +322,12 @@ protected:
 
 	void WriteSnapshot();
 
-	void CalculateLod();
-
 	void RecordGraphicsCommands();
 
 	// Fill the density volume and draw the ray-marched liquid surface, all on the graphics command list.
 	// densityVolumeCS is dispatched here (graphics queue) reading from the previous frame's position and
 	// grid snapshots. liquidPS then ray-marches through the freshly filled volume in the same frame.
 	void DrawLiquidSurface();
-
-	// Record the DTVS depth-only particle draw into the already-open graphics command list.
-	// Writes into particleDepthDB->getBack(). Leaves the texture in COMMON state so compute can read it next frame.
-	void DrawParticleDepth();
 
 	void BuildImGui();
 

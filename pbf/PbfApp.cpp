@@ -5,57 +5,8 @@ using namespace Egg::Math;
 // Recreate the window-resolution depth textures whenever the swap chain is (re)created.
 void PbfApp::CreateSwapChainResources() {
 	AsyncComputeApp::CreateSwapChainResources();
-	InitParticleDepthTextures();
-	// On resize (mainAllocator exists), InitParticleDepthSrvs is a no-op (DB already exists;
-	// resize2D above rebuilt its descriptors in-place).
-	if (mainAllocator != nullptr) InitParticleDepthSrvs();
-}
-
-// Create the two window-resolution depth textures and their 2-slot DSV heap.
-// Called from CreateSwapChainResources (and again on resize). Both textures start in COMMON state.
-// R32_TYPELESS allows both D32_FLOAT DSV writes (graphics) and R32_FLOAT SRV reads (compute DTVS).
-void PbfApp::InitParticleDepthTextures() {
-	UINT width  = (UINT)scissorRect.right;
-	UINT height = (UINT)scissorRect.bottom;
-
-	if (!particleDepthDB) {
-		// First call (before mainAllocator/staticAllocator exist): only create the DSV heap.
-		// particleDepthDB itself is created in InitParticleDepthSrvs once mainAllocator is ready.
-		particleDsvAllocator = DescriptorAllocator::Create(
-			device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2, /*shaderVisible*/false);
-	} else {
-		// Resize: recreate both textures at new dimensions. rebuildDescriptors reuses the same
-		// static-heap DSV/SRV slots so registered main-heap targets stay valid.
-		particleDepthDB->resize2D(width, height);
-	}
-}
-
-// Create the particle depth DoubleBufferGpuTexture and its descriptors.
-// Called once from CreateResources. On resize, InitParticleDepthTextures calls resize2D instead.
-void PbfApp::InitParticleDepthSrvs() {
-	if (particleDepthDB) return; // already created; resize2D handles updates
-
-	UINT width  = (UINT)scissorRect.right;
-	UINT height = (UINT)scissorRect.bottom;
-
-	D3D12_CLEAR_VALUE clearValue = {};
-	clearValue.Format = DXGI_FORMAT_D32_FLOAT;
-	clearValue.DepthStencil.Depth = 1.0f;
-
-	particleDepthDB = DoubleBufferGpuTexture::Create(
-		device.Get(), width, height,
-		DXGI_FORMAT_R32_TYPELESS,
-		D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-		L"Particle Depth Texture [0] (DTVS)",
-		L"Particle Depth Texture [1] (DTVS)",
-		D3D12_RESOURCE_STATE_COMMON,
-		&clearValue,
-		*staticAllocator,
-		particleDsvAllocator.get(),
-		/*needUav*/false, /*needSrv*/true, /*needDsv*/true,
-		DXGI_FORMAT_UNKNOWN,        // uavFmt (unused)
-		DXGI_FORMAT_R32_FLOAT,      // srvFmt
-		DXGI_FORMAT_D32_FLOAT);     // dsvFmt
+	// lod is null on the first call (before CreateResources); skip until it exists.
+	if (lod) lod->Resize((UINT)scissorRect.right, (UINT)scissorRect.bottom);
 }
 
 // Create all descriptor allocators. Must be called before any Init function
@@ -114,20 +65,6 @@ void PbfApp::InitParticleFields() {
 	// Reserve 3 contiguous main-heap slots for the particle SRV table (t0=pos, t1=den, t2=lod).
 	// Snapshot DBs register their front SRV targets here in InitSnapshotBuffers.
 	particleSrvTableStart = mainAllocator->Allocate(3);
-}
-
-// lodBuffer: uint per particle - LOD countdown.
-// lodReductionBuffer: 2 uints [minDTC bits, maxDTC bits].
-void PbfApp::InitLodBuffers() {
-	lodBuffer = GpuBuffer::Create(
-		device.Get(), numParticles, sizeof(UINT),
-		L"LOD Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-	lodBuffer->CreateUav(device.Get(), *staticAllocator);
-
-	lodReductionBuffer = GpuBuffer::Create(
-		device.Get(), 2, sizeof(UINT),
-		L"LOD Reduction Buffer", D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
-	lodReductionBuffer->CreateUav(device.Get(), *staticAllocator);
 }
 
 // Readback buffers: CPU-readable copies of density and LOD.
@@ -269,7 +206,7 @@ void PbfApp::UploadAll() {
 
 	// Pre-clear both depth texture slots to 1.0 (far plane) so the first DTVS compute frame
 	// sees valid depth data even before any graphics depth pass has run.
-	RecordDepthTextureClear();
+	lod->RecordDepthClear(commandList.Get());
 
 	DX_API("Failed to close command list (UploadAll)")
 		commandList->Close();
@@ -311,18 +248,6 @@ void PbfApp::RecordSnapshotUpload() {
 	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 }
 
-// Sets all depth pixels in both depth texture slots to 1.0 (far plane)
-void PbfApp::RecordDepthTextureClear() {
-	particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
-	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
-	commandList->ClearDepthStencilView(
-		particleDepthDB->getFront()->GetDsvCpuHandle(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-	commandList->ClearDepthStencilView(
-		particleDepthDB->getBack()->GetDsvCpuHandle(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-	particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
-	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
-}
-
 // Sets frameCount = 1 and signals computeFence to 1 so the
 // graphics queue's GPU-side wait is immediately satisfied on the first frame.
 //
@@ -345,11 +270,11 @@ void PbfApp::WaitFirstFrame() {
 	lastFrame = clock::now();
 }
 
-// Build all graphics rendering pipelines (background, particles, DTVS depth-only, liquid, solid transform).
+// Build all graphics rendering pipelines (background, particles, liquid, solid transform).
+// The DTVS depth-only pipeline is built inside lod->BuildPipelines().
 void PbfApp::BuildGraphicsPipelines() {
 	BuildBackgroundPipeline();
 	BuildParticlePipeline();
-	BuildParticleDepthOnlyPipeline();
 	BuildLiquidPipeline();
 	SetSolidTransform();
 }
@@ -419,35 +344,6 @@ void PbfApp::BuildParticlePipeline() {
 
 	// mesh = material + geometry + PSO (created by PSO manager based on the material's root signature, shaders, and states)
 	particleMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
-}
-
-// Build the depth-only PSO for the DTVS particle depth pass.
-// Reuses particleVS + particleGS for correct billboard coverage;
-// dtvsDepthOnlyPS discards outside the sphere and writes no color.
-void PbfApp::BuildParticleDepthOnlyPipeline() {
-	com_ptr<ID3DBlob> vertexShader = Egg::Shader::LoadCso("Shaders/particleVS.cso");
-	com_ptr<ID3DBlob> geometryShader = Egg::Shader::LoadCso("Shaders/particleGS.cso");
-	com_ptr<ID3DBlob> pixelShader = Egg::Shader::LoadCso("Shaders/dtvsDepthOnlyPS.cso");
-	depthOnlyRootSig = Egg::Shader::LoadRootSignature(device.Get(), vertexShader.Get());
-
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-	psoDesc.pRootSignature = depthOnlyRootSig.Get();
-	psoDesc.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
-	psoDesc.GS = { geometryShader->GetBufferPointer(), geometryShader->GetBufferSize() };
-	psoDesc.PS = { pixelShader->GetBufferPointer(), pixelShader->GetBufferSize() };
-	psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-	psoDesc.SampleMask = UINT_MAX;
-	psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-	psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT); // depth test + write on
-	psoDesc.InputLayout = { nullptr, 0 }; // no vertex buffer: positions read from SRV
-	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
-	psoDesc.NumRenderTargets = 0; // depth-only: no color output
-	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT; // match the depth texture format
-	psoDesc.SampleDesc.Count = 1;
-	psoDesc.SampleDesc.Quality = 0;
-
-	DX_API("Failed to create particle depth-only PSO")
-		device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(depthOnlyPso.ReleaseAndGetAddressOf()));
 }
 
 // Build the liquid surface rendering pipeline (liquidVS + liquidPS, fullscreen quad).
@@ -589,12 +485,12 @@ void PbfApp::BuildComputePipelines() {
 	{
 		UINT s = mainAllocator->Allocate(3);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		copy1(s + 1, lodBuffer->GetUavCpuHandle());
+		copy1(s + 1, lod->GetLodBuffer()->GetUavCpuHandle());
 		copy1(s + 2, sdfCpuHandle);
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr() });
 	}
 
@@ -604,13 +500,13 @@ void PbfApp::BuildComputePipelines() {
 		UINT s = mainAllocator->Allocate(3);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),            false);
-		copy1(s + 2, lodBuffer->GetUavCpuHandle());
+		copy1(s + 2, lod->GetLodBuffer()->GetUavCpuHandle());
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() });
+			                lod->GetLodBuffer()->GetResourcePtr() });
 	}
 
 	// ---------- updateVelocityCS: UAV(u0-2) = 3 slots ----------
@@ -660,13 +556,13 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lodBuffer->GetUavCpuHandle());
+		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
 			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
 	}
@@ -680,14 +576,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lodBuffer->GetUavCpuHandle());
+		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
 			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
 
@@ -729,91 +625,9 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- clearDtcReductionCS: UAV(u0) = 1 slot ----------
-	{
-		UINT s = mainAllocator->Allocate(1);
-		copy1(s, lodReductionBuffer->GetUavCpuHandle());
-		clearDtcReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtcReductionCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{},
-			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
-	}
-
-	// ---------- dtcReductionCS: UAV(u0-1) = 2 slots ----------
-	// [0]=predictedPosition back, [1]=lodReduction
-	{
-		UINT s = mainAllocator->Allocate(2);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, lodReductionBuffer->GetUavCpuHandle());
-		lodReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodReductionBuffer->GetResourcePtr() },
-			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
-	}
-
-	// ---------- dtcLodCS: UAV(u0-2) = 3 slots ----------
-	// [0]=predictedPosition back, [1]=lod, [2]=lodReduction
-	{
-		UINT s = mainAllocator->Allocate(3);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, lodBuffer->GetUavCpuHandle());
-		copy1(s + 2, lodReductionBuffer->GetUavCpuHandle());
-		lodShader = ComputeShader::Create(device.Get(), "Shaders/dtcLodCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodReductionBuffer->GetResourcePtr() },
-			std::vector<P>{ lodBuffer->GetResourcePtr() });
-	}
-
-	// ---------- setLodMaxCS: UAV(u0) = 1 slot ----------
-	{
-		UINT s = mainAllocator->Allocate(1);
-		copy1(s, lodBuffer->GetUavCpuHandle());
-		setLodMaxShader = ComputeShader::Create(device.Get(), "Shaders/setLodMaxCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{},
-			std::vector<P>{ lodBuffer->GetResourcePtr() });
-	}
-
-	// ---------- clearDtvsReductionCS: UAV(u0) = 1 slot ----------
-	{
-		UINT s = mainAllocator->Allocate(1);
-		copy1(s, lodReductionBuffer->GetUavCpuHandle());
-		clearDtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtvsReductionCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{},
-			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
-	}
-
-	// ---------- dtvsReductionCS: UAV(u0-1) SRV(t0) = 3 slots ----------
-	// [0]=predictedPosition back, [1]=lodReduction, [2]=depth SRV (front depth texture)
-	{
-		UINT s = mainAllocator->Allocate(3);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, lodReductionBuffer->GetUavCpuHandle());
-		particleDepthDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), /*isSrv*/true);
-		dtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtvsReductionCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodReductionBuffer->GetResourcePtr() },
-			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
-	}
-
-	// ---------- dtvsLodCS: UAV(u0-2) SRV(t0) = 4 slots ----------
-	// [0]=predictedPosition back, [1]=lod, [2]=lodReduction, [3]=depth SRV
-	{
-		UINT s = mainAllocator->Allocate(4);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
-		copy1(s + 1, lodBuffer->GetUavCpuHandle());
-		copy1(s + 2, lodReductionBuffer->GetUavCpuHandle());
-		particleDepthDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 3), /*isSrv*/true);
-		dtvsLodShader = ComputeShader::Create(device.Get(), "Shaders/dtvsLodCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
-			                lodReductionBuffer->GetResourcePtr() },
-			std::vector<P>{ lodBuffer->GetResourcePtr() });
-	}
+	// LOD shaders (DTC path, DTVS path, non-adaptive) and the depth-only graphics PSO
+	// are all built inside the LOD subsystem.
+	lod->BuildPipelines(device.Get(), cbv, *mainAllocator, particleFieldDB);
 
 	// ---------- splatDensityVolumeCS: SRV(t0) UAV(u0) = 2 slots ----------
 	// [0]=posSnapshot front SRV, [1]=densityVol UAV
@@ -837,13 +651,13 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lodBuffer->GetUavCpuHandle());
+		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		gsmLambdaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
 			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
 	}
@@ -856,14 +670,14 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lodBuffer->GetUavCpuHandle());
+		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		gsmDeltaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
 			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr(),
-			                lodBuffer->GetResourcePtr() },
+			                lod->GetLodBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
 
@@ -1008,14 +822,14 @@ void PbfApp::Render() {
 		// of last Render()). Safe to flip all double buffers:
 		// - particleFieldDBs: back (sorted by permutateCS in N-1) becomes the new front for compute N
 		// - snapshot DBs: back (written by compute N-1) becomes the new front for graphics N
-		// - particleDepthDB: back (written by graphics N-1) becomes the new front for compute N
+		// - lod depth DB: back (written by graphics N-1) becomes the new front for compute N
 		for (UINT f = 0; f < PF_COUNT; f++) particleFieldDB[f]->flip();
 		positionSnapshotDB    ->flip();
 		densitySnapshotDB     ->flip();
 		lodSnapshotDB         ->flip();
 		cellCountSnapshotDB   ->flip();
 		cellPrefixSumSnapshotDB->flip();
-		particleDepthDB       ->flip();
+		lod->GetParticleDepthDB()->flip();
 
 		CalculateAvgDensity();
 		CalculateAvgLod();
@@ -1059,7 +873,21 @@ void PbfApp::RecordComputeCommands() {
 	// boundary cells, so sorting against unclamped predictions is safe; collision corrects afterward.
 	collisionPredictedPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
-	CalculateLod();
+	lod->CalculateLod(computeList.Get());
+
+	// Snapshot LOD before the solver loop decrements it. Written into the back LOD snapshot so
+	// that flip() in the next Render() promotes it to front for the graphics queue to read.
+	{
+		GpuBuffer::P lodBuf = lod->GetLodBuffer();
+		lodBuf->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
+		lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
+		computeList->CopyBufferRegion(lodSnapshotDB->getBack()->Get(), 0,
+			lodBuf->Get(), 0, (UINT64)numParticles * sizeof(UINT));
+		computeList->CopyBufferRegion(lodReadbackBuffer->Get(), 0,
+			lodBuf->Get(), 0, (UINT64)numParticles * sizeof(UINT));
+		lodBuf->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
+		lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
+	}
 
 	for (int iter = 0; iter < solverIterations; iter++) {
 		(gsmEnabled ? gsmLambdaShader : lambdaShader)->dispatch_then_barrier(computeList.Get(), numGroups);
@@ -1117,40 +945,6 @@ void PbfApp::WriteSnapshot() {
 	cellPrefixSumSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
 }
 
-void PbfApp::CalculateLod() {
-	UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
-
-	if (lodMode == LodMode::DTC) {
-		clearDtcReductionShader->dispatch_then_barrier(computeList.Get(), 1);
-		lodReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
-		lodShader->dispatch_then_barrier(computeList.Get(), numGroups);
-	}
-	else if (lodMode == LodMode::DTVS) {
-		// particleDepthDB->getFront() = last frame's depth written by graphics.
-		// Descriptor slot is already correct (registered as front target in BuildComputePipelines).
-		particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
-
-		clearDtvsReductionShader->dispatch_then_barrier(computeList.Get(), 1);
-		dtvsReductionShader->dispatch_then_barrier(computeList.Get(), numGroups);
-		dtvsLodShader->dispatch_then_barrier(computeList.Get(), numGroups);
-
-		particleDepthDB->getFront()->Transition(D3D12_RESOURCE_STATE_COMMON, computeList.Get());
-	}
-	else {
-		setLodMaxShader->dispatch_then_barrier(computeList.Get(), numGroups);
-	}
-
-	// Snapshot LOD before solver loop decrements it. Write into back LOD snapshot.
-	lodBuffer->Transition(D3D12_RESOURCE_STATE_COPY_SOURCE, computeList.Get());
-	lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, computeList.Get());
-	computeList->CopyBufferRegion(lodSnapshotDB->getBack()->Get(), 0,
-		lodBuffer->Get(), 0, (UINT64)numParticles * sizeof(UINT));
-	computeList->CopyBufferRegion(lodReadbackBuffer->Get(), 0,
-		lodBuffer->Get(), 0, (UINT64)numParticles * sizeof(UINT));
-	lodBuffer->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, computeList.Get());
-	lodSnapshotDB->getBack()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, computeList.Get());
-}
-
 void PbfApp::RecordGraphicsCommands() {
 	backgroundMesh->Draw(commandList.Get());
 	solidObstacle->Draw(commandList.Get());
@@ -1163,7 +957,16 @@ void PbfApp::RecordGraphicsCommands() {
 	if (shadingMode == ShadingMode::LIQUID)
 		positionSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
 
-	if (lodMode == LodMode::DTVS) DrawParticleDepth();
+	if (lod->mode == LodSubsystem::Mode::DTVS)
+		lod->DrawParticleDepth(
+			commandList.Get(),
+			perFrameCb.GetGPUVirtualAddress(),
+			mainAllocator->GetGpuHandle(particleSrvTableStart),
+			dsvHeap->GetCPUDescriptorHandleForHeapStart(),
+			CD3DX12_CPU_DESCRIPTOR_HANDLE(
+				rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+				swapChainBackBufferIndex,
+				rtvDescriptorHandleIncrementSize));
 
 	if (shadingMode == ShadingMode::LIQUID) {
 		DrawLiquidSurface();
@@ -1213,35 +1016,6 @@ void PbfApp::DrawLiquidSurface() {
 	densityVolume->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
 }
 
-// Record the DTVS depth-only particle draw into the already-open graphics command list.
-// Writes into particleDepthDB->getBack() (graphics writes back, compute reads front next frame).
-// Leaves the texture in COMMON state so compute can read it via the front SRV next frame.
-void PbfApp::DrawParticleDepth() {
-	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_DEPTH_WRITE, commandList.Get());
-
-	D3D12_CPU_DESCRIPTOR_HANDLE dsv = particleDepthDB->getBack()->GetDsvCpuHandle();
-
-	commandList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-	commandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-	commandList->SetGraphicsRootSignature(depthOnlyRootSig.Get());
-	commandList->SetPipelineState(depthOnlyPso.Get());
-	commandList->SetGraphicsRootConstantBufferView(0, perFrameCb.GetGPUVirtualAddress());
-	commandList->SetGraphicsRootDescriptorTable(1, mainAllocator->GetGpuHandle(particleSrvTableStart));
-
-	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
-	commandList->DrawInstanced(numParticles, 1, 0, 0);
-
-	CD3DX12_CPU_DESCRIPTOR_HANDLE mainDsv(dsvHeap->GetCPUDescriptorHandleForHeapStart());
-	CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
-		rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-		swapChainBackBufferIndex,
-		rtvDescriptorHandleIncrementSize);
-	commandList->OMSetRenderTargets(1, &rtv, FALSE, &mainDsv);
-
-	particleDepthDB->getBack()->Transition(D3D12_RESOURCE_STATE_COMMON, commandList.Get());
-}
-
 void PbfApp::BuildImGui() {
 	// begin a new ImGui frame, which gives us a clean slate to construct the UI for this frame
 	ImGui_ImplDX12_NewFrame(); // tell ImGui about the new frame for DX12
@@ -1264,9 +1038,9 @@ void PbfApp::BuildImGui() {
 	if (shadingMode == ShadingMode::LIQUID)
 		ImGui::InputFloat("Liquid iso threshold", &liquidIsoThreshold, 1.0f, 10.0f, "%.1f");
 	static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
-	int lodModeInt = (int)lodMode;
+	int lodModeInt = (int)lod->mode;
 	if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
-		lodMode = (LodMode)lodModeInt;
+		lod->mode = (LodSubsystem::Mode)lodModeInt;
 	ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
 	ImGui::InputInt("Min LOD", &minLOD, 1);
 	ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
@@ -1454,7 +1228,6 @@ void PbfApp::Throttle() {
 }
 
 void PbfApp::ReleaseSwapChainResources()  {
-	// Do NOT null out particleDepthDB or particleDsvAllocator: resize2D reuses their allocations.
 	AsyncComputeApp::ReleaseSwapChainResources();
 }
 
@@ -1470,15 +1243,16 @@ void PbfApp::CreateResources() {
 	InitConstantBuffers();
 	InitCamera();
 	InitParticleFields();
-	InitLodBuffers();
+	// Create the LOD subsystem now that both descriptor heaps exist. scissorRect was already
+	// set by the earlier CreateSwapChainResources call, so width/height are correct.
+	lod = LodSubsystem::Create(device.Get(), numParticles,
+		(UINT)scissorRect.right, (UINT)scissorRect.bottom,
+		*mainAllocator, *staticAllocator);
 	InitReadbackBuffers();
 	InitSnapshotBuffers();
 	InitDensityVolume();
 	InitBackground();
 	InitObstacle();
-	// depth textures already exist (InitParticleDepthTextures was called from CreateSwapChainResources);
-	// write their SRVs into the main heap now that descriptorHeap exists.
-	InitParticleDepthSrvs();
 }
 
 // upload initial data to the GPU and build rendering/compute pipelines.
