@@ -567,7 +567,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_VELOCITY]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copy1(s + 3, sdfCpuHandle);
-		predictShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/predictCS.cso", cbv,
+		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getFront()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getFront()->GetResourcePtr() },
@@ -582,7 +582,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		copy1(s + 1, lodBuffer->GetUavCpuHandle());
 		copy1(s + 2, sdfCpuHandle);
-		collisionPredictedPositionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
+		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
@@ -596,7 +596,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),            false);
 		copy1(s + 2, lodBuffer->GetUavCpuHandle());
-		positionFromScratchShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
+		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr(),
 			                lodBuffer->GetResourcePtr() },
@@ -611,7 +611,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),          false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),      false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
-		updateVelocityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
+		updateVelocityShader = ComputeShader::Create(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr() },
@@ -624,7 +624,7 @@ void PbfApp::BuildComputePipelines() {
 		UINT s = mainAllocator->Allocate(2);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),  false);
-		velocityFromScratchShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/velocityFromScratchCS.cso", cbv,
+		velocityFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/velocityFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr() });
@@ -636,7 +636,7 @@ void PbfApp::BuildComputePipelines() {
 		UINT s = mainAllocator->Allocate(2);
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),          false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
-		updatePositionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/updatePositionCS.cso", cbv,
+		updatePositionShader = ComputeShader::Create(device.Get(), "Shaders/updatePositionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr() });
@@ -652,7 +652,7 @@ void PbfApp::BuildComputePipelines() {
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
-		lambdaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/lambdaCS.cso", cbv,
+		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
@@ -672,7 +672,7 @@ void PbfApp::BuildComputePipelines() {
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
-		deltaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/deltaCS.cso", cbv,
+		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
@@ -691,7 +691,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		vorticityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/vorticityCS.cso", cbv,
+		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
@@ -710,7 +710,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
 		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		confinementViscosityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
+		confinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
@@ -724,7 +724,7 @@ void PbfApp::BuildComputePipelines() {
 	{
 		UINT s = mainAllocator->Allocate(1);
 		copy1(s, lodReductionBuffer->GetUavCpuHandle());
-		clearDtcReductionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/clearDtcReductionCS.cso", cbv,
+		clearDtcReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtcReductionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
@@ -736,7 +736,7 @@ void PbfApp::BuildComputePipelines() {
 		UINT s = mainAllocator->Allocate(2);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		copy1(s + 1, lodReductionBuffer->GetUavCpuHandle());
-		lodReductionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
+		lodReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtcReductionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                lodReductionBuffer->GetResourcePtr() },
@@ -750,7 +750,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		copy1(s + 1, lodBuffer->GetUavCpuHandle());
 		copy1(s + 2, lodReductionBuffer->GetUavCpuHandle());
-		lodShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/dtcLodCS.cso", cbv,
+		lodShader = ComputeShader::Create(device.Get(), "Shaders/dtcLodCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                lodReductionBuffer->GetResourcePtr() },
@@ -761,7 +761,7 @@ void PbfApp::BuildComputePipelines() {
 	{
 		UINT s = mainAllocator->Allocate(1);
 		copy1(s, lodBuffer->GetUavCpuHandle());
-		setLodMaxShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/setLodMaxCS.cso", cbv,
+		setLodMaxShader = ComputeShader::Create(device.Get(), "Shaders/setLodMaxCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{ lodBuffer->GetResourcePtr() });
@@ -771,7 +771,7 @@ void PbfApp::BuildComputePipelines() {
 	{
 		UINT s = mainAllocator->Allocate(1);
 		copy1(s, lodReductionBuffer->GetUavCpuHandle());
-		clearDtvsReductionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/clearDtvsReductionCS.cso", cbv,
+		clearDtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/clearDtvsReductionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{ lodReductionBuffer->GetResourcePtr() });
@@ -784,7 +784,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		copy1(s + 1, lodReductionBuffer->GetUavCpuHandle());
 		particleDepthDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), /*isSrv*/true);
-		dtvsReductionShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/dtvsReductionCS.cso", cbv,
+		dtvsReductionShader = ComputeShader::Create(device.Get(), "Shaders/dtvsReductionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                lodReductionBuffer->GetResourcePtr() },
@@ -799,7 +799,7 @@ void PbfApp::BuildComputePipelines() {
 		copy1(s + 1, lodBuffer->GetUavCpuHandle());
 		copy1(s + 2, lodReductionBuffer->GetUavCpuHandle());
 		particleDepthDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 3), /*isSrv*/true);
-		dtvsLodShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/dtvsLodCS.cso", cbv,
+		dtvsLodShader = ComputeShader::Create(device.Get(), "Shaders/dtvsLodCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                lodReductionBuffer->GetResourcePtr() },
@@ -814,7 +814,7 @@ void PbfApp::BuildComputePipelines() {
 		cellCountSnapshotDB   ->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), true);
 		cellPrefixSumSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), true);
 		copy1(s + 3, densityVolume->GetUavCpuHandle());
-		densityVolumeShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/densityVolumeCS.cso", cbv,
+		densityVolumeShader = ComputeShader::Create(device.Get(), "Shaders/densityVolumeCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{});
@@ -826,7 +826,7 @@ void PbfApp::BuildComputePipelines() {
 		UINT s = mainAllocator->Allocate(2);
 		positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(s), true);
 		copy1(s + 1, densityVolume->GetUavCpuHandle());
-		splatDensityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/splatDensityVolumeCS.cso", cbv,
+		splatDensityShader = ComputeShader::Create(device.Get(), "Shaders/splatDensityVolumeCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{ densityVolume->GetResourcePtr() });
@@ -843,7 +843,7 @@ void PbfApp::BuildComputePipelines() {
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
-		gsmLambdaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
+		gsmLambdaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                spatialGrid->GetCellCountBuffer()->GetResourcePtr(),
@@ -862,7 +862,7 @@ void PbfApp::BuildComputePipelines() {
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copy1(s + 5, lodBuffer->GetUavCpuHandle());
-		gsmDeltaShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
+		gsmDeltaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_LAMBDA]->getBack()->GetResourcePtr(),
@@ -880,7 +880,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		gsmVorticityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
+		gsmVorticityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
@@ -898,7 +898,7 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
 		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		gsmConfinementViscosityShader = std::make_shared<ComputeShader>(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,
+		gsmConfinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
 			                particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr(),
