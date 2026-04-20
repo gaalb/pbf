@@ -72,7 +72,6 @@ protected:
 	// if the particles are spaced "d" apart, then one d sided cube contains one particle, meaning that
 	// each particle is responsible for d^3 volume of fluid, meaning that with m=1, the density is 1/d^3
 	const float rho0 = RHO0;
-	const Float3 particleColor = Float3(0.9f, 0.1f, 0.7f); // particle display color (RGB)
 	const float externalAcceleration = 20.0f; // m/s^2, applied horizontally via arrow keys
 	// Spatial grid: cubic, power-of-two cells per axis, box derived from grid.
 	// The grid can use Morton code (Z-order curve) indexing, which requires equal power-of-two
@@ -213,7 +212,6 @@ protected:
 	UINT                          liquidTableStartSlot = 0; // first of the 4 contiguous liquidPS SRV slots
 	UINT                          particleSrvTableStart = 0; // first of 3 contiguous SRVs: pos(t0),den(t1),lod(t2)
 	UINT                          cubemapSrvSlot = 0; // slot for the environment cubemap SRV
-	ComputeShader::P densityVolumeShader; // fills density+gradient volume from particle/grid snapshots (kept for reference)
 
 	// Splat density pipeline: one per-particle CS writes Poly6 contributions via CAS float atomic add.
 	ComputeShader::P splatDensityShader; // per-particle: Poly6 splat into densityVolume (R32_UINT UAV)

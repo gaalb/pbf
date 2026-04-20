@@ -2,6 +2,15 @@
 
 using namespace Egg::Math;
 
+// Recreate the window-resolution depth textures whenever the swap chain is (re)created.
+void PbfApp::CreateSwapChainResources() {
+	AsyncComputeApp::CreateSwapChainResources();
+	InitParticleDepthTextures();
+	// On resize (mainAllocator exists), InitParticleDepthSrvs is a no-op (DB already exists;
+	// resize2D above rebuilt its descriptors in-place).
+	if (mainAllocator != nullptr) InitParticleDepthSrvs();
+}
+
 // Create the two window-resolution depth textures and their 2-slot DSV heap.
 // Called from CreateSwapChainResources (and again on resize). Both textures start in COMMON state.
 // R32_TYPELESS allows both D32_FLOAT DSV writes (graphics) and R32_FLOAT SRV reads (compute DTVS).
@@ -806,20 +815,6 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ lodBuffer->GetResourcePtr() });
 	}
 
-	// ---------- densityVolumeCS: SRV(t0-2) UAV(u0) = 4 slots ----------
-	// [0]=posSnapshot front SRV, [1]=cellCountSnapshot front SRV, [2]=cellPrefixSumSnapshot front SRV, [3]=densityVol UAV
-	{
-		UINT s = mainAllocator->Allocate(4);
-		positionSnapshotDB    ->registerFrontTarget(mainAllocator->GetCpuHandle(s),     true);
-		cellCountSnapshotDB   ->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), true);
-		cellPrefixSumSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), true);
-		copy1(s + 3, densityVolume->GetUavCpuHandle());
-		densityVolumeShader = ComputeShader::Create(device.Get(), "Shaders/densityVolumeCS.cso", cbv,
-			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{},
-			std::vector<P>{});
-	}
-
 	// ---------- splatDensityVolumeCS: SRV(t0) UAV(u0) = 2 slots ----------
 	// [0]=posSnapshot front SRV, [1]=densityVol UAV
 	{
@@ -1456,15 +1451,6 @@ void PbfApp::Throttle() {
 		while (clock::now() < deadline) {}
 	}
 	lastFrame = clock::now();
-}
-
-// Recreate the window-resolution depth textures whenever the swap chain is (re)created.
-void PbfApp::CreateSwapChainResources()  {
-	AsyncComputeApp::CreateSwapChainResources();
-	InitParticleDepthTextures();
-	// On resize (mainAllocator exists), InitParticleDepthSrvs is a no-op (DB already exists;
-	// resize2D above rebuilt its descriptors in-place).
-	if (mainAllocator != nullptr) InitParticleDepthSrvs();
 }
 
 void PbfApp::ReleaseSwapChainResources()  {
