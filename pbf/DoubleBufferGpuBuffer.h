@@ -55,21 +55,15 @@ public:
         UINT elems, UINT stride,
         const wchar_t* frontName, const wchar_t* backName,
         D3D12_RESOURCE_STATES initialState,
-        DescriptorAllocator& staticAlloc,
-        bool needUav, bool needSrv)
+        DescriptorAllocator& staticAlloc)
         : device(device)
     {
         buffers[0] = GpuBuffer::Create(device, elems, stride, frontName, initialState, D3D12_HEAP_TYPE_DEFAULT);
         buffers[1] = GpuBuffer::Create(device, elems, stride, backName,  initialState, D3D12_HEAP_TYPE_DEFAULT);
-
-        if (needUav) {
-            buffers[0]->CreateUav(device, staticAlloc);
-            buffers[1]->CreateUav(device, staticAlloc);
-        }
-        if (needSrv) {
-            buffers[0]->CreateSrv(device, staticAlloc);
-            buffers[1]->CreateSrv(device, staticAlloc);
-        }
+        buffers[0]->CreateUav(device, staticAlloc);
+        buffers[1]->CreateUav(device, staticAlloc);
+        buffers[0]->CreateSrv(device, staticAlloc);
+        buffers[1]->CreateSrv(device, staticAlloc);
     }
 
     // Register a slot that always receives the FRONT resource's descriptor.

@@ -46,7 +46,7 @@ void PbfApp::InitDescriptorHeaps() {
 
 	// CPU-only static heap: UAV/SRV descriptors written once; source for all CopyDescriptorsSimple calls.
 	staticAllocator = DescriptorAllocator::Create(
-		device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 64, /*shaderVisible*/false);
+		device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 128, /*shaderVisible*/false);
 }
 
 void PbfApp::InitConstantBuffers() {
@@ -70,8 +70,7 @@ void PbfApp::InitParticleFields() {
 			(std::wstring(fieldNames[f]) + L" Buffer").c_str(),
 			(std::wstring(L"Sorted ") + fieldNames[f] + L" Buffer").c_str(),
 			D3D12_RESOURCE_STATE_COMMON,
-			*staticAllocator,
-			/*needUav*/true, /*needSrv*/false);
+			*staticAllocator);
 	}
 
 	// Upload buffers: CPU-writable staging used once at startup.
@@ -85,10 +84,6 @@ void PbfApp::InitParticleFields() {
 		L"Velocity Upload Buffer",
 		D3D12_RESOURCE_STATE_GENERIC_READ,
 		D3D12_HEAP_TYPE_UPLOAD);
-
-	// Reserve 3 contiguous main-heap slots for the particle SRV table (t0=pos, t1=den, t2=lod).
-	// Snapshot DBs register their front SRV targets here in InitSnapshotBuffers.
-	particleSrvTableStart = mainAllocator->Allocate(3);
 }
 
 // Readback buffers: CPU-readable copies of density and LOD.
@@ -114,21 +109,21 @@ void PbfApp::InitSnapshotBuffers() {
 	positionSnapshotDB = DoubleBufferGpuBuffer::Create(
 		device.Get(), numParticles, sizeof(Float3),
 		L"Snapshot Position [front]", L"Snapshot Position [back]",
-		D3D12_RESOURCE_STATE_COMMON, *staticAllocator,
-		/*needUav*/false, /*needSrv*/true);
+		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 
 	densitySnapshotDB = DoubleBufferGpuBuffer::Create(
 		device.Get(), numParticles, sizeof(float),
 		L"Snapshot Density [front]", L"Snapshot Density [back]",
-		D3D12_RESOURCE_STATE_COMMON, *staticAllocator,
-		/*needUav*/false, /*needSrv*/true);
+		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 
 	lodSnapshotDB = DoubleBufferGpuBuffer::Create(
 		device.Get(), numParticles, sizeof(UINT),
 		L"Snapshot LOD [front]", L"Snapshot LOD [back]",
-		D3D12_RESOURCE_STATE_COMMON, *staticAllocator,
-		/*needUav*/false, /*needSrv*/true);
+		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 
+	// Reserve 3 contiguous main-heap slots for the particle SRV table (t0=pos, t1=den, t2=lod).
+	// Snapshot DBs register their front SRV targets here.
+	particleSrvTableStart = mainAllocator->Allocate(3);
 	// Register front SRV targets for the particle graphics SRV table (t0=pos, t1=den, t2=lod).
 	// flip() keeps these slots pointing at the current front automatically.
 	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(particleSrvTableStart), true);
@@ -139,14 +134,12 @@ void PbfApp::InitSnapshotBuffers() {
 	cellCountSnapshotDB = DoubleBufferGpuBuffer::Create(
 		device.Get(), numCells, sizeof(UINT),
 		L"Cell Count Snapshot [front]", L"Cell Count Snapshot [back]",
-		D3D12_RESOURCE_STATE_COMMON, *staticAllocator,
-		/*needUav*/false, /*needSrv*/true);
+		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 
 	cellPrefixSumSnapshotDB = DoubleBufferGpuBuffer::Create(
 		device.Get(), numCells, sizeof(UINT),
 		L"Cell Prefix Sum Snapshot [front]", L"Cell Prefix Sum Snapshot [back]",
-		D3D12_RESOURCE_STATE_COMMON, *staticAllocator,
-		/*needUav*/false, /*needSrv*/true);
+		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 }
 
 // Single-buffered density volume: VOL_DIM^3, R32_TYPELESS.

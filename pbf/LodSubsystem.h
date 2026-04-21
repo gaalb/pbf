@@ -105,9 +105,8 @@ public:
             &clearValue,
             staticAlloc,
             particleDsvAllocator.get(),
-            /*needUav=*/false, /*needSrv=*/true, /*needDsv=*/true,
-            DXGI_FORMAT_UNKNOWN, // uavFmt (unused)
-            DXGI_FORMAT_R32_FLOAT, // srvFmt (compute reads depth as float)
+            DXGI_FORMAT_UNKNOWN,    // uavFmt (no UAV: ALLOW_DEPTH_STENCIL excludes ALLOW_UNORDERED_ACCESS)
+            DXGI_FORMAT_R32_FLOAT,  // srvFmt (compute reads depth as float)
             DXGI_FORMAT_D32_FLOAT); // dsvFmt (graphics writes depth)
     }
 

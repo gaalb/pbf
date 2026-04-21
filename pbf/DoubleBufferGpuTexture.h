@@ -48,7 +48,6 @@ GG_CLASS(DoubleBufferGpuTexture)
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_CLEAR_VALUE storedClearValue{};
     bool hasClearValue = false;
-    bool hasUav = false, hasSrv = false, hasDsv = false;
     std::wstring names[2];
 
     struct Target {
@@ -60,9 +59,11 @@ GG_CLASS(DoubleBufferGpuTexture)
 
     void rebuildDescriptors(UINT idx) {
         GpuTexture::P& tex = textures[idx];
-        if (hasUav) tex->CreateUavAt(device, staticUavCpu[idx], D3D12_GPU_DESCRIPTOR_HANDLE{}, uavViewFormat);
-        if (hasSrv) tex->CreateSrvAt(device, staticSrvCpu[idx], D3D12_GPU_DESCRIPTOR_HANDLE{}, srvViewFormat);
-        if (hasDsv) tex->CreateDsvAt(device, staticDsvCpu[idx], dsvViewFormat);
+        if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
+            tex->CreateUavAt(device, staticUavCpu[idx], D3D12_GPU_DESCRIPTOR_HANDLE{}, uavViewFormat);
+        tex->CreateSrvAt(device, staticSrvCpu[idx], D3D12_GPU_DESCRIPTOR_HANDLE{}, srvViewFormat);
+        if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+            tex->CreateDsvAt(device, staticDsvCpu[idx], dsvViewFormat);
     }
 
     // Wire the appropriate static heap descriptor (front or back, UAV or SRV) to the target slot in the main heap.
@@ -85,7 +86,6 @@ public:
         const D3D12_CLEAR_VALUE* clearValue,
         DescriptorAllocator& staticAlloc,
         DescriptorAllocator* dsvAlloc,
-        bool needUav, bool needSrv, bool needDsv,
         DXGI_FORMAT uavFmt = DXGI_FORMAT_UNKNOWN,
         DXGI_FORMAT srvFmt = DXGI_FORMAT_UNKNOWN,
         DXGI_FORMAT dsvFmt = DXGI_FORMAT_D32_FLOAT)
@@ -95,12 +95,14 @@ public:
           srvViewFormat(srvFmt),
           dsvViewFormat(dsvFmt),
           resourceFlags(flags),
-          initialState(initialState),
-          hasUav(needUav), hasSrv(needSrv), hasDsv(needDsv)
+          initialState(initialState)
     {
         names[0] = name0 ? name0 : L"";
         names[1] = name1 ? name1 : L"";
         if (clearValue) { storedClearValue = *clearValue; hasClearValue = true; }
+
+        const bool needsUav = (flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+        const bool needsDsv = (flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
 
         for (UINT i = 0; i < 2; ++i) {
             const wchar_t* name = names[i].empty() ? nullptr : names[i].c_str();
@@ -109,17 +111,17 @@ public:
             else
                 textures[i] = GpuTexture::Create2D(device, w, h, resourceFormat, flags, name, initialState);
 
-            if (needUav) {
+            if (needsUav) {
                 UINT slot = staticAlloc.Allocate();
                 staticUavCpu[i] = staticAlloc.GetCpuHandle(slot);
                 textures[i]->CreateUavAt(device, staticUavCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, uavFmt);
             }
-            if (needSrv) {
+            {
                 UINT slot = staticAlloc.Allocate();
                 staticSrvCpu[i] = staticAlloc.GetCpuHandle(slot);
                 textures[i]->CreateSrvAt(device, staticSrvCpu[i], D3D12_GPU_DESCRIPTOR_HANDLE{}, srvFmt);
             }
-            if (needDsv) {
+            if (needsDsv) {
                 textures[i]->CreateDsv(device, *dsvAlloc, dsvFmt);
                 staticDsvCpu[i] = textures[i]->GetDsvCpuHandle();
             }
