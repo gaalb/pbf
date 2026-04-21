@@ -58,8 +58,8 @@ struct ParticleInitData {
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 10, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int particlesX = 100, particlesY = 75, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 20, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -317,6 +317,8 @@ protected:
 	// to ensure the snapshot is ready, records and submits the scene draw, presents,
 	// signals graphicsFence, and CPU-waits on it.
 	virtual void Render() override;
+
+	void flipDoubleBuffers();
 
 	void RecordComputeCommands();
 

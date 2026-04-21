@@ -231,6 +231,13 @@ void PbfApp::InitObstacle() {
 	sdfCpuHandle = solidObstacle->GetSdfCpuHandle();
 }
 
+// upload initial data to the GPU and build rendering/compute pipelines.
+void PbfApp::LoadAssets() {
+	UploadAll();
+	BuildGraphicsPipelines();
+	BuildComputePipelines();
+}
+
 // Batch all initial data uploads into a single command list execution.
 // All operate on independent resources so there are no state conflicts.
 // Most functions here will be recording GPU commands along the lines of:
@@ -263,6 +270,67 @@ void PbfApp::UploadAll() {
 	// the upload heap copies are done - free the temporary upload resources
 	envTexture.ReleaseUploadResources();
 	solidObstacle->ReleaseUploadResources();
+}
+
+ParticleInitData PbfApp::GenerateParticles() {
+	// create and return an evenly spaced grid of particles so we can see something on screen
+	ParticleInitData data;
+	Float3 grid = Float3(particlesX, particlesY, particlesZ);
+	Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
+	offset += Float3(offsetX, offsetY, offsetZ); // apply user-defined world space offset
+	for (int x = 0; x < grid.x; x++) {
+		for (int y = 0; y < grid.y; y++) {
+			for (int z = 0; z < grid.z; z++) {
+				data.positions.push_back(offset + Float3(x, y, z) * particleSpacing);
+				data.velocities.push_back(Float3(0.0f, 0.0f, 0.0f)); // start at rest
+			}
+		}
+	}
+	return data;
+}
+
+// Map the upload buffers and copy initial particle data (positions + velocities) from CPU memory
+// to the upload buffers (upload heap, as opposed to default heap).
+// This is a CPU-side operation; the actual GPU transfer is recorded by RecordParticleUpload().
+void PbfApp::FillUploadBuffers(const ParticleInitData& initData) {
+	void* posData; // will point to the mapped CPU memory of the upload buffer
+	CD3DX12_RANGE readRange(0, 0); // empty range: CPU won't read anything from this buffer
+	// make the upload buffer's memory CPU accessible, i.e. positionUploadBuffer - posData association
+	// 0 is subresource index, on success, posData points to the buffer
+	DX_API("Failed to map position upload buffer")
+		positionUploadBuffer->Get()->Map(0, &readRange, &posData);
+	memcpy(posData, initData.positions.data(), initData.positions.size() * sizeof(Float3));
+	positionUploadBuffer->Get()->Unmap(0, nullptr);
+
+	void* velData;
+	DX_API("Failed to map velocity upload buffer")
+		velocityUploadBuffer->Get()->Map(0, &readRange, &velData);
+	memcpy(velData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
+	velocityUploadBuffer->Get()->Unmap(0, nullptr);
+}
+
+
+// Record copy commands for particle data into the already-open command list.
+// The command list must have been Reset() before calling this.
+void PbfApp::RecordParticleUpload() {
+	// Copy to both front and back so that the CPU-side flip() at the start of the first physics
+	// frame leaves a valid initial state in whichever buffer becomes the new front.
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
+	commandList->CopyBufferRegion(particleFieldDB[PF_POSITION]->getFront()->Get(), 0,
+		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
+	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getFront()->Get(), 0,
+		velocityUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
+	commandList->CopyBufferRegion(particleFieldDB[PF_POSITION]->getBack()->Get(), 0,
+		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
+	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getBack()->Get(), 0,
+		velocityUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
+	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
+	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 }
 
 // Copy initial particle positions into both snapshot slots so particles are visible
@@ -432,75 +500,18 @@ void PbfApp::SetSolidTransform() {
 	solidObstacle->SetTransform(Float4x4::Scaling(Float3(solidScale, solidScale, solidScale)) * rot * Float4x4::Translation(solidPosition));
 }
 
-
-ParticleInitData PbfApp::GenerateParticles() {
-	// create and return an evenly spaced grid of particles so we can see something on screen
-	ParticleInitData data;
-	Float3 grid = Float3(particlesX, particlesY, particlesZ);
-	Float3 offset = -(grid * particleSpacing) / 2.0f; // shift so the cube is centered at the origin
-	offset += Float3(offsetX, offsetY, offsetZ); // apply user-defined world space offset
-	for (int x = 0; x < grid.x; x++) {
-		for (int y = 0; y < grid.y; y++) {
-			for (int z = 0; z < grid.z; z++) {
-				data.positions.push_back(offset + Float3(x, y, z) * particleSpacing);
-				data.velocities.push_back(Float3(0.0f, 0.0f, 0.0f)); // start at rest
-			}
-		}
-	}
-	return data;
-}
-
-// Map the upload buffers and copy initial particle data (positions + velocities) from CPU memory
-// to the upload buffers (upload heap, as opposed to default heap).
-// This is a CPU-side operation; the actual GPU transfer is recorded by RecordParticleUpload().
-void PbfApp::FillUploadBuffers(const ParticleInitData& initData) {
-	void* posData; // will point to the mapped CPU memory of the upload buffer
-	CD3DX12_RANGE readRange(0, 0); // empty range: CPU won't read anything from this buffer
-	// make the upload buffer's memory CPU accessible, i.e. positionUploadBuffer - posData association
-	// 0 is subresource index, on success, posData points to the buffer
-	DX_API("Failed to map position upload buffer")
-		positionUploadBuffer->Get()->Map(0, &readRange, &posData);
-	memcpy(posData, initData.positions.data(), initData.positions.size() * sizeof(Float3));
-	positionUploadBuffer->Get()->Unmap(0, nullptr);
-
-	void* velData;
-	DX_API("Failed to map velocity upload buffer")
-		velocityUploadBuffer->Get()->Map(0, &readRange, &velData);
-	memcpy(velData, initData.velocities.data(), initData.velocities.size() * sizeof(Float3));
-	velocityUploadBuffer->Get()->Unmap(0, nullptr);
-}
-
-// Record copy commands for particle data into the already-open command list.
-// The command list must have been Reset() before calling this.
-void PbfApp::RecordParticleUpload() {
-	// Copy to both front and back so that the CPU-side flip() at the start of the first physics
-	// frame leaves a valid initial state in whichever buffer becomes the new front.
-	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
-	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
-	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
-	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_COPY_DEST, commandList.Get());
-	commandList->CopyBufferRegion(particleFieldDB[PF_POSITION]->getFront()->Get(), 0,
-		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
-	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getFront()->Get(), 0,
-		velocityUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
-	commandList->CopyBufferRegion(particleFieldDB[PF_POSITION]->getBack()->Get(), 0,
-		positionUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
-	commandList->CopyBufferRegion(particleFieldDB[PF_VELOCITY]->getBack()->Get(), 0,
-		velocityUploadBuffer->Get(), 0, numParticles * sizeof(Float3));
-	particleFieldDB[PF_POSITION]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
-	particleFieldDB[PF_VELOCITY]->getFront()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
-	particleFieldDB[PF_POSITION]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
-	particleFieldDB[PF_VELOCITY]->getBack()->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
-}
-
 // Create all compute shader PSOs and wire each shader to its contiguous descriptor region.
 // Each shader's region is allocated from mainAllocator; front/back DB targets are registered
 // so flip() keeps the descriptors current without any per-frame CopyDescriptorsSimple in hot paths.
+// TODO: double check inputs/outputs/bindings for each shader, especially the front vs back buffer targets
 void PbfApp::BuildComputePipelines() {
 	D3D12_GPU_VIRTUAL_ADDRESS cbv = computeCb.GetGPUVirtualAddress();
 	using P = com_ptr<ID3D12Resource>*;
 
-	auto copy1 = [&](UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE src) {
+	// lambda to copy a single descriptor from src (a static heap slot) to a main heap slot
+	// [&] captures everything by reference, the lambda takes 2 parameters, slot and src, and copies
+	// 1 descriptor from src to the main heap slot at index slot.
+	auto copyToMain = [&](UINT slot, D3D12_CPU_DESCRIPTOR_HANDLE src) {
 		device->CopyDescriptorsSimple(1, mainAllocator->GetCpuHandle(slot), src,
 			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	};
@@ -509,14 +520,14 @@ void PbfApp::BuildComputePipelines() {
 	spatialGrid = SpatialGrid::Create(device.Get(), numCells, numParticles,
 		*mainAllocator, *staticAllocator, cbv, particleFieldDB);
 
-	// ---------- predictCS: UAV(u0-2) SRV(t0) = 4 slots ----------
+	// predictCS: UAV(u0-2) SRV(t0) = 4 slots 
 	// [0]=position, [1]=velocity, [2]=predictedPosition, [3]=SDF SRV
 	{
 		UINT s = mainAllocator->Allocate(4);
 		particleFieldDB[PF_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_VELOCITY]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), false);
-		copy1(s + 3, sdfCpuHandle);
+		copyToMain(s + 3, sdfCpuHandle);
 		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getFront()->GetResourcePtr(),
@@ -525,13 +536,13 @@ void PbfApp::BuildComputePipelines() {
 			                particleFieldDB[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr() });
 	}
 
-	// ---------- collisionPredictedPositionCS: UAV(u0-1) SRV(t0) = 3 slots ----------
+	// collisionPredictedPositionCS: UAV(u0-1) SRV(t0) = 3 slots 
 	// [0]=predictedPosition back, [1]=lod, [2]=SDF SRV
 	{
 		UINT s = mainAllocator->Allocate(3);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		copy1(s + 1, lod->GetLodBuffer()->GetUavCpuHandle());
-		copy1(s + 2, sdfCpuHandle);
+		copyToMain(s + 1, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 2, sdfCpuHandle);
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -539,13 +550,13 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- positionFromScratchCS: UAV(u0-2) = 3 slots ----------
+	// positionFromScratchCS: UAV(u0-2) = 3 slots 
 	// [0]=predictedPosition back, [1]=scratch back, [2]=lod
 	{
 		UINT s = mainAllocator->Allocate(3);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),            false);
-		copy1(s + 2, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 2, lod->GetLodBuffer()->GetUavCpuHandle());
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr(),
@@ -554,7 +565,7 @@ void PbfApp::BuildComputePipelines() {
 			                lod->GetLodBuffer()->GetResourcePtr() });
 	}
 
-	// ---------- updateVelocityCS: UAV(u0-2) = 3 slots ----------
+	// updateVelocityCS: UAV(u0-2) = 3 slots 
 	// [0]=position back, [1]=velocity back, [2]=predictedPosition back
 	{
 		UINT s = mainAllocator->Allocate(3);
@@ -568,7 +579,7 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- velocityFromScratchCS: UAV(u0-1) = 2 slots ----------
+	// velocityFromScratchCS: UAV(u0-1) = 2 slots 
 	// [0]=velocity back, [1]=scratch back
 	{
 		UINT s = mainAllocator->Allocate(2);
@@ -580,7 +591,7 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_VELOCITY]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- updatePositionCS: UAV(u0-1) = 2 slots ----------
+	// updatePositionCS: UAV(u0-1) = 2 slots 
 	// [0]=position back, [1]=predictedPosition back
 	{
 		UINT s = mainAllocator->Allocate(2);
@@ -592,16 +603,16 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- lambdaCS: UAV(u0-5) = 6 slots ----------
+	// lambdaCS: UAV(u0-5) = 6 slots 
 	// [0]=predictedPosition, [1]=lambda, [2]=density, [3]=cellCount, [4]=cellPrefixSum, [5]=lod
 	{
 		UINT s = mainAllocator->Allocate(6);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		lambdaShader = ComputeShader::Create(device.Get(), "Shaders/lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -612,16 +623,16 @@ void PbfApp::BuildComputePipelines() {
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- deltaCS: UAV(u0-5) = 6 slots ----------
+	// deltaCS: UAV(u0-5) = 6 slots 
 	// [0]=predictedPosition, [1]=lambda, [2]=scratch, [3]=cellCount, [4]=cellPrefixSum, [5]=lod
 	{
 		UINT s = mainAllocator->Allocate(6);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		deltaShader = ComputeShader::Create(device.Get(), "Shaders/deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -632,15 +643,15 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- vorticityCS: UAV(u0-4) = 5 slots ----------
+	// vorticityCS: UAV(u0-4) = 5 slots 
 	// [0]=position, [1]=velocity, [2]=omega, [3]=cellCount, [4]=cellPrefixSum
 	{
 		UINT s = mainAllocator->Allocate(5);
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
@@ -650,7 +661,7 @@ void PbfApp::BuildComputePipelines() {
 			std::vector<P>{ particleFieldDB[PF_OMEGA]->getBack()->GetResourcePtr() });
 	}
 
-	// ---------- confinementViscosityCS: UAV(u0-5) = 6 slots ----------
+	// confinementViscosityCS: UAV(u0-5) = 6 slots 
 	// [0]=position, [1]=velocity, [2]=omega, [3]=scratch, [4]=cellCount, [5]=cellPrefixSum
 	{
 		UINT s = mainAllocator->Allocate(6);
@@ -658,8 +669,8 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
-		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		confinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
@@ -674,19 +685,19 @@ void PbfApp::BuildComputePipelines() {
 	// are all built inside the LOD subsystem.
 	lod->BuildPipelines(device.Get(), cbv, *mainAllocator, particleFieldDB);
 
-	// ---------- splatDensityVolumeCS: SRV(t0) UAV(u0) = 2 slots ----------
+	// splatDensityVolumeCS: SRV(t0) UAV(u0) = 2 slots 
 	// [0]=posSnapshot front SRV, [1]=densityVol UAV
 	{
 		UINT s = mainAllocator->Allocate(2);
 		positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(s), true);
-		copy1(s + 1, densityVolume->GetUavCpuHandle());
+		copyToMain(s + 1, densityVolume->GetUavCpuHandle());
 		splatDensityShader = ComputeShader::Create(device.Get(), "Shaders/splatDensityVolumeCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{},
 			std::vector<P>{ densityVolume->GetResourcePtr() });
 	}
 
-	// ---------- GSM variants ----------
+	// GSM variants 
 
 	// GSM_lambdaCS: UAV(u0-5) = 6 slots
 	{
@@ -694,9 +705,9 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		gsmLambdaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_lambdaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -713,9 +724,9 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
-		copy1(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
 		gsmDeltaShader = ComputeShader::Create(device.Get(), "Shaders/GSM_deltaCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -732,8 +743,8 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		copy1(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmVorticityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
@@ -750,8 +761,8 @@ void PbfApp::BuildComputePipelines() {
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
 		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
-		copy1(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
-		copy1(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
+		copyToMain(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
+		copyToMain(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmConfinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getBack()->GetResourcePtr(),
@@ -761,6 +772,33 @@ void PbfApp::BuildComputePipelines() {
 			                spatialGrid->GetPrefixSumBuffer()->GetResourcePtr() },
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() });
 	}
+}
+
+// Call once after CreateResources + LoadAssets, from main.cpp where the HWND is available.
+// Sets up ImGui context and its Win32 + D3D12 backends. At this point the D3D12 device, command queue, and
+//imguiSrvHeap all exist.
+void PbfApp::InitImGui(HWND hwnd) {
+	IMGUI_CHECKVERSION(); // checks that the headers and compiled .lib are from the same version of ImGui
+	// create the ImGui context, which stores ImGui's internal state and is needed before calling any ImGui functions
+	ImGui::CreateContext();
+	ImGui::StyleColorsDark();
+
+	ImGui_ImplWin32_Init(hwnd); // Win32 backend: handles mouse position, keyboard input, cursor shape
+
+	// D3D12 backend: renders ImGui's vertex/index buffers using our device and command queue.
+	// We use the legacy single-descriptor path: one SRV for the font texture atlas.
+	// Internally ImGui_ImplDX12_Init creates a root signature and PSO, allocates
+	// a two vertex/index buffers for swapping, creatres its own command allocator and command list,
+	// writes the font texture srv into LegacySingleSrvCpuDescriptor and LegacySingleSrvGpuDescriptor
+	ImGui_ImplDX12_InitInfo initInfo;
+	initInfo.Device = device.Get();
+	initInfo.CommandQueue = commandQueue.Get();
+	initInfo.NumFramesInFlight = 2; // matches our double-buffered swap chain
+	initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // must match swap chain format
+	initInfo.SrvDescriptorHeap = imguiAllocator->GetHeap();
+	initInfo.LegacySingleSrvCpuDescriptor = imguiAllocator->GetCpuHandle(0);
+	initInfo.LegacySingleSrvGpuDescriptor = imguiAllocator->GetGpuHandle(0);
+	ImGui_ImplDX12_Init(&initInfo);
 }
 
 void PbfApp::PrepareComputeCommandList() {
@@ -846,6 +884,19 @@ void PbfApp::ExecuteCompute() {
 	computeCommandQueue->ExecuteCommandLists(_countof(computeCls), computeCls);
 }
 
+void PbfApp::flipDoubleBuffers() {
+	// - particleFieldDBs: back (sorted by permutateCS) becomes the new front for compute
+	// - snapshot DBs: back (written by compute) becomes the new front for graphics
+	// - lod depth DB: back (written by graphics) becomes the new front for compute
+	for (UINT f = 0; f < PF_COUNT; f++) particleFieldDB[f]->flip();
+	positionSnapshotDB->flip();
+	densitySnapshotDB->flip();
+	lodSnapshotDB->flip();
+	cellCountSnapshotDB->flip();
+	cellPrefixSumSnapshotDB->flip();
+	lod->GetParticleDepthDB()->flip();
+}
+
 // Override Render() to decouple physics (compute queue) from graphics (direct queue).
 //
 // Physics step: CPU waits for compute frame N-1 to finish (so the allocator can be reused),
@@ -865,16 +916,7 @@ void PbfApp::Render() {
 
 		// Both compute AND graphics frame N-1 are done at this point (graphics waited at end
 		// of last Render()). Safe to flip all double buffers:
-		// - particleFieldDBs: back (sorted by permutateCS in N-1) becomes the new front for compute N
-		// - snapshot DBs: back (written by compute N-1) becomes the new front for graphics N
-		// - lod depth DB: back (written by graphics N-1) becomes the new front for compute N
-		for (UINT f = 0; f < PF_COUNT; f++) particleFieldDB[f]->flip();
-		positionSnapshotDB    ->flip();
-		densitySnapshotDB     ->flip();
-		lodSnapshotDB         ->flip();
-		cellCountSnapshotDB   ->flip();
-		cellPrefixSumSnapshotDB->flip();
-		lod->GetParticleDepthDB()->flip();
+		flipDoubleBuffers();
 
 		CalculateAvgDensity();
 		CalculateAvgLod();
@@ -885,7 +927,9 @@ void PbfApp::Render() {
 		RecordComputeCommands();
 		ExecuteCompute();
 	}
-	computeFence.signal(computeCommandQueue, frameCount);
+	// signal that after the compute queue reaches this point, the particle data
+	// for frame N is ready
+	computeFence.signal(computeCommandQueue, frameCount); 
 
 	// GPU-stall graphics until compute frame N-1's snapshot writes are complete.
 	graphicsWaitForCompute(frameCount - 1);
@@ -910,12 +954,16 @@ void PbfApp::Render() {
 void PbfApp::RecordComputeCommands() {
 	UINT numGroups = (numParticles + THREAD_GROUP_SIZE - 1) / THREAD_GROUP_SIZE;
 
+	// predictShader is the only shader that runs before the sort
+	// it has to, of course, because the sort is based on the *predicted* positions,
+	// which only exist after this shader has ran. However, since the sort is what produces
+	// the data in the back buffers, predictShader must write its outputs (predictedPosition)
+	// to the front buffers, which are then sorted into the back buffers by spatialGrid->Build(). 
+	// All subsequent shaders read from and write to the back buffers.
 	predictShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 	spatialGrid->Build(computeList.Get());
 
-	// collisionPredictedPositionCS moved to after sort: grid posToCell() clamps OOB positions to
-	// boundary cells, so sorting against unclamped predictions is safe; collision corrects afterward.
 	collisionPredictedPositionShader->dispatch_then_barrier(computeList.Get(), numGroups);
 
 	lod->CalculateLod(computeList.Get());
@@ -994,15 +1042,13 @@ void PbfApp::RecordGraphicsCommands() {
 	backgroundMesh->Draw(commandList.Get());
 	solidObstacle->Draw(commandList.Get());
 
-	// Snapshot DB flip() keeps the particleSrvTableStart slots current — no CopyDescriptorsSimple here.
-
 	// Promote positionSnapshot front to pixel-visible before any draw that uses it from the pixel stage.
 	constexpr D3D12_RESOURCE_STATES SRV_ALL =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	if (shadingMode == ShadingMode::LIQUID)
 		positionSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
 
-	if (lod->mode == LodSubsystem::Mode::DTVS)
+	if (lod->mode == LodSubsystem::Mode::DTVS) { // DTVS requires depth data
 		lod->DrawParticleDepth(
 			commandList.Get(),
 			perFrameCb.GetGPUVirtualAddress(),
@@ -1012,9 +1058,12 @@ void PbfApp::RecordGraphicsCommands() {
 				rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
 				swapChainBackBufferIndex,
 				rtvDescriptorHandleIncrementSize));
+	}		
 
 	if (shadingMode == ShadingMode::LIQUID) {
 		DrawLiquidSurface();
+		// Transition position snapshot back to NON_PIXEL_SHADER_RESOURCE so that the next non-liquid 
+		// draw can read it from compute shaders if needed.
 		positionSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 	}
 	else {
@@ -1028,8 +1077,6 @@ void PbfApp::RecordGraphicsCommands() {
 // The GPU-wait at the front of the graphics list (graphicsWaitForCompute(N-1)) guarantees that
 // snapshotPosition[readIdx] and the grid snapshots are fully written by compute before this runs.
 void PbfApp::DrawLiquidSurface() {
-	// liquidTableStartSlot +1/+2/+3 are updated by snapshot DB flip() — no CopyDescriptorsSimple needed.
-
 	densityVolume->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 
 	// Splat: one thread per particle; each writes Poly6 to densityVolume via CAS float atomic add.
@@ -1053,6 +1100,7 @@ void PbfApp::DrawLiquidSurface() {
 	cellPrefixSumSnapshotDB->getFront()->Transition(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList.Get());
 	densityVolume->Transition(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList.Get());
 
+	// Clear the density volume for the next frame.
 	const UINT clearVal[4] = { 0u, 0u, 0u, 0u };
 	commandList->ClearUnorderedAccessViewUint(
 		densityVolumeHandle, densityVolClearCpuHandle,
@@ -1219,7 +1267,7 @@ void PbfApp::CalculateAvgDensity() {
 		densityReadbackBuffer->Get()->Unmap(0, &writeRange); // release mapping: invalidate pData
 	}
 
-	// Compute average density from readback data
+	// Compute average density from readback data, only every AVG_COARSENESS particles to save CPU time.
 	double densitySum = 0.0;
 	int cnt = 0;
 	for (int i = 0; i < numParticles; i += AVG_COARSENESS) {
@@ -1242,7 +1290,7 @@ void PbfApp::CalculateAvgLod() {
 		lodReadbackBuffer->Get()->Unmap(0, &writeRange); // release mapping: invalidate pData
 	}
 
-	// Compute average LOD from readback data
+	// Compute average LOD from readback data, only every AVG_COARSENESS particles to save CPU time.
 	double lodSum = 0.0;
 	int cnt = 0;
 	for (int i = 0; i < numParticles; i += AVG_COARSENESS) {
@@ -1274,40 +1322,6 @@ void PbfApp::Throttle() {
 
 void PbfApp::ReleaseSwapChainResources()  {
 	AsyncComputeApp::ReleaseSwapChainResources();
-}
-
-// upload initial data to the GPU and build rendering/compute pipelines.
-void PbfApp::LoadAssets() {
-	UploadAll();
-	BuildGraphicsPipelines();
-	BuildComputePipelines();
-}
-
-// Call once after CreateResources + LoadAssets, from main.cpp where the HWND is available.
-// Sets up ImGui context and its Win32 + D3D12 backends. At this point the D3D12 device, command queue, and
-//imguiSrvHeap all exist.
-void PbfApp::InitImGui(HWND hwnd) {
-	IMGUI_CHECKVERSION(); // checks that the headers and compiled .lib are from the same version of ImGui
-	// create the ImGui context, which stores ImGui's internal state and is needed before calling any ImGui functions
-	ImGui::CreateContext();
-	ImGui::StyleColorsDark();
-
-	ImGui_ImplWin32_Init(hwnd); // Win32 backend: handles mouse position, keyboard input, cursor shape
-
-	// D3D12 backend: renders ImGui's vertex/index buffers using our device and command queue.
-	// We use the legacy single-descriptor path: one SRV for the font texture atlas.
-	// Internally ImGui_ImplDX12_Init creates a root signature and PSO, allocates
-	// a two vertex/index buffers for swapping, creatres its own command allocator and command list,
-	// writes the font texture srv into LegacySingleSrvCpuDescriptor and LegacySingleSrvGpuDescriptor
-	ImGui_ImplDX12_InitInfo initInfo;
-	initInfo.Device = device.Get();
-	initInfo.CommandQueue = commandQueue.Get();
-	initInfo.NumFramesInFlight = 2; // matches our double-buffered swap chain
-	initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // must match swap chain format
-	initInfo.SrvDescriptorHeap = imguiAllocator->GetHeap();
-	initInfo.LegacySingleSrvCpuDescriptor = imguiAllocator->GetCpuHandle(0);
-	initInfo.LegacySingleSrvGpuDescriptor = imguiAllocator->GetGpuHandle(0);
-	ImGui_ImplDX12_Init(&initInfo);
 }
 
 void PbfApp::ShutdownImGui() {

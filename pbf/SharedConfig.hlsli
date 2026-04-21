@@ -36,7 +36,7 @@
 // Grid world-space half-extent: GRID_DIM cells of width H/CELL_PER_H on each side.
 #define BOX_HALF_EXTENT GRID_DIM * CELL_SIZE / 2.0f
 
-// Shading mode constants � must match the order to the ImGui shadingModeItems[]
+// Shading mode constants - must match the order to the ImGui shadingModeItems[]
 #define SHADING_UNICOLOR 0
 #define SHADING_DENSITY  1
 #define SHADING_LOD      2
