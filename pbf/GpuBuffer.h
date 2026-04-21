@@ -121,6 +121,9 @@ public:
         currentState = destState;
     }
 
+    void SetUav(D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu) { uavCpuHandle = cpu; uavGpuHandle = gpu; }
+    void SetSrv(D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu) { srvCpuHandle = cpu; srvGpuHandle = gpu; }
+
     ID3D12Resource* Get() const { return resource.Get(); }
     D3D12_CPU_DESCRIPTOR_HANDLE GetUavCpuHandle() const { return uavCpuHandle; }
     D3D12_GPU_DESCRIPTOR_HANDLE GetUavGpuHandle() const { return uavGpuHandle; }

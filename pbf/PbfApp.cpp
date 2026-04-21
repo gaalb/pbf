@@ -122,7 +122,9 @@ void PbfApp::InitSnapshotBuffers() {
 		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
 
 	// Reserve 3 contiguous main-heap slots for the particle SRV table (t0=pos, t1=den, t2=lod).
-	// Snapshot DBs register their front SRV targets here.
+	// Snapshot DBs register their front SRV targets here; that's what these 3 srvs are: they are
+	// the targets for wiring the snapshot double buffers, in order for the shaders to read 
+	// correctly double buffered particle data.
 	particleSrvTableStart = mainAllocator->Allocate(3);
 	// Register front SRV targets for the particle graphics SRV table (t0=pos, t1=den, t2=lod).
 	// flip() keeps these slots pointing at the current front automatically.
@@ -140,11 +142,28 @@ void PbfApp::InitSnapshotBuffers() {
 		device.Get(), numCells, sizeof(UINT),
 		L"Cell Prefix Sum Snapshot [front]", L"Cell Prefix Sum Snapshot [back]",
 		D3D12_RESOURCE_STATE_COMMON, *staticAllocator);
+
+	// 4-slot contiguous liquid table: [density(t0=+0), pos(+1), gridCount(+2), gridPrefix(+3)].
+	// density SRV (+0) is static. Snapshot DB front targets handle the other three automatically.
+	// we allocate the descriptor space here, and fill slots 1, 2 and 3, and fill slot 0 later
+	// in InitDensityVolume
+	liquidTableStartSlot = mainAllocator->Allocate(4);
+	// Register snapshot front targets: flip() will keep +1/+2/+3 pointing at the current front.
+	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 1), true);
+	cellCountSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 2), true);
+	cellPrefixSumSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 3), true);
+
 }
 
 // Single-buffered density volume: VOL_DIM^3, R32_TYPELESS.
-// R32_UINT UAV for CAS float atomic add; R32_FLOAT SRV for liquidPS.
-// CPU-only UAV in static heap for ClearUnorderedAccessViewUint.
+// The resource is R32_TYPELESS so that the same 32 bits per voxel can be viewed two ways:
+//   - R32_UINT UAV: splatDensityVolumeCS writes float bits via CAS atomic add (InterlockedCompareExchange).
+//     CAS operates on integers, so the UAV must be typed as uint even though the data is semantically float.
+//   - R32_FLOAT SRV: liquidPS reads those same bits back as a plain float density value.
+// The UAV exists in two heaps because ClearUnorderedAccessViewUint has a split CPU/GPU handle contract:
+//   - CPU handle: must come from a non-shader-visible (CPU-only) heap so D3D12 can read it on the CPU.
+//   - GPU handle: must come from the currently-bound shader-visible heap so the GPU can locate it.
+// So we create the canonical UAV in the static (CPU-only) heap and mirror it into the main (GPU-visible) heap.
 void PbfApp::InitDensityVolume() {
 	const UINT volDim = (UINT)VOL_DIM;
 	densityVolume = GpuTexture::Create3D(
@@ -155,15 +174,16 @@ void PbfApp::InitDensityVolume() {
 		D3D12_RESOURCE_STATE_COMMON);
 
 	// Canonical R32_UINT UAV in the static (non-shader-visible) heap.
-	// Non-shader-visible descriptors are CPU-readable, so this handle can be:
-	//   (a) a CopyDescriptorsSimple source in BuildComputePipelines (via GetUavCpuHandle()), and
-	//   (b) the CPU handle argument to ClearUnorderedAccessViewUint (densityVolClearCpuHandle).
+	// Stored on the texture so GetUavCpuHandle() can be used as:
+	//   (a) a CopyDescriptorsSimple source when wiring splatDensityShader in BuildComputePipelines, and
+	//   (b) the required CPU handle argument to ClearUnorderedAccessViewUint (saved below).
 	densityVolume->CreateUav(device.Get(), *staticAllocator, DXGI_FORMAT_R32_UINT);
 	densityVolClearCpuHandle = densityVolume->GetUavCpuHandle();
 
 	// Mirror the UAV into a shader-visible main heap slot.
-	// ClearUnorderedAccessViewUint requires its GPU handle to be in the currently-bound
-	// shader-visible heap; densityVolumeHandle provides that GPU handle.
+	// ClearUnorderedAccessViewUint also requires a GPU handle from the currently-bound shader-visible heap.
+	// CopyDescriptorsSimple copies the static-heap UAV descriptor into a main-heap slot so we can
+	// satisfy that requirement; densityVolumeHandle holds that GPU handle for use in DrawLiquidSurface().
 	UINT clearGpuSlot = mainAllocator->Allocate();
 	device->CopyDescriptorsSimple(1,
 		mainAllocator->GetCpuHandle(clearGpuSlot),
@@ -171,19 +191,23 @@ void PbfApp::InitDensityVolume() {
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 	densityVolumeHandle = mainAllocator->GetGpuHandle(clearGpuSlot);
 
-	// 4-slot contiguous liquid table: [density(t0=+0), pos(+1), gridCount(+2), gridPrefix(+3)].
-	// density SRV (+0) is static. Snapshot DB front targets handle the other three automatically.
-	liquidTableStartSlot = mainAllocator->Allocate(4);
+	// The liquid descriptor table has 4 contiguous slots allocated in InitSnapshotBuffers():
+	//   [+0] density volume SRV  <- filled here (static, never changes)
+	//   [+1] position snapshot   <- wired via registerFrontTarget in InitSnapshotBuffers()
+	//   [+2] cell count snapshot <- wired via registerFrontTarget in InitSnapshotBuffers()
+	//   [+3] cell prefix sum     <- wired via registerFrontTarget in InitSnapshotBuffers()
+	// We place the SRV directly into the main heap at slot +0 using CreateSrvAt (which targets a
+	// specific cpu/gpu handle pair rather than allocating from an allocator). CreateSrvAt does not
+	// store the handles on the texture by design, so we call SetSrv to register this as the
+	// canonical SRV, keeping the texture in a consistent state.
 	densityVolume->CreateSrvAt(
 		device.Get(),
 		mainAllocator->GetCpuHandle(liquidTableStartSlot),
 		mainAllocator->GetGpuHandle(liquidTableStartSlot),
 		DXGI_FORMAT_R32_FLOAT);
-
-	// Register snapshot front targets: flip() will keep +1/+2/+3 pointing at the current front.
-	positionSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 1), true);
-	cellCountSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 2), true);
-	cellPrefixSumSnapshotDB->registerFrontTarget(mainAllocator->GetCpuHandle(liquidTableStartSlot + 3), true);
+	densityVolume->SetSrv(
+		mainAllocator->GetCpuHandle(liquidTableStartSlot),
+		mainAllocator->GetGpuHandle(liquidTableStartSlot));
 }
 
 // Load the cubemap texture; create GPU resources and descriptors.
