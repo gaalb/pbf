@@ -23,16 +23,17 @@ cbuffer PerFrameCb : register(b1) {
     float4 particleParams;
 }
 
+// match PNT_Vertex layout in Egg::Importer::ImportSimpleObj
 struct VSInput {
-    float3 position : POSITION;
-    float3 normal   : NORMAL;
-    float2 texcoord : TEXCOORD;
+    float3 position : POSITION; // object-space vertex position
+    float3 normal : NORMAL; // object-space vertex normal
+    float2 texcoord : TEXCOORD; // uv for texturing
 };
 
 struct VSOutput {
-    float4 position : SV_Position;
-    float3 worldPos : WORLDPOS;
-    float3 normal   : NORMAL;
+    float4 position : SV_Position; // system value semantic, clip-space vertex position
+    float3 worldPos : WORLDPOS; // world-space vertex position, for lighting calculations in the PS
+    float3 normal   : NORMAL; // world-space vertex normal, for lighting calculations in the PS
 };
 
 [RootSignature(SolidRootSig)]
@@ -40,9 +41,9 @@ VSOutput main(VSInput input)
 {
     VSOutput output;
 
-    float4 worldPos4 = mul(modelMat, float4(input.position, 1.0f));
-    output.position  = mul(viewProjTransform, worldPos4);
-    output.worldPos  = worldPos4.xyz;
+    float4 worldPos4 = mul(modelMat, float4(input.position, 1.0f)); // object-space position to world-space position 
+    output.position = mul(viewProjTransform, worldPos4); // clip-space position for rasterization
+    output.worldPos = worldPos4.xyz; // world-space position for lighting calculations in the PS
 
     // Normal transforms by the inverse-transpose of the model matrix.
     // For a rigid transform (rotation + translation, no scale) this equals

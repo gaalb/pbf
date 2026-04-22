@@ -12,7 +12,7 @@
 //   3. f_i   = vorticityEpsilon * (N_i x omega_i)                 (confinement force)
 //   4. v_i  += dt * f_i
 //
-// Viscosity (XSPH, Schechter & Bridson 2012) per particle i:
+// Viscosity (XSPH) per particle i:
 //   v_new_i = v_i + c * sum_{j != i} (v_j - v_i) * W_poly6(r_ij, h)
 //
 // The viscosity term uses v_i as captured before the confinement correction (since we
@@ -20,7 +20,7 @@
 // the final write, so the output encodes both corrections.
 //
 // In: position, velocity, omega, cellCount, cellPrefixSum
-// Out: scratch (new velocity, Jacobi mode) or velocity (Gauss-Seidel mode)
+// Out: scratch (new velocity, Jacobi mode)
 
 #define ConfinementViscosityRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 6))"
 
@@ -44,11 +44,11 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (i >= numParticles)
         return;
 
-    float3 pi     = position[i];
-    float3 vi     = velocity[i];
+    float3 pi = position[i];
+    float3 vi = velocity[i];
     float3 omegaI = omega[i];
 
-    float3 eta     = float3(0, 0, 0); // accumulates grad(|omega|) for confinement
+    float3 eta = float3(0, 0, 0); // accumulates grad(|omega|) for confinement
     float3 xsphSum = float3(0, 0, 0); // accumulates weighted velocity differences for viscosity
 
     // The grid was built from predictedPositions, but this pass uses old positions.
@@ -56,7 +56,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     NeighborCells nCells = NeighborCellIndices(pi);
     for (uint c = 0; c < nCells.count; c++)
     {
-        uint ci    = nCells.indices[c];
+        uint ci = nCells.indices[c];
         uint count = cellCount[ci];
 
         for (uint s = 0; s < count; s++)
@@ -72,11 +72,21 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             eta += length(omega[j]) * SpikyGrad(r, r2);
 
             // Viscosity: accumulate XSPH sum = sum_j (v_j - v_i) * W_poly6(r_ij)
+             // (v_j - v_i) * W: neighbor's velocity contribution weighted by proximity.
+            // The full XSPH formula (Schechter & Bridson 2012) is:
+            //   sum_j (m_j / rho_j) * (v_j - v_i) * W(r_ij, h)
+            // m_j = 1 is dropped as a uniform constant; it only scales the sum and is
+            // absorbed into the viscosity coefficient c.
+            // 1/rho_j is also dropped. Unlike m_j, rho_j varies per particle, so omitting it
+            // changes the relative weighting of neighbors and is not trivially justified.
+            // The assumption is that PBF keeps rho_j ~ rho0 for all j (incompressibility),
+            // making 1/rho_j approximately uniform. Under that assumption it too is absorbed
+            // into c, and the formula reduces to what we compute here.
             xsphSum += (velocity[j] - vi) * Poly6(r, r2);
         }
     }
 
-    // --- Confinement (applied first) ---
+    // Confinement (applied first)
     float etaLen = length(eta);
     if (etaLen >= 1e-6)
     {
@@ -84,7 +94,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         vi += dt * vorticityEpsilon * cross(N, omegaI);
     }
 
-    // --- Viscosity: write combined result ---
+    // Viscosity: write combined result
     // vi now includes the confinement impulse, so the output encodes both corrections.
     scratch[i] = vi + viscosity * xsphSum;
 }

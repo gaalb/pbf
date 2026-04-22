@@ -19,8 +19,8 @@ cbuffer PerFrameCb : register(b0)
     float4 lightDir; // light direction in world space (should be normalized)
     float4 particleParams; // x = rho0 (density coloring), w = particle display radius
     uint shadingMode; // 0=unicolor, 1=density, 2=lod
-    uint minLOD;      // minimum LOD value (far particles)
-    uint maxLOD;      // maximum LOD value (close particles, = solverIterations)
+    uint minLOD;  // minimum LOD value (far particles)
+    uint maxLOD; // maximum LOD value (close particles, = solverIterations)
     float _pad;
 };
 
@@ -40,7 +40,7 @@ float4 main(GSOutput input) : SV_Target
     float3 forward = normalize(cameraPos.xyz - input.centerWorld);
     float3 normal = normalize(input.uv.x * input.right + input.uv.y * input.up + nz * forward);
 
-    // --- base color: selected by shading mode ---
+    // base color: selected by shading mode
     float3 baseColor;
 
     if (shadingMode == SHADING_UNICOLOR)
@@ -71,7 +71,7 @@ float4 main(GSOutput input) : SV_Target
         baseColor = lerp(float3(0.2, 0.5, 1.0), float3(1.0, 0.5, 0.0), t); // blue -> orange
     }
 
-    // --- Phong-Blinn lighting (same for all shading modes) ---
+    // Phong-Blinn lighting (same for all shading modes)
 
     // diffuse: scaled down so base color dominates over lighting variation
     float3 l = normalize(lightDir.xyz);

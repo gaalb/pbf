@@ -3,7 +3,7 @@
 //
 // Algorithm:
 //   1. Ray-box intersection: find entry/exit t along the ray through boxMin..boxMax.
-//   2. March from the entry point at step size H/2 (one voxel), sampling the
+//   2. March from the entry point at step size of a particle's worth, sampling the
 //      pre-computed density volume (Texture3D<float> storing rho per voxel).
 //   3. Once density crosses the iso-surface threshold, binary-search (6 halvings)
 //      to localize the surface position.
@@ -33,17 +33,17 @@
 
 cbuffer PerFrameCb : register(b0)
 {
-    float4x4 viewProjMat;     // world -> clip
-    float4x4 rayDirMat;       // clip  -> world direction
-    float4   cameraPos;       // world-space eye position
-    float4   lightDir;        // xyz = direction toward light (normalized)
-    float4   particleParams;  // x = rho0; must be here to match C++ layout
-    uint     shadingMode;     // unused in this shader
-    uint     minLOD;
-    uint     maxLOD;
-    float    _pad;
-    float4   bbMin;           // xyz = adjustable boxMin, w = density iso-surface threshold
-    float4   bbMax;           // xyz = adjustable boxMax, w = unused
+    float4x4 viewProjMat; // world -> clip
+    float4x4 rayDirMat; // clip  -> world direction
+    float4 cameraPos; // world-space eye position
+    float4 lightDir; // xyz = direction toward light (normalized)
+    float4 particleParams; // x = rho0; must be here to match C++ layout
+    uint shadingMode; // unused in this shader
+    uint minLOD;
+    uint maxLOD;
+    float _pad;
+    float4 bbMin; // xyz = adjustable boxMin, w = density iso-surface threshold
+    float4 bbMax; // xyz = adjustable boxMax, w = unused
 };
 
 // Density volume: float (rho) per voxel. Gradient is computed via SPH at the surface point.
@@ -81,29 +81,31 @@ PSOutput main(VSOutput input)
     PSOutput output;
 
     float3 origin = cameraPos.xyz;
-    float3 dir    = normalize(input.rayDir);
+    float3 dir = normalize(input.rayDir);
 
     float3 boxMin = bbMin.xyz;
     float3 boxMax = bbMax.xyz;
     float  threshold = bbMin.w; // density iso-surface threshold
 
-    // --- Ray-AABB intersection (slab method) ---
+    // Ray-AABB intersection (slab method)
     float3 invDir = 1.0 / dir;
-    float3 t0 = (boxMin - origin) * invDir;
-    float3 t1 = (boxMax - origin) * invDir;
-    float3 tNear = min(t0, t1);
-    float3 tFar  = max(t0, t1);
+    float3 t0 = (boxMin - origin) * invDir; // parametric t where ray crosses min plane
+    float3 t1 = (boxMax - origin) * invDir; // parametric t where ray crosses max plane
+    float3 tNear = min(t0, t1); // near intersection along each axis, since ray can come from either side
+    float3 tFar = max(t0, t1); // far intersection along each axis, since ray can come from either side
+    // The ray is inside the box only where it has passed through all three pairs
+    // of slabs. The entry point is the latest (max) of the three near t values, the exit
+    // point is the earliest (min) of the three far t values.
     float tEnter = max(max(tNear.x, tNear.y), tNear.z);
     float tExit  = min(min(tFar.x,  tFar.y),  tFar.z);
 
-    if (tEnter > tExit || tExit < 0.0)
+    if (tEnter > tExit || tExit < 0.0) // ray missed the box
         discard;
 
     tEnter = max(tEnter, 0.0); // start from camera if inside box
 
-    // --- Ray march at one voxel per step ---
-    // Voxel world-space size = (GRID_DIM * H) / VOL_DIM; adjusts automatically when VOL_DIM changes.
-    float stepSize = (float(GRID_DIM) * H) / float(VOL_DIM);
+    // Ray march at one voxel per step
+    float stepSize = PARTICLE_SPACING;
     float tPrev    = tEnter;
     float tCur     = tEnter;
     bool  found    = false;
@@ -114,14 +116,14 @@ PSOutput main(VSOutput input)
 
     for (int i = 0; i < maxSteps; i++)
     {
-        tCur = tEnter + float(i) * stepSize;
-        if (tCur >= tExit)
+        tCur = tEnter + float(i) * stepSize; // advance ray by one step
+        if (tCur >= tExit) // we've reached the end of the box without crossing the threshold
             break;
 
-        float3 pos = origin + dir * tCur;
-        float  rho = densityVol.SampleLevel(samp, worldToUvw(pos), 0);
+        float3 pos = origin + dir * tCur; // world-space position along the ray at this step
+        float rho = densityVol.SampleLevel(samp, worldToUvw(pos), 0); // sample density volume at this position
 
-        if (rho >= threshold)
+        if (rho >= threshold) // we've found the first step where density exceeds the threshold, so the surface is between tPrev and tCur
         {
             found = true;
             break;
@@ -129,26 +131,26 @@ PSOutput main(VSOutput input)
         tPrev = tCur;
     }
 
-    if (!found)
+    if (!found) // ray marched through the box without crossing the threshold, so it doesn't hit the surface
         discard;
 
-    // --- Binary search: 6 halvings to localize the surface ---
-    float tLo = tPrev;
-    float tHi = tCur;
+    // Binary search to find the surface more accurately: 6 halvings
+    float tLo = tPrev; // last step below threshold
+    float tHi = tCur; // first step above threshold
     for (int b = 0; b < 6; b++)
     {
-        float  tMid = (tLo + tHi) * 0.5;
-        float3 pMid = origin + dir * tMid;
-        float  rMid = densityVol.SampleLevel(samp, worldToUvw(pMid), 0);
-        if (rMid < threshold)
+        float tMid = (tLo + tHi) * 0.5; // midpoint between tLo and tHi
+        float3 pMid = origin + dir * tMid; // world-space position at tMid
+        float rMid = densityVol.SampleLevel(samp, worldToUvw(pMid), 0); // density at pMid
+        if (rMid < threshold) // surface is above pMid, so update tLo
             tLo = tMid;
-        else
+        else // surface is below pMid, so update tHi
             tHi = tMid;
     }
-    float tSurf = (tLo + tHi) * 0.5;
-    float3 pSurf = origin + dir * tSurf;
+    float tSurf = (tLo + tHi) * 0.5; // final surface t after binary search: halfway between
+    float3 pSurf = origin + dir * tSurf; // world-space position of the surface point
 
-    // --- Compute SPH density gradient at the exact surface point for the normal ---
+    // Compute SPH density gradient at the exact surface point for the normal
     // Inline triple-nested neighbor loop (same logic as NeighborCellIndices + inner loop in
     // densityVolumeCS), but written without the NeighborCells struct. That struct uses a
     // dynamic write to a member array (result.indices[result.count++]) which is not addressable
@@ -189,7 +191,7 @@ PSOutput main(VSOutput input)
         N = -normalize(gradRho); // outward: points from liquid toward air
     }
 
-    // --- Blinn-Phong shading ---
+    // Blinn-Phong shading
     float3 L = normalize(lightDir.xyz);
     float3 V = normalize(cameraPos.xyz - pSurf);
     float3 H_vec = normalize(L + V);
@@ -207,7 +209,7 @@ PSOutput main(VSOutput input)
 
     output.color = float4(ambient + diffuse + specular, 1.0);
 
-    // --- Depth: project surface point to NDC depth ---
+    // Depth: project surface point to NDC depth
     float4 clipPos = mul(viewProjMat, float4(pSurf, 1.0));
     output.depth   = clipPos.z / clipPos.w;
 

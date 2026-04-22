@@ -27,7 +27,7 @@ struct VSOutput
 {
     float3 worldPos : WORLDPOS; // particle center in world space, passed to GS for billboard generation
     float density : DENSITY;   // SPH density estimate, passed through for coloring in PS
-    uint lod : LOD;            // per-particle LOD value, passed through for coloring in PS
+    uint lod : LOD; // per-particle LOD value, passed through for coloring in PS
 };
 
 [RootSignature(ParticleRootSig)]
@@ -36,6 +36,6 @@ VSOutput main(uint vertexID : SV_VertexID) // SV_VertexID: auto-increments 0..N-
     VSOutput output;
     output.worldPos = position[vertexID]; // fetch this particle's world-space position from the structured buffer
     output.density  = density[vertexID];  // pass density through for visualization
-    output.lod      = lod[vertexID];      // pass LOD through for visualization
+    output.lod = lod[vertexID]; // pass LOD through for visualization
     return output;
 }

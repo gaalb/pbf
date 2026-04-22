@@ -53,7 +53,7 @@ void main(
 
     float3 omegaAccum = float3(0, 0, 0);
 
-    // ---- Phase 1: broadcast sweep over GSM ----
+    // Phase 1: broadcast sweep over GSM
     // k is uniform across all threads -> gs_X[k] served as broadcast.
     // Self slot (k == localIdx): r = 0, SpikyGrad = 0, contribution is zero. No skip needed.
     for (uint k = 0; k < THREAD_GROUP_SIZE; k++)
@@ -64,7 +64,7 @@ void main(
         omegaAccum += cross(gs_velocity[k] - vi, -SpikyGrad(r, r2)); // broadcast
     }
 
-    // ---- Phase 2: residual VRAM pass ----
+    // Phase 2: residual VRAM pass 
     NeighborCells nCells = NeighborCellIndices(pi);
     for (uint c = 0; c < nCells.count; c++)
     {

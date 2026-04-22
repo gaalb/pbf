@@ -30,11 +30,11 @@ static const float kSpecularStrength = 0.4f;
 static const float kShininess = 48.0f;
 
 [RootSignature(SolidRootSig)]
-float4 main(PSInput input) : SV_Target
+float4 main(PSInput input) : SV_Target // system value semantic for returning color written ro render target
 {
-    float3 N = normalize(input.normal);
-    float3 L = normalize(lightDir.xyz);
-    float3 V = normalize(cameraPos.xyz - input.worldPos);
+    float3 N = normalize(input.normal); // normal interpolated across the triangle by rasterizer
+    float3 L = normalize(lightDir.xyz); // directional light, same for all pixels
+    float3 V = normalize(cameraPos.xyz - input.worldPos); // direction from surface point to camera
     float3 H = normalize(L + V); // halfway vector for Blinn-Phong
 
     float3 ambient  = kAmbient * kMaterialColor;

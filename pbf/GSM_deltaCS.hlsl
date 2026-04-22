@@ -2,7 +2,7 @@
 // Applies the same broadcast pattern as GSM_confinementViscosityCS:
 //
 // Phase 1 — GSM broadcast sweep:
-//   All threads read gs_predPos[k] and gs_lambda[k] at the same k each step → broadcast.
+//   All threads read gs_predPos[k] and gs_lambda[k] at the same k each step -> broadcast.
 //   Self (k == localIdx) is skipped. OOB slots get float3(1e10) so r2 >> H*H and
 //   SpikyGrad returns 0; overlap-jitter is not triggered because r2 >> EPSILON^2.
 //
@@ -56,7 +56,7 @@ void main(
     float poly6AtDeltaQ = Poly6(float3(SCORR_DELTA_Q, 0, 0), SCORR_DELTA_Q * SCORR_DELTA_Q);
     float3 deltaP = float3(0, 0, 0);
 
-    // ---- Phase 1: broadcast sweep over GSM ----
+    // Phase 1: broadcast sweep over GSM
     for (uint k = 0; k < THREAD_GROUP_SIZE; k++)
     {
         if (k == localIdx) // skip self
@@ -79,7 +79,7 @@ void main(
         deltaP += (lambdaI + lambdaJ + sCorr) * SpikyGrad(r, r2);
     }
 
-    // ---- Phase 2: residual VRAM pass ----
+    // Phase 2: residual VRAM pass
     NeighborCells nCells = NeighborCellIndices(pi);
     for (uint c = 0; c < nCells.count; c++)
     {

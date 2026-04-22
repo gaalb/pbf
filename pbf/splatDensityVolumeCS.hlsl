@@ -8,14 +8,9 @@
 //   via a compare-and-swap loop. After the draw, DrawLiquidSurface clears densityVolume to 0
 //   via ClearUnorderedAccessViewUint, ready for the next frame.
 //
-// This is the inverse of the per-voxel approach (densityVolumeCS): instead of each
-// voxel querying all nearby particles, each particle writes to all nearby voxels.
-// For typical PBF particle counts the number of particle threads is far smaller than
-// VOL_DIM^3 voxel threads, making this approach more efficient.
-//
 // Dispatched from the GRAPHICS queue (DIRECT command list) in DrawLiquidSurface().
-// In:  posSnapshot[readIdx]  (t0) — StructuredBuffer<float3>, NON_PIXEL|PIXEL SRV state
-// Out: densityVolume          (u0) — RWTexture3D<uint>, UAV state; stores raw float bits (asfloat gives density)
+// In:  position
+// Out: densityVolume     
 
 #define SplatDensityVolumeRootSig "CBV(b0), DescriptorTable(SRV(t0, numDescriptors = 1), UAV(u0, numDescriptors = 1))"
 
@@ -35,10 +30,20 @@ RWTexture3D<uint>        densityVolume : register(u0); // raw float bits; asfloa
 void FloatInterlockedAdd(uint3 coord, float value)
 {
     uint assumed, old;
-    old = densityVolume[coord];
+    old = densityVolume[coord]; // initial read; may be modified by another thread before we write back
     [loop] do {
         assumed = old;
+        // asfloat(assumed) is a float, add value to it to get the new desired float value
+        // bit-cast it into uint, we get asuint(asfloat(assumed) + value), the value we want to store 
+        //into densityVolume[coord] if no other thread has modified it since our last read.
+        // InterlockedCompareExchange reads the current densityVolume[coord] into old (output parameter),
+        // compares if densityVolume[coord] is still equal to assumed, and if so, writes the new value.
         InterlockedCompareExchange(densityVolume[coord], assumed, asuint(asfloat(assumed) + value), old);
+    // If old is not equal to assumed, another thread wrote to densityVolume[coord] between our previous
+    // read and this CAS attempt. The value we computed (asfloat(assumed) + value) was based of a stale 
+    // assumed, so we must retry. On the next iteration, old now holds the actual value, since it gets
+    // set by InterlockedCompareExchange whether the swap succeeded or not. Store it into assumed, 
+    // recompute the addition from the correct base and try again. 
     } while (old != assumed);
 }
 

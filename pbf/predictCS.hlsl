@@ -1,4 +1,4 @@
-// Forward Euler prediction step: apply forces, correct velocity for collisions,
+// PBF prediction step: apply forces, correct velocity for collisions,
 // then predict the new position.
 //
 // Merges applyForcesCS, collisionVelocityCS, and predictPositionCS into a single
@@ -46,7 +46,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float3 pos = position[i];
     float3 v   = velocity[i];
 
-    // --- Step 1: apply external forces ---
+    // apply external forces
     float3 force = float3(0.0, -9.8, 0.0) + externalForce;
 
     if (fountainEnabled) {
@@ -59,7 +59,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     v += force * dt;
 
-    // --- Step 2: velocity-level collision response ---
+    // velocity-level collision response
 
     // box walls
     if (pos.x <= boxMin.x) { v.x = max(v.x, 0.0f); v.y *= (1.0f - adhesion); v.z *= (1.0f - adhesion); }
@@ -69,18 +69,25 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (pos.z <= boxMin.z) { v.z = max(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
     if (pos.z >= boxMax.z) { v.z = min(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
 
-    // solid SDF
+    // solid SDF response
+    // The committed position should be clear of the solid (corrected last frame by
+    // collisionPredictedPositionCS). We check d < pushRadius to handle the first frame,
+    // a newly moved solid, and numerical slip.
     float d = SampleSdf(pos);
     if (d < pushRadius) {
-        float3 normal = normalize(SdfGradient(pos));
+        float3 normal = normalize(SdfGradient(pos)); // outward surface normal in world space
         float vn = dot(v, normal);
-        if (vn < 0.0f) {
+        if (vn < 0.0f)
+        { // particle heading into the solid
+            // zero the inward component: normal points in the push direction,
+            // vn is negative, so vn*normal points towards the middle of the object,
+            // which means it must be substracted from v, which also points inwar
             v -= vn * normal;
-            v *= (1.0f - adhesion);
+            v *= (1.0f - adhesion); // damp the remaining (tangential) velocity
         }
     }
 
-    // --- Step 3: predict position ---
-    velocity[i]          = v;
+    // predict position
+    velocity[i] = v;
     predictedPosition[i] = pos + v * dt;
 }

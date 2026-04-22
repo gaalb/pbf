@@ -43,8 +43,8 @@ cbuffer PerFrameCb : register(b0)
 VSOutput main(IAOutput input)
 {
     VSOutput output;
-    output.position   = float4(input.position, 1.0f);
+    output.position = float4(input.position, 1.0f);
     output.position.z = 0.999999f; // behind all scene geometry
-    output.rayDir     = mul(rayDirMat, float4(input.position, 1.0f)).xyz;
+    output.rayDir = mul(rayDirMat, float4(input.position, 1.0f)).xyz;
     return output;
 }

@@ -1,7 +1,7 @@
 // Two-phase broadcast-GSM variant of lambdaCS.
 // Applies the same broadcast pattern as GSM_confinementViscosityCS:
 //
-// Phase 1 — GSM broadcast sweep (k uniform across all threads → broadcast, no bank conflicts):
+// Phase 1 — GSM broadcast sweep (k uniform across all threads -> broadcast, no bank conflicts):
 //   Iterate k = 0..THREAD_GROUP_SIZE-1. All threads read gs_predPos[k] at the same k each step.
 //   The self slot (k == localIdx) contributes to rho (self-density) but is skipped for the gradient.
 //   OOB slots are initialised to float3(1e10) so r2 >> H*H and both kernels return 0.
@@ -54,7 +54,7 @@ void main(
     float3 gradI      = float3(0, 0, 0);
     float  gradSqSum  = 0.0;
 
-    // ---- Phase 1: broadcast sweep over GSM ----
+    // Phase 1: broadcast sweep over GSM 
     for (uint k = 0; k < THREAD_GROUP_SIZE; k++)
     {
         float3 pj = gs_predPos[k]; // broadcast: same k for all threads
@@ -72,7 +72,7 @@ void main(
         gradI     += gradW;
     }
 
-    // ---- Phase 2: residual VRAM pass ----
+    // Phase 2: residual VRAM pass
     // Skip j in [groupStart, groupStart+THREAD_GROUP_SIZE): covered by Phase 1.
     // i is in that range, so j==i is implicitly excluded.
     NeighborCells nCells = NeighborCellIndices(pi);

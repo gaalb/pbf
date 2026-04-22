@@ -32,10 +32,10 @@ RWStructuredBuffer<uint>   lod               : register(u5);
 void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     uint i = dispatchID.x;
-    if (i >= numParticles)
-        return;
+    if (i >= numParticles) 
+        return; // skip threapds that belong to no particle
     if (lod[i] == 0)
-        return;
+        return; // skip particles that have exhausted their iteration count
 
     // cache to avoid repeated UAV reads
     float3 pi = predictedPosition[i];
@@ -76,7 +76,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
             }
 
-            // Eq. 13: artificial pressure term s_corr to suppress tensile instability.
+            // artificial pressure term s_corr to suppress tensile instability.
             // When lambda > 0 (sparse region), the standard Eq. 12 correction becomes attractive,
             // pulling surface particles into tight clumps. s_corr adds a small repulsive bias
             // that counteracts this without disturbing the bulk behavior.
@@ -84,7 +84,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float wRatio = Poly6(r, r2) / poly6AtDeltaQ;
             float sCorr = -sCorrK * pow(wRatio, SCORR_N); // sCorrK > 0, pow >= 0, so sCorr <= 0 always
 
-            // Eq. 12 + 13: position correction with artificial pressure included..
+            // position correction with artificial pressure included.
             // SpikyGrad with r = p_i - p_j points from i toward j.
             // A negative coefficient times that direction pushes i away from j -- repulsive.
             // So sCorr is a repulsive contribution. The "surface tension-like effect" is because

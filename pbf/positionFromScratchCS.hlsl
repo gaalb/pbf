@@ -4,7 +4,7 @@
 // projection iteration, so it also decrements the lod counter.
 //
 // In: scratch, lod
-// Out: predictedPosition
+// Out: predictedPosition, lod
 
 
 #define PositionFromScratchRootSig "CBV(b0), DescriptorTable(UAV(u0, numDescriptors = 3))"

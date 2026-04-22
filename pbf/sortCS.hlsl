@@ -1,7 +1,7 @@
 // Each particle computes its grid cell, atomically claims a slot within that
 // cell (via InterlockedAdd on cellCount, which was cleared after the counting
 // pass), and records its destination index in the permutation buffer perm[].
-// A separate gatherCS pass reads perm[] and scatters each field to the sorted
+// A separate pass reads perm[] and scatters each field to the sorted
 // position. This keeps sortCS field-agnostic: adding or removing a particle
 // field requires no changes here.
 //

@@ -524,7 +524,7 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=position, [1]=velocity, [2]=predictedPosition, [3]=SDF SRV
 	{
 		UINT s = mainAllocator->Allocate(4);
-		particleFieldDB[PF_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, sdfCpuHandle);
@@ -540,7 +540,7 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=predictedPosition back, [1]=lod, [2]=SDF SRV
 	{
 		UINT s = mainAllocator->Allocate(3);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		copyToMain(s + 1, lod->GetLodBuffer()->GetUavCpuHandle());
 		copyToMain(s + 2, sdfCpuHandle);
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
@@ -554,8 +554,8 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=predictedPosition back, [1]=scratch back, [2]=lod
 	{
 		UINT s = mainAllocator->Allocate(3);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),            false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		copyToMain(s + 2, lod->GetLodBuffer()->GetUavCpuHandle());
 		positionFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/positionFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
@@ -569,8 +569,8 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=position back, [1]=velocity back, [2]=predictedPosition back
 	{
 		UINT s = mainAllocator->Allocate(3);
-		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),          false);
-		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),      false);
+		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		updateVelocityShader = ComputeShader::Create(device.Get(), "Shaders/updateVelocityCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
@@ -583,8 +583,8 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=velocity back, [1]=scratch back
 	{
 		UINT s = mainAllocator->Allocate(2);
-		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),  false);
+		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		velocityFromScratchShader = ComputeShader::Create(device.Get(), "Shaders/velocityFromScratchCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_SCRATCH]->getBack()->GetResourcePtr() },
@@ -607,9 +607,9 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=predictedPosition, [1]=lambda, [2]=density, [3]=cellCount, [4]=cellPrefixSum, [5]=lod
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
-		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
+		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
@@ -623,13 +623,13 @@ void PbfApp::BuildComputePipelines() {
 			                particleFieldDB[PF_DENSITY]->getBack()->GetResourcePtr() });
 	}
 
-	// deltaCS: UAV(u0-5) = 6 slots 
+	// deltaCS: UAV(u0-5) = 6 slots
 	// [0]=predictedPosition, [1]=lambda, [2]=scratch, [3]=cellCount, [4]=cellPrefixSum, [5]=lod
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
@@ -647,9 +647,9 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=position, [1]=velocity, [2]=omega, [3]=cellCount, [4]=cellPrefixSum
 	{
 		UINT s = mainAllocator->Allocate(5);
-		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
-		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
+		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		vorticityShader = ComputeShader::Create(device.Get(), "Shaders/vorticityCS.cso", cbv,
@@ -665,10 +665,10 @@ void PbfApp::BuildComputePipelines() {
 	// [0]=position, [1]=velocity, [2]=omega, [3]=scratch, [4]=cellCount, [5]=cellPrefixSum
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
-		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
+		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3), false);
 		copyToMain(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		confinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/confinementViscosityCS.cso", cbv,
@@ -693,7 +693,7 @@ void PbfApp::BuildComputePipelines() {
 		copyToMain(s + 1, densityVolume->GetUavCpuHandle());
 		splatDensityShader = ComputeShader::Create(device.Get(), "Shaders/splatDensityVolumeCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
-			std::vector<P>{},
+			std::vector<P>{ positionSnapshotDB->getFront()->GetResourcePtr()},
 			std::vector<P>{ densityVolume->GetResourcePtr() });
 	}
 
@@ -702,9 +702,9 @@ void PbfApp::BuildComputePipelines() {
 	// GSM_lambdaCS: UAV(u0-5) = 6 slots
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
-		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
+		particleFieldDB[PF_DENSITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
@@ -721,9 +721,9 @@ void PbfApp::BuildComputePipelines() {
 	// GSM_deltaCS: UAV(u0-5) = 6 slots
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
-		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1),             false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),            false);
+		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
+		particleFieldDB[PF_LAMBDA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, lod->GetLodBuffer()->GetUavCpuHandle());
@@ -740,9 +740,9 @@ void PbfApp::BuildComputePipelines() {
 	// GSM_vorticity: UAV(u0-4) = 5 slots
 	{
 		UINT s = mainAllocator->Allocate(5);
-		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
-		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
+		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
 		copyToMain(s + 3, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 4, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmVorticityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_vorticity.cso", cbv,
@@ -757,10 +757,10 @@ void PbfApp::BuildComputePipelines() {
 	// GSM_confinementViscosityCS: UAV(u0-5) = 6 slots
 	{
 		UINT s = mainAllocator->Allocate(6);
-		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s),     false);
+		particleFieldDB[PF_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerBackTarget(mainAllocator->GetCpuHandle(s + 1), false);
-		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2),    false);
-		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3),  false);
+		particleFieldDB[PF_OMEGA]->registerBackTarget(mainAllocator->GetCpuHandle(s + 2), false);
+		particleFieldDB[PF_SCRATCH]->registerBackTarget(mainAllocator->GetCpuHandle(s + 3), false);
 		copyToMain(s + 4, spatialGrid->GetCellCountBuffer()->GetUavCpuHandle());
 		copyToMain(s + 5, spatialGrid->GetPrefixSumBuffer()->GetUavCpuHandle());
 		gsmConfinementViscosityShader = ComputeShader::Create(device.Get(), "Shaders/GSM_confinementViscosityCS.cso", cbv,

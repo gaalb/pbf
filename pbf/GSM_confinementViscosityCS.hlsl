@@ -72,7 +72,7 @@ void main(
     float3 eta     = float3(0, 0, 0);
     float3 xsphSum = float3(0, 0, 0);
 
-    // ---- Phase 1: broadcast sweep over GSM ----
+    // Phase 1: broadcast sweep over GSM
     // k is the same for all threads at each step -> hardware broadcasts gs_X[k]
     // to all threads at once, eliminating bank conflicts entirely.
     for (uint k = 0; k < THREAD_GROUP_SIZE; k++)
@@ -88,7 +88,7 @@ void main(
         xsphSum += (gs_velocity[k] - vi) * Poly6(r, r2);   // broadcast read
     }
 
-    // ---- Phase 2: residual pass for particles outside this thread group ----
+    // Phase 2: residual pass for particles outside this thread group 
     // Skip j in [groupStart, groupStart + THREAD_GROUP_SIZE): already covered
     // by Phase 1. Because i itself is in that range, this also subsumes j == i.
     NeighborCells nCells = NeighborCellIndices(pi);
@@ -112,7 +112,7 @@ void main(
         }
     }
 
-    // --- Confinement ---
+    // Confinement
     float etaLen = length(eta);
     if (etaLen >= 1e-6)
     {
@@ -120,6 +120,6 @@ void main(
         vi += dt * vorticityEpsilon * cross(N, omegaI);
     }
 
-    // --- Viscosity + write ---
+    // Viscosity + write
     scratch[i] = vi + viscosity * xsphSum;
 }
