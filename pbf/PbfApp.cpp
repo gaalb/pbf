@@ -1339,6 +1339,15 @@ void PbfApp::Throttle() {
 	lastFrame = clock::now();
 }
 
+void PbfApp::RunNTimes(int n, bool physicsEnabled) {
+	bool wasPhysicsRunning = physicsRunning; // save current state to restore later
+	physicsRunning = physicsEnabled;
+	for (int i = 0; i < n; ++i) {
+		Run();
+	}
+	physicsRunning = wasPhysicsRunning; // restore original state
+}
+
 void PbfApp::ReleaseSwapChainResources()  {
 	AsyncComputeApp::ReleaseSwapChainResources();
 }

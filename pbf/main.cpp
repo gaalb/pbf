@@ -259,6 +259,7 @@ int APIENTRY wWinMain(
 	InitSwapChain(swapChain, dxgiFactory, commandQueue, windowHandle);
 
     app = InitPbfApp(device, commandQueue, swapChain, windowHandle); // create our application instance, which will manage the rendering loop and resources
+    app->RunNTimes(2, true); // run twice to populate all front and back buffers
 
     // Disable ALT+Enter fullscreen shortcut
     DX_API("Failed to make window association")

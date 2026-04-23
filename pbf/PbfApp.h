@@ -54,11 +54,12 @@ struct ParticleInitData {
 // CreateResources: creates command allocators and lists for both queues, PSO manager, fences, etc.
 // LoadAssets: uploads initial data to the GPU and builds rendering/compute pipelines.
 // InitImGui: sets up the ImGui context and its Win32 + D3D12 backends
+// RunNTimes: runs the simulation loop a few times to populate all double buffers
 
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 75, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 30, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -202,7 +203,7 @@ protected:
 	Egg::Mesh::Shaded::P liquidMesh;  // fullscreen quad rendered with liquidVS + liquidPS
 	float liquidIsoThreshold = 0.5f * RHO0; // density cutoff for liquid/air boundary, tunable via ImGui
 
-	int shadingMode = SHADING_UNICOLOR; // current particle shading mode, driven by ImGui
+	int shadingMode = SHADING_LIQUID; // current particle shading mode, driven by ImGui
 
 	// Create all three descriptor heaps. Must be called before any Init function
 	// that populates descriptors.
@@ -374,4 +375,6 @@ public:
 
 	// Forward window messages (keyboard, mouse) to the camera, and handle app-level hotkeys
 	virtual void ProcessMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override;
+
+	void RunNTimes(int n, bool physicsEnabled);
 };

@@ -1,5 +1,4 @@
 ﻿TODOS (most to least important):)
--make liquid render possible on startup
 -make it possible to have several lights
 -make sdf generation faster, more efficient, less memory usage, and watertight
 -pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
