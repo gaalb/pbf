@@ -30,12 +30,16 @@ struct VSOutput
     float3 rayDir   : RAYDIR;      // world-space ray direction for this screen pixel
 };
 
+#include "SharedConfig.hlsli"
+
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b0)
 {
     float4x4 viewProjMat;
     float4x4 rayDirMat;   // clip-space -> world-space direction (inverse view-rotation * proj)
     float4   cameraPos;
-    float4   lightDir;
+    LightData lights[NUM_LIGHTS]; // must be here to match C++ layout
     float4   particleParams;
 };
 

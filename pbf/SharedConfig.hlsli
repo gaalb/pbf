@@ -65,4 +65,9 @@
 // CollisionPositionRootSig strings in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
 #define NUM_OBSTACLES 3
 
+// Number of directional light sources.
+// To add a new light: bump this and add an entry to the lightDirs/lightColors
+// initializers in PbfApp.h; the new light will appear in the ImGui "Light" combo.
+#define NUM_LIGHTS 3
+
 #endif

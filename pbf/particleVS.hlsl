@@ -9,12 +9,16 @@ StructuredBuffer<float3> position : register(t0); // read-only view of the posit
 StructuredBuffer<float>  density  : register(t1); // read-only view of the density buffer, indexed by SV_VertexID
 StructuredBuffer<uint>   lod      : register(t2); // read-only view of the LOD buffer, indexed by SV_VertexID
 
+#include "SharedConfig.hlsli"
+
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b0)
 {
     float4x4 viewProjMat;
     float4x4 rayDirMat;
     float4 cameraPos;
-    float4 lightDir;
+    LightData lights[NUM_LIGHTS]; // must be here to match C++ layout
     float4 particleParams;
     uint shadingMode;
     uint minLOD;

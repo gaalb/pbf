@@ -11,16 +11,18 @@ struct GSOutput
     uint lod : LOD;          // per-particle LOD value
 };
 
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b0)
 {
-    float4x4 viewProjMat; // world space -> clip space  (view * projection)
-    float4x4 rayDirMat; // NDC -> world space direction  (inverse of view-rotation * projection)
-    float4 cameraPos; // camera position in world space
-    float4 lightDir; // light direction in world space (should be normalized)
-    float4 particleParams; // x = rho0 (density coloring), w = particle display radius
-    uint shadingMode; // 0=unicolor, 1=density, 2=lod
-    uint minLOD;  // minimum LOD value (far particles)
-    uint maxLOD; // maximum LOD value (close particles, = solverIterations)
+    float4x4 viewProjMat;
+    float4x4 rayDirMat;
+    float4 cameraPos;
+    LightData lights[NUM_LIGHTS];
+    float4 particleParams; // x = rho0, w = particle display radius
+    uint shadingMode;
+    uint minLOD;
+    uint maxLOD;
     float _pad;
 };
 
@@ -71,21 +73,23 @@ float4 main(GSOutput input) : SV_Target
         baseColor = lerp(float3(0.2, 0.5, 1.0), float3(1.0, 0.5, 0.0), t); // blue -> orange
     }
 
-    // Phong-Blinn lighting (same for all shading modes)
-
-    // diffuse: scaled down so base color dominates over lighting variation
-    float3 l = normalize(lightDir.xyz);
-    float diffuse = max(dot(normal, l), 0.0) * 0.3;
-
-    // specular: small highlight so particles still read as 3D
+    // Blinn-Phong lighting summed over all lights (same for all shading modes)
     float3 v = normalize(cameraPos.xyz - input.centerWorld);
-    float3 h = normalize(l + v);
-    float specular = pow(max(dot(normal, h), 0.0), 40.0) * 0.15;
+    float3 diffuseAccum  = float3(0, 0, 0);
+    float3 specularAccum = float3(0, 0, 0);
+    for (int li = 0; li < NUM_LIGHTS; li++)
+    {
+        float3 l  = normalize(lights[li].direction.xyz);
+        float3 h  = normalize(l + v);
+        float3 lc = lights[li].color.xyz;
+        diffuseAccum  += max(dot(normal, l), 0.0) * 0.3 * lc;
+        specularAccum += pow(max(dot(normal, h), 0.0), 40.0) * 0.15 * lc;
+    }
 
     // high ambient so the base color is visible from all angles
     float ambient = 0.5;
 
-    float3 finalColor = baseColor * (ambient + diffuse) + float3(1, 1, 1) * specular;
+    float3 finalColor = baseColor * (ambient + diffuseAccum) + specularAccum;
 
     return float4(finalColor, 1.0);
 }

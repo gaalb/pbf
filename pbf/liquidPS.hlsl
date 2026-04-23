@@ -31,19 +31,21 @@
         "addressV = TEXTURE_ADDRESS_CLAMP, " \
         "addressW = TEXTURE_ADDRESS_CLAMP)"
 
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b0)
 {
-    float4x4 viewProjMat; // world -> clip
-    float4x4 rayDirMat; // clip  -> world direction
-    float4 cameraPos; // world-space eye position
-    float4 lightDir; // xyz = direction toward light (normalized)
+    float4x4 viewProjMat;
+    float4x4 rayDirMat;
+    float4 cameraPos;
+    LightData lights[NUM_LIGHTS];
     float4 particleParams; // x = rho0; must be here to match C++ layout
-    uint shadingMode; // unused in this shader
+    uint shadingMode;
     uint minLOD;
     uint maxLOD;
     float _pad;
     float4 bbMin; // xyz = adjustable boxMin, w = density iso-surface threshold
-    float4 bbMax; // xyz = adjustable boxMax, w = unused
+    float4 bbMax;
 };
 
 // Density volume: float (rho) per voxel. Gradient is computed via SPH at the surface point.
@@ -191,23 +193,28 @@ PSOutput main(VSOutput input)
         N = -normalize(gradRho); // outward: points from liquid toward air
     }
 
-    // Blinn-Phong shading
-    float3 L = normalize(lightDir.xyz);
-    float3 V = normalize(cameraPos.xyz - pSurf);
-    float3 H_vec = normalize(L + V);
-
+    // Blinn-Phong shading, summed over all lights
     static const float3 kLiquidColor = float3(0.75, 0.05, 0.05);
     static const float  kAmbient     = 0.18;
     static const float  kDiffuse     = 0.55;
     static const float  kSpecular    = 1.2;
     static const float  kShininess   = 80.0;
 
+    float3 V = normalize(cameraPos.xyz - pSurf);
     float3 ambient  = kAmbient * kLiquidColor;
-    float3 diffuse  = max(dot(N, L), 0.0) * kDiffuse * kLiquidColor;
-    float  spec     = pow(max(dot(N, H_vec), 0.0), kShininess);
-    float3 specular = kSpecular * spec * float3(1.0, 1.0, 1.0);
+    float3 litAccum = float3(0.0, 0.0, 0.0);
+    for (int li = 0; li < NUM_LIGHTS; li++)
+    {
+        float3 L     = normalize(lights[li].direction.xyz);
+        float3 H_vec = normalize(L + V);
+        float3 lc    = lights[li].color.xyz;
+        float3 diffuse  = max(dot(N, L), 0.0) * kDiffuse * kLiquidColor * lc;
+        float  spec     = pow(max(dot(N, H_vec), 0.0), kShininess);
+        float3 specular = kSpecular * spec * lc;
+        litAccum += diffuse + specular;
+    }
 
-    output.color = float4(ambient + diffuse + specular, 1.0);
+    output.color = float4(ambient + litAccum, 1.0);
 
     // Depth: project surface point to NDC depth
     float4 clipPos = mul(viewProjMat, float4(pSurf, 1.0));

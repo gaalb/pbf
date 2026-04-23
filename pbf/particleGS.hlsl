@@ -18,13 +18,17 @@ struct GSOutput
     uint lod : LOD;          // LOD value, same for all 4 verts of this billboard
 };
 
+#include "SharedConfig.hlsli"
+
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b0)
 {
-    float4x4 viewProjMat; // world space -> clip space  (view * projection)
-    float4x4 rayDirMat; // NDC -> world space direction  (inverse of view-rotation * projection)
-    float4 cameraPos; // camera position in world space
-    float4 lightDir; // light direction in world space (should be normalized)
-    float4 particleParams; // xyz are color, w is radius
+    float4x4 viewProjMat;
+    float4x4 rayDirMat;
+    float4 cameraPos;
+    LightData lights[NUM_LIGHTS]; // must be here to match C++ layout
+    float4 particleParams;        // w = particle display radius
 };
 
 // Each input point produces 4 vertices (a triangle strip forming a quad)

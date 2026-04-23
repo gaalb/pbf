@@ -1137,54 +1137,70 @@ void PbfApp::BuildImGui() {
 	// InputFloat/Int reads the current value from the pointer, renders the widget into the draw list, and
 	// writes the value back to the pointer if the user changed it
 	ImGui::Begin("PBF Controls");
-	ImGui::PushItemWidth(100); // set the input field width to 100 pixels (just the number box, not the label)
-	//ImGui::Checkbox("Physics running (Space)", &physicsRunning);
 
-	// Shading mode combo. The order of items must match the ShadingMode:: constants.
-	static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD", "Liquid" };
-	ImGui::Combo("Shading", &shadingMode, shadingModeItems, IM_ARRAYSIZE(shadingModeItems));
-	if (shadingMode == ShadingMode::LIQUID)
-		ImGui::InputFloat("Liquid iso threshold", &liquidIsoThreshold, 1.0f, 10.0f, "%.1f");
-	static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
-	int lodModeInt = (int)lod->mode;
-	if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
-		lod->mode = (LodSubsystem::Mode)lodModeInt;
-	ImGui::InputInt("Solver iterations", &solverIterations, 1); // step 1 per click
-	ImGui::InputInt("Min LOD", &minLOD, 1);
-	ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
-	ImGui::InputFloat("Viscosity (XSPH)", &viscosity, 0.001f, 0.01f, "%.4f");
-	ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
-	ImGui::InputFloat("Vorticity epsilon", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
-	ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
-	ImGui::Checkbox("Fountain", &fountainEnabled);
-	ImGui::SameLine();
-	ImGui::Checkbox("FPS cap", &fpsCapped);
-	ImGui::SameLine();
-	ImGui::Checkbox("GSM", &gsmEnabled);
-	ImGui::PopItemWidth(); // restore default width for any subsequent widgets
-	// show derived values as read-only text for reference
-	ImGui::Separator(); // horizontal line to separate tunable parameters from derived values
-	ImGui::Text("%d particles, %u cells", numParticles, gridDim * gridDim * gridDim);
-	ImGui::Text("%.1f FPS, render: %.2f ms", ImGui::GetIO().Framerate, debugTimer);
-	ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
-	ImGui::Text("avg LOD: %.2f", avgLod);
-	ImGui::Separator();
-	// Collect obstacle name pointers for the combo box
-	const char* obstacleNames[NUM_OBSTACLES];
-	for (int i = 0; i < NUM_OBSTACLES; i++)
-		obstacleNames[i] = obstacles[i]->GetName();
-	ImGui::Combo("Obstacle", &selectedObstacle, obstacleNames, NUM_OBSTACLES);
-	ImGui::PushItemWidth(200);
-	ImGui::DragFloat3("Pos", &obstacles[selectedObstacle]->position.x, 0.1f);
-	ImGui::DragFloat3("Rot (deg)", &obstacles[selectedObstacle]->eulerDeg.x, 1.0f);
-	ImGui::DragFloat("Scale", &obstacles[selectedObstacle]->scale, 0.01f, 0.01f, 100.0f);
-	ImGui::PopItemWidth(); // restore default width for any subsequent widgets
-	ImGui::Separator();
-	ImGui::Text("Bounding Box");
-	ImGui::PushItemWidth(200);
-	ImGui::DragFloat3("Box min", &boxMin.x, 0.1f, gridMin.x, 0.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::DragFloat3("Box max", &boxMax.x, 0.1f, 0.0f, gridMax.x, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::PopItemWidth();
+	if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::PushItemWidth(100);
+		static const char* shadingModeItems[] = { "Unicolor", "Density", "LOD", "Liquid" };
+		ImGui::Combo("Shading", &shadingMode, shadingModeItems, IM_ARRAYSIZE(shadingModeItems));
+		if (shadingMode == ShadingMode::LIQUID)
+			ImGui::InputFloat("Liquid iso threshold", &liquidIsoThreshold, 1.0f, 10.0f, "%.1f");
+		static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
+		int lodModeInt = (int)lod->mode;
+		if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
+			lod->mode = (LodSubsystem::Mode)lodModeInt;
+		ImGui::InputInt("Solver iterations", &solverIterations, 1);
+		ImGui::InputInt("Min LOD", &minLOD, 1);
+		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");
+		ImGui::InputFloat("Viscosity (XSPH)", &viscosity, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Artificial pressure", &sCorrK, 0.005f, 0.05f, "%.4f");
+		ImGui::InputFloat("Vorticity epsilon", &vorticityEpsilon, 0.001f, 0.01f, "%.4f");
+		ImGui::InputFloat("Adhesion", &adhesion, 0.01f, 0.1f, "%.3f");
+		ImGui::PopItemWidth();
+		ImGui::Checkbox("Fountain", &fountainEnabled);
+		ImGui::SameLine();
+		ImGui::Checkbox("FPS cap", &fpsCapped);
+		ImGui::SameLine();
+		ImGui::Checkbox("GSM", &gsmEnabled);
+		ImGui::Spacing();
+		ImGui::Text("%d particles, %u cells", numParticles, gridDim * gridDim * gridDim);
+		ImGui::Text("%.1f FPS, render: %.2f ms", ImGui::GetIO().Framerate, debugTimer);
+		ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
+		ImGui::Text("avg LOD: %.2f", avgLod);
+	}
+
+	if (ImGui::CollapsingHeader("Objects")) {
+		const char* obstacleNames[NUM_OBSTACLES];
+		for (int i = 0; i < NUM_OBSTACLES; i++)
+			obstacleNames[i] = obstacles[i]->GetName();
+		ImGui::Combo("Obstacle", &selectedObstacle, obstacleNames, NUM_OBSTACLES);
+		ImGui::PushItemWidth(200);
+		ImGui::DragFloat3("Pos", &obstacles[selectedObstacle]->position.x, 0.1f);
+		ImGui::DragFloat3("Rot (deg)", &obstacles[selectedObstacle]->eulerDeg.x, 1.0f);
+		ImGui::DragFloat("Scale", &obstacles[selectedObstacle]->scale, 0.01f, 0.01f, 100.0f);
+		ImGui::PopItemWidth();
+	}
+
+	if (ImGui::CollapsingHeader("Lights")) {
+		char nameBufs[NUM_LIGHTS][12];
+		const char* namePtrs[NUM_LIGHTS];
+		for (int i = 0; i < NUM_LIGHTS; i++) {
+			snprintf(nameBufs[i], sizeof(nameBufs[i]), "Light %d", i);
+			namePtrs[i] = nameBufs[i];
+		}
+		ImGui::Combo("Light", &selectedLight, namePtrs, NUM_LIGHTS);
+		ImGui::PushItemWidth(200);
+		ImGui::DragFloat3("Direction", &lightDirs[selectedLight].x, 0.01f, -1.0f, 1.0f);
+		ImGui::ColorEdit3("Color", &lightColors[selectedLight].x);
+		ImGui::PopItemWidth();
+	}
+
+	if (ImGui::CollapsingHeader("Bounding Box")) {
+		ImGui::PushItemWidth(200);
+		ImGui::DragFloat3("Box min", &boxMin.x, 0.1f, gridMin.x, 0.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::DragFloat3("Box max", &boxMax.x, 0.1f, 0.0f, gridMax.x, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::PopItemWidth();
+	}
+
 	ImGui::End();
 
 	// Finalizes the frame.ImGui takes all the widgets you defined since NewFrame(), performs layout
@@ -1226,7 +1242,10 @@ void PbfApp::UpdatePerFrameCb() {
 		camera->GetProjMatrix(); // projection matrix: camera space -> clip space
 	perFrameCb->rayDirTransform = camera->GetRayDirMatrix(); // clip-space coords -> world-space view direction
 	perFrameCb->cameraPos = Egg::Math::Float4(camera->GetEyePosition(), 1.0f);
-	perFrameCb->lightDir = Egg::Math::Float4(0.5f, 1.0f, 0.3f, 0.0f); // light pointing down-left
+	for (int i = 0; i < NUM_LIGHTS; i++) {
+		perFrameCb->lights[i].direction = Float4(lightDirs[i], 0.0f);
+		perFrameCb->lights[i].color     = Float4(lightColors[i], 0.0f);
+	}
 	perFrameCb->particleParams = Float4(rho0, 0.0f, 0.0f, PARTICLE_RADIUS); // x = rho0 (for density coloring in PS), w = particle display radius (for billboard sizing in GS)
 	perFrameCb->shadingMode = (UINT)shadingMode;
 	perFrameCb->minLOD = (UINT)minLOD;

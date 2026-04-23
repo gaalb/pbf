@@ -15,11 +15,15 @@ cbuffer SolidCb : register(b0) {
     float4x4 modelMat; // object-to-world transform, updated each frame
 }
 
+#include "SharedConfig.hlsli"
+
+struct LightData { float4 direction; float4 color; };
+
 cbuffer PerFrameCb : register(b1) {
     float4x4 viewProjTransform;
-    float4x4 rayDirTransform; 
+    float4x4 rayDirTransform;
     float4 cameraPos;
-    float4 lightDir;
+    LightData lights[NUM_LIGHTS]; // must be here to match C++ layout
     float4 particleParams;
 }
 

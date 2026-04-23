@@ -21,21 +21,27 @@ namespace ShadingMode {
 	constexpr UINT LIQUID   = 3; // ray-marched liquid surface with Blinn-Phong shading
 }
 
+// One directional light source. Layout must match LightData in each HLSL shader.
+__declspec(align(16)) struct LightData {
+	Float4 direction; // xyz = direction toward light (normalized), w = unused
+	Float4 color;     // xyz = RGB * intensity, w = unused
+	// 32 bytes per light
+};
+
 // per-frame data sent to shaders every frame - camera matrices etc.
 // must be 16-byte aligned because the GPU reads constant buffers in 16byte chunks
 __declspec(align(16)) struct PerFrameCb {
-	Float4x4 viewProjTransform; // combined view * projection matrix
-	Float4x4 rayDirTransform; // maps screen-space positions to world-space ray directions
-	Float4 cameraPos; // camera position in world space, w=1
-	Float4 lightDir; // xyz = direction toward light, w = unused
-	Float4 particleParams; // x = rho0 (density coloring), w = particle display radius
-	UINT shadingMode; // offset 176: which shading branch to use (ShadingMode::*)
-	UINT minLOD;      // offset 180: minimum LOD value (for LOD color normalization)
-	UINT maxLOD;      // offset 184: maximum LOD value (for LOD color normalization)
-	float _pad;       // offset 188: padding to 192-byte boundary
-	Float4 bbMin;     // offset 192: xyz = adjustable boxMin, w = liquid density iso-surface threshold
-	Float4 bbMax;     // offset 208: xyz = adjustable boxMax, w = unused
-	// total: 224 bytes
+	Float4x4 viewProjTransform; // offset   0: combined view * projection matrix
+	Float4x4 rayDirTransform;   // offset  64: maps screen-space positions to world-space ray directions
+	Float4 cameraPos;           // offset 128: camera position in world space, w=1
+	LightData lights[NUM_LIGHTS]; // offset 144: array of directional lights (32 bytes each)
+	Float4 particleParams;      // offset 144+32*NUM_LIGHTS: x = rho0, w = particle display radius
+	UINT shadingMode;           // which shading branch to use (ShadingMode::*)
+	UINT minLOD;                // minimum LOD value (for LOD color normalization)
+	UINT maxLOD;                // maximum LOD value (for LOD color normalization)
+	float _pad;                 // padding to next 16-byte boundary
+	Float4 bbMin;               // xyz = adjustable boxMin, w = liquid density iso-surface threshold
+	Float4 bbMax;               // xyz = adjustable boxMax, w = unused
 };
 
 // per-draw data for the solid obstacle rendering shader

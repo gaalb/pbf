@@ -23,7 +23,7 @@
 #include "LodSubsystem.h"
 #include <immintrin.h>
 #include <thread>
-#include "SharedConfig.hlsli"
+#include "SharedConfig.hlsli" 
 
 // CPU-side staging struct for ease of particle initialization.
 struct ParticleInitData {
@@ -148,6 +148,20 @@ protected:
 	// the ObstacleDesc table in InitObstacle(), and add the corresponding asset files.
 	SolidObstacle::P obstacles[NUM_OBSTACLES];
 	int selectedObstacle = 0; // which obstacle the ImGui sliders currently target
+
+	// Directional light sources. To add a light: bump NUM_LIGHTS in SharedConfig.hlsli
+	// and add an entry to each initializer list below.
+	Float3 lightDirs[NUM_LIGHTS] = {
+		Float3( 0.5f,  1.0f,  0.3f), // above-left-front, white
+		Float3(-1.0f,  0.4f,  0.2f), // from the right, warm orange
+		Float3( 0.2f, -0.3f, -1.0f), // from behind-below, cool blue
+	};
+	Float3 lightColors[NUM_LIGHTS] = {
+		Float3(1.00f, 1.00f, 1.00f), // white
+		Float3(1.00f, 0.75f, 0.40f), // warm orange, reduced intensity
+		Float3(0.40f, 0.60f, 1.00f), // cool blue, reduced intensity
+	};
+	int selectedLight = 0;
 
 	// Readback buffers (readback heap, CPU-readable after CopyBufferRegion)
 	GpuBuffer::P densityReadbackBuffer;

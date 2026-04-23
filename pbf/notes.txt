@@ -1,6 +1,5 @@
 ﻿TODOS (most to least important):)
--make it possible to have several lights
--make sdf generation faster, more efficient, less memory usage, and watertight
+-new LOD mode: adjust LOD according to last known density data
 -pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
  so we could pre-compute them and just add them to the cell index
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)
