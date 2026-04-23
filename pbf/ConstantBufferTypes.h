@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Egg/Math/Float4x4.h"
+#include "SharedConfig.hlsli"
 
 using namespace Egg::Math;
 
@@ -42,6 +43,16 @@ __declspec(align(16)) struct SolidCb {
 	Float4x4 modelMat; // object-to-world transform for solidVS
 };
 
+// Per-obstacle data packed inside ComputeCb. Layout must match ObstacleCb in ComputeCb.hlsli.
+__declspec(align(16)) struct ObstacleData {
+	Float4x4 invTransform;  // offset   0: world-to-object transform for SDF sampling
+	Float3   sdfMin;        // offset  64: object-space SDF AABB minimum corner
+	float    _pad0;         // offset  76
+	Float3   sdfMax;        // offset  80: object-space SDF AABB maximum corner
+	float    _pad1;         // offset  92
+	// 96 bytes per obstacle
+};
+
 // Per-simulation-step data uploaded to all PBF compute shaders before each dispatch.
 // Fields that are compile-time constants (h, rho0, gridMin/Max, kernel coefficients,
 // push radius, sCorrDeltaQ/N) have been removed and are now #defines in SharedConfig.hlsli.
@@ -62,13 +73,14 @@ __declspec(align(16)) struct ComputeCb {
 	float viewportWidth;    // offset 68: render target width in pixels
 	float viewportHeight;   // offset 72: render target height in pixels
 	float pushRadius;       // offset 76: solid push-out distance; PUSH_RADIUS in particle modes, 0 in liquid mode
-	Float4x4 solidInvTransform; // offset  80: world-to-object transform for SDF sampling
-	Float3 sdfMin;          // offset 144: object-space SDF AABB minimum corner
-	UINT minLOD;            // offset 156: minimum solver iterations (farthest particles)
-	Float3 sdfMax;          // offset 160: object-space SDF AABB maximum corner
-	UINT maxLOD;            // offset 172: maximum solver iterations (= solverIterations, closest)
-	Float3 cameraPos;       // offset 176: camera world position for DTC LOD computation
-	float _pad;             // offset 188
-	Float4x4 viewProjTransform; // offset 192: world-to-clip transform for DTVS depth projection
-	// total: 256 bytes
+	UINT minLOD;            // offset 80: minimum solver iterations (farthest particles)
+	UINT maxLOD;            // offset 84: maximum solver iterations (= solverIterations, closest)
+	float _padA;            // offset 88
+	float _padB;            // offset 92
+	Float3 cameraPos;       // offset 96: camera world position for DTC LOD computation
+	float _padC;            // offset 108
+	Float4x4 viewProjTransform; // offset 112: world-to-clip transform for DTVS depth projection
+	// offset 176: obstacles array placed last so extending MAX_OBSTACLES only grows the tail
+	ObstacleData obstacles[MAX_OBSTACLES]; // offset 176: per-obstacle transforms and SDF bounds
+	// MAX_OBSTACLES=3: 3x96 = 288 bytes, total: 176+288 = 464 bytes -> 512-byte CB (Align256)
 };

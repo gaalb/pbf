@@ -49,3 +49,9 @@
 
 // How coarsely to take the average density and LOD for ImGui display
 #define AVG_COARSENESS 100
+
+// Number of solid obstacles in the scene.
+// To add a new obstacle: bump this, add an entry to the ObstacleDesc table in
+// InitObstacle(), and update numDescriptors in the PredictRootSig /
+// CollisionPositionRootSig strings in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
+#define MAX_OBSTACLES 3

@@ -18,9 +18,10 @@
 // In:  position, velocity
 // Out: velocity, predictedPosition
 
+// numDescriptors must equal MAX_OBSTACLES (SharedConfig.hlsli). Update when MAX_OBSTACLES changes.
 #define PredictRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 3), SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 3), SRV(t0, numDescriptors = 3)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -69,21 +70,23 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     if (pos.z <= boxMin.z) { v.z = max(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
     if (pos.z >= boxMax.z) { v.z = min(v.z, 0.0f); v.x *= (1.0f - adhesion); v.y *= (1.0f - adhesion); }
 
-    // solid SDF response
+    // solid SDF response — apply velocity correction for each obstacle independently
     // The committed position should be clear of the solid (corrected last frame by
     // collisionPredictedPositionCS). We check d < pushRadius to handle the first frame,
     // a newly moved solid, and numerical slip.
-    float d = SampleSdf(pos);
-    if (d < pushRadius) {
-        float3 normal = normalize(SdfGradient(pos)); // outward surface normal in world space
-        float vn = dot(v, normal);
-        if (vn < 0.0f)
-        { // particle heading into the solid
-            // zero the inward component: normal points in the push direction,
-            // vn is negative, so vn*normal points towards the middle of the object,
-            // which means it must be substracted from v, which also points inwar
-            v -= vn * normal;
-            v *= (1.0f - adhesion); // damp the remaining (tangential) velocity
+    for (int obstIdx = 0; obstIdx < MAX_OBSTACLES; obstIdx++) {
+        float d = SampleSdf(obstIdx, pos);
+        if (d < pushRadius) {
+            float3 normal = normalize(SdfGradient(obstIdx, pos)); // outward surface normal in world space
+            float vn = dot(v, normal);
+            if (vn < 0.0f)
+            { // particle heading into the solid
+                // zero the inward component: normal points in the push direction,
+                // vn is negative, so vn*normal points towards the middle of the object,
+                // which means it must be substracted from v, which also points inward
+                v -= vn * normal;
+                v *= (1.0f - adhesion); // damp the remaining (tangential) velocity
+            }
         }
     }
 

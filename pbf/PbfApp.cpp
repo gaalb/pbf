@@ -30,7 +30,7 @@ void PbfApp::CreateResources() {
 	InitSnapshotBuffers();
 	InitDensityVolume();
 	InitBackground();
-	InitObstacle();
+	InitObstacles();
 }
 
 // Create all descriptor allocators. Must be called before any Init function
@@ -57,7 +57,7 @@ void PbfApp::InitConstantBuffers() {
 void PbfApp::InitCamera() {
 	camera = Egg::Cam::FirstPerson::Create();
 	camera->SetView(Float3(0.0f, 10.0f, -40.0f), Float3(0.0f, 0.0f, 1.0f)); // starting position
-	camera->SetSpeed(10.0f);
+	camera->SetSpeed(20.0f);
 	camera->SetAspect(aspectRatio);
 }
 
@@ -220,15 +220,30 @@ void PbfApp::InitBackground() {
 	envTexture.CreateSRV(device.Get(), mainAllocator->GetHeap(), cubemapSrvSlot);
 }
 
-// Load the solid obstacle; create GPU resources and descriptors.
+// Load the solid obstacles; create GPU resources and descriptors.
 // No GPU commands are recorded here - uploads happen later in UploadAll().
-void PbfApp::InitObstacle() {
-	solidObstacle = SolidObstacle::Create();
-	solidObstacle->Load(device.Get(), psoManager, "dragonite.obj", "dragonite.sdf", perFrameCb);
+void PbfApp::InitObstacles() {
+	// Each entry: obstacle name (= filename stem), initial position, XYZ Euler degrees, uniform scale.
+	// To add a new obstacle: bump MAX_OBSTACLES in SharedConfig.hlsli, add a row here,
+	// and update numDescriptors in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
+	struct ObstacleDesc {
+		const char* name;
+		Float3 position;
+		Float3 eulerDeg;
+		float  scale;
+	};
+	static const ObstacleDesc descs[MAX_OBSTACLES] = {
+		{ "dragonite", Float3(-11.2f, -24.5f, -15.7f), Float3(0.0f, -7.0f, 0.0f), 4.0f },
+		{ "slide",     Float3(-7.0f,   0.0f, -4.2f), Float3(0.0f,  120.0f, 0.0f), 4.18f },
+		{ "funnel",    Float3(0.0f,   19.0f, 0.0f), Float3(0.0f,  90.0f, 0.0f), 8.0f },
+	};
 
-	// Allocates one slot in staticAllocator and creates SDF Texture3D SRV.
-	solidObstacle->CreateSdfSrv(device.Get(), *staticAllocator);
-	sdfCpuHandle = solidObstacle->GetSdfCpuHandle();
+	for (int i = 0; i < MAX_OBSTACLES; i++) {
+		obstacles[i] = SolidObstacle::Create();
+		obstacles[i]->Load(device.Get(), psoManager, descs[i].name, perFrameCb);
+		obstacles[i]->CreateSdfSrv(device.Get(), *staticAllocator);
+		obstacleTransforms[i] = { descs[i].position, descs[i].eulerDeg, descs[i].scale };
+	}
 }
 
 // upload initial data to the GPU and build rendering/compute pipelines.
@@ -253,7 +268,8 @@ void PbfApp::UploadAll() {
 
 	envTexture.UploadResource(commandList.Get()); // record cubemap copy + barrier
 	RecordParticleUpload(); // record particle copy + barriers
-	solidObstacle->UploadSdf(commandList.Get()); // record SDF texture copy + barrier
+	for (int i = 0; i < MAX_OBSTACLES; i++)
+		obstacles[i]->UploadSdf(commandList.Get()); // record SDF texture copy + barrier
 	RecordSnapshotUpload(); // record initial state of snapshot buffers for frame 1
 
 	// Pre-clear both depth texture slots to 1.0 (far plane) so the first DTVS compute frame
@@ -269,7 +285,8 @@ void PbfApp::UploadAll() {
 
 	// the upload heap copies are done - free the temporary upload resources
 	envTexture.ReleaseUploadResources();
-	solidObstacle->ReleaseUploadResources();
+	for (int i = 0; i < MAX_OBSTACLES; i++)
+		obstacles[i]->ReleaseUploadResources();
 }
 
 ParticleInitData PbfApp::GenerateParticles() {
@@ -389,7 +406,7 @@ void PbfApp::BuildGraphicsPipelines() {
 	BuildBackgroundPipeline();
 	BuildParticlePipeline();
 	BuildLiquidPipeline();
-	SetSolidTransform();
+	SetObstacleTransforms();
 }
 
 // Build the background skybox rendering pipeline (shaders, material, mesh).
@@ -487,17 +504,20 @@ void PbfApp::BuildLiquidPipeline() {
 	liquidMesh = Egg::Mesh::Shaded::Create(psoManager, material, geometry);
 }
 
-// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
-void PbfApp::SetSolidTransform() {
+// Rebuild world transforms for all obstacles from their obstacleTransforms entries.
+void PbfApp::SetObstacleTransforms() {
 	const float deg2rad = 3.14159265358979323846f / 180.0f;
-	float rx = solidEulerDeg.x * deg2rad;
-	float ry = solidEulerDeg.y * deg2rad;
-	float rz = solidEulerDeg.z * deg2rad;
-	Float4x4 rot =
-		Float4x4::Rotation(Float3(1.0f, 0.0f, 0.0f), rx) *
-		Float4x4::Rotation(Float3(0.0f, 1.0f, 0.0f), ry) *
-		Float4x4::Rotation(Float3(0.0f, 0.0f, 1.0f), rz);
-	solidObstacle->SetTransform(Float4x4::Scaling(Float3(solidScale, solidScale, solidScale)) * rot * Float4x4::Translation(solidPosition));
+	for (int i = 0; i < MAX_OBSTACLES; i++) {
+		const ObstacleTransform& t = obstacleTransforms[i];
+		float rx = t.eulerDeg.x * deg2rad;
+		float ry = t.eulerDeg.y * deg2rad;
+		float rz = t.eulerDeg.z * deg2rad;
+		Float4x4 rot =
+			Float4x4::Rotation(Float3(1.0f, 0.0f, 0.0f), rx) *
+			Float4x4::Rotation(Float3(0.0f, 1.0f, 0.0f), ry) *
+			Float4x4::Rotation(Float3(0.0f, 0.0f, 1.0f), rz);
+		obstacles[i]->SetTransform(Float4x4::Scaling(Float3(t.scale, t.scale, t.scale)) * rot * Float4x4::Translation(t.position));
+	}
 }
 
 // Create all compute shader PSOs and wire each shader to its contiguous descriptor region.
@@ -520,14 +540,15 @@ void PbfApp::BuildComputePipelines() {
 	spatialGrid = SpatialGrid::Create(device.Get(), numCells, numParticles,
 		*mainAllocator, *staticAllocator, cbv, particleFieldDB);
 
-	// predictCS: UAV(u0-2) SRV(t0) = 4 slots 
-	// [0]=position, [1]=velocity, [2]=predictedPosition, [3]=SDF SRV
+	// predictCS: UAV(u0-2) SRV(t0..MAX_OBSTACLES-1) = 3 + MAX_OBSTACLES slots
+	// [0]=position, [1]=velocity, [2]=predictedPosition, [3..3+MAX_OBSTACLES-1]=SDF SRVs
 	{
-		UINT s = mainAllocator->Allocate(4);
+		UINT s = mainAllocator->Allocate(3 + MAX_OBSTACLES);
 		particleFieldDB[PF_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s), false);
 		particleFieldDB[PF_VELOCITY]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 1), false);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerFrontTarget(mainAllocator->GetCpuHandle(s + 2), false);
-		copyToMain(s + 3, sdfCpuHandle);
+		for (int i = 0; i < MAX_OBSTACLES; i++)
+			copyToMain(s + 3 + i, obstacles[i]->GetSdfCpuHandle());
 		predictShader = ComputeShader::Create(device.Get(), "Shaders/predictCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_POSITION]->getFront()->GetResourcePtr(),
@@ -536,13 +557,14 @@ void PbfApp::BuildComputePipelines() {
 			                particleFieldDB[PF_PREDICTED_POSITION]->getFront()->GetResourcePtr() });
 	}
 
-	// collisionPredictedPositionCS: UAV(u0-1) SRV(t0) = 3 slots 
-	// [0]=predictedPosition back, [1]=lod, [2]=SDF SRV
+	// collisionPredictedPositionCS: UAV(u0-1) SRV(t0..MAX_OBSTACLES-1) = 2 + MAX_OBSTACLES slots
+	// [0]=predictedPosition back, [1]=lod, [2..2+MAX_OBSTACLES-1]=SDF SRVs
 	{
-		UINT s = mainAllocator->Allocate(3);
+		UINT s = mainAllocator->Allocate(2 + MAX_OBSTACLES);
 		particleFieldDB[PF_PREDICTED_POSITION]->registerBackTarget(mainAllocator->GetCpuHandle(s), false);
 		copyToMain(s + 1, lod->GetLodBuffer()->GetUavCpuHandle());
-		copyToMain(s + 2, sdfCpuHandle);
+		for (int i = 0; i < MAX_OBSTACLES; i++)
+			copyToMain(s + 2 + i, obstacles[i]->GetSdfCpuHandle());
 		collisionPredictedPositionShader = ComputeShader::Create(device.Get(), "Shaders/collisionPredictedPositionCS.cso", cbv,
 			mainAllocator->GetGpuHandle(s),
 			std::vector<P>{ particleFieldDB[PF_PREDICTED_POSITION]->getBack()->GetResourcePtr(),
@@ -1040,7 +1062,8 @@ void PbfApp::WriteSnapshot() {
 
 void PbfApp::RecordGraphicsCommands() {
 	backgroundMesh->Draw(commandList.Get());
-	solidObstacle->Draw(commandList.Get());
+	for (int i = 0; i < MAX_OBSTACLES; i++)
+		obstacles[i]->Draw(commandList.Get());
 
 	// Promote positionSnapshot front to pixel-visible before any draw that uses it from the pixel stage.
 	constexpr D3D12_RESOURCE_STATES SRV_ALL =
@@ -1154,11 +1177,15 @@ void PbfApp::BuildImGui() {
 	ImGui::Text("avg density: %.2f (rho0: %.2f)", avgDensity, rho0);
 	ImGui::Text("avg LOD: %.2f", avgLod);
 	ImGui::Separator();
-	ImGui::Text("Dragonite");
+	// Collect obstacle name pointers for the combo box
+	const char* obstacleNames[MAX_OBSTACLES];
+	for (int i = 0; i < MAX_OBSTACLES; i++)
+		obstacleNames[i] = obstacles[i]->GetName();
+	ImGui::Combo("Obstacle", &selectedObstacle, obstacleNames, MAX_OBSTACLES);
 	ImGui::PushItemWidth(200);
-	ImGui::DragFloat3("Pos", &solidPosition.x, 0.1f);
-	ImGui::DragFloat3("Rot (deg)", &solidEulerDeg.x, 1.0f);
-	ImGui::DragFloat("Scale", &solidScale, 0.01f, 0.01f, 100.0f);
+	ImGui::DragFloat3("Pos", &obstacleTransforms[selectedObstacle].position.x, 0.1f);
+	ImGui::DragFloat3("Rot (deg)", &obstacleTransforms[selectedObstacle].eulerDeg.x, 1.0f);
+	ImGui::DragFloat("Scale", &obstacleTransforms[selectedObstacle].scale, 0.01f, 0.01f, 100.0f);
 	ImGui::PopItemWidth(); // restore default width for any subsequent widgets
 	ImGui::Separator();
 	ImGui::Text("Bounding Box");
@@ -1231,11 +1258,11 @@ void PbfApp::UpdateComputeCb(float dt) {
 	computeCb->externalForce = externalForce;
 	computeCb->fountainEnabled = fountainEnabled ? 1 : 0;
 	computeCb->adhesion = adhesion;
-	computeCb->solidInvTransform = solidObstacle->GetInvTransform();
-	Float3 smin = solidObstacle->GetSdfMin();
-	Float3 smax = solidObstacle->GetSdfMax();
-	computeCb->sdfMin = smin;
-	computeCb->sdfMax = smax;
+	for (int i = 0; i < MAX_OBSTACLES; i++) {
+		computeCb->obstacles[i].invTransform = obstacles[i]->GetInvTransform();
+		computeCb->obstacles[i].sdfMin = obstacles[i]->GetSdfMin();
+		computeCb->obstacles[i].sdfMax = obstacles[i]->GetSdfMax();
+	}
 	computeCb->cameraPos = camera->GetEyePosition();
 	computeCb->minLOD = (UINT)minLOD;
 	computeCb->maxLOD = (UINT)solverIterations;
@@ -1251,7 +1278,7 @@ void PbfApp::Update(float dt, float T)  {
 	lastDt = std::min(dt, 1.0f / 25.0f); // cap at 25Hz: prevents energy spikes on window drag or stutter
 	UpdateExternalForce();
 	UpdatePerFrameCb();
-	SetSolidTransform();
+	SetObstacleTransforms();
 }
 
 void PbfApp::CalculateAvgDensity() {

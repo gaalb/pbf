@@ -58,8 +58,8 @@ struct ParticleInitData {
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
-	const int offsetX = 0, offsetY = 20, offsetZ = 0; // world space offset of the center of the initial particle grid
+	const int particlesX = 100, particlesY = 75, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int offsetX = 0, offsetY = 30, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
 	// which gives a lower bound to the spatial grid's cell width. We can use (try using...)
@@ -84,8 +84,8 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = Float3(-25.0f, -13.0f, -25.0f); // adjustable collision boundary
-	Float3 boxMax = Float3(25.0f, 40.0f, 25.0f); // adjustable collision boundary
+	Float3 boxMin = Float3(-24.0f, -24.5f, -24.0f); // adjustable collision boundary
+	Float3 boxMax = Float3(24.0f, 40, 24.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
 	int solverIterations = 6; // how many newton steps to take per frame
@@ -142,12 +142,18 @@ protected:
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 
-	// Solid obstacle: owns the renderable mesh and the SDF volume texture
-	SolidObstacle::P solidObstacle;
-	D3D12_CPU_DESCRIPTOR_HANDLE sdfCpuHandle{}; // CPU handle for SDF SRV in staticAllocator (source for CopyDescriptorsSimple)
-	Float3 solidPosition = Float3(0.0f, -13.0f, 0.0f); // world-space translation, driven by ImGui
-	Float3 solidEulerDeg = Float3(0.0f, 30.0f, 0.0f); // XYZ Euler rotation in degrees, driven by ImGui
-	float  solidScale = 3.5f; // uniform scale, driven by ImGui
+	// Solid obstacles: each owns a renderable mesh and its SDF volume texture.
+	// To add a new obstacle: bump MAX_OBSTACLES in SharedConfig.hlsli, add an entry to
+	// the ObstacleDesc table in InitObstacles(), and update the numDescriptors literals in
+	// predictCS.hlsl and collisionPredictedPositionCS.hlsl to match.
+	struct ObstacleTransform {
+		Float3 position;
+		Float3 eulerDeg;
+		float  scale;
+	};
+	SolidObstacle::P obstacles[MAX_OBSTACLES];
+	ObstacleTransform obstacleTransforms[MAX_OBSTACLES];
+	int selectedObstacle = 0; // which obstacle the ImGui sliders currently target
 
 	// Readback buffers (readback heap, CPU-readable after CopyBufferRegion)
 	GpuBuffer::P densityReadbackBuffer;
@@ -239,7 +245,7 @@ protected:
 
 	// Load the solid obstacle; create GPU resources and descriptors.
 	// No GPU commands are recorded here - uploads happen later in UploadAll().
-	void InitObstacle();
+	void InitObstacles();
 
 	// Batch all initial data uploads into a single command list execution.
 	// All operate on independent resources so there are no state conflicts.
@@ -282,8 +288,8 @@ protected:
 	// for correct depth-buffer occlusion against the solid obstacle.
 	void BuildLiquidPipeline();
 
-	// Rebuild the solid's world transform from solidPosition and solidEulerDeg (XYZ Euler, degrees).
-	void SetSolidTransform();
+	// Rebuild world transforms for all obstacles from their obstacleTransforms entries.
+	void SetObstacleTransforms();
 
 	ParticleInitData GenerateParticles();
 

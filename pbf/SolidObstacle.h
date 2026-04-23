@@ -30,6 +30,7 @@ using namespace Egg::Math;
 // solidObstacle->SetTransform(initialTransform);
 GG_CLASS(SolidObstacle)
 
+    std::string name; // display name; also the stem of the .obj and .sdf filenames
     Egg::Mesh::Shaded::P mesh;
     Egg::ConstantBuffer<SolidCb> solidCb; // GPU constant buffer for solidVS (model matrix)
     com_ptr<ID3D12Resource> sdfTexture; // Texture3D<float> on default heap
@@ -164,6 +165,7 @@ GG_CLASS(SolidObstacle)
 public:
 
     // Accessors for PbfApp::UpdateComputeCb()
+    const char* GetName() const { return name.c_str(); }
     Float3 GetSdfMin() const { return sdfObjMin; }
     Float3 GetSdfMax() const { return sdfObjMax; }
     Float4x4 GetInvTransform() const { return invTransform; }
@@ -176,16 +178,19 @@ public:
         invTransform = t.Invert();
     }
 
-    // Load the mesh and SDF file, create all GPU resources, and fill the upload
-    // buffer. Must be followed by UploadSdf(commandList) + GPU sync +
-    // ReleaseUploadResources(). perFrameCb is owned by PbfApp and stays valid
-    // for the lifetime of the material.
+    // Load the mesh and SDF file derived from the obstacle name (name + ".obj" / ".sdf"),
+    // create all GPU resources, and fill the upload buffer.
+    // Must be followed by UploadSdf(commandList) + GPU sync + ReleaseUploadResources().
+    // perFrameCb is owned by PbfApp and stays valid for the lifetime of the material.
     void Load(ID3D12Device*               device,
               Egg::PsoManager::P psoManager,
-              const std::string& meshPath,
-              const std::string&  sdfPath,
+              const std::string& obstacleName,
               Egg::ConstantBuffer<PerFrameCb>& perFrameCb)
     {
+        name = obstacleName;
+        const std::string meshPath = obstacleName + ".obj";
+        const std::string sdfPath  = obstacleName + ".sdf";
+
         Egg::Mesh::Geometry::P geometry = Egg::Importer::ImportSimpleObj(device, meshPath);
 
         com_ptr<ID3DBlob> vs = Egg::Shader::LoadCso("Shaders/solidVS.cso");

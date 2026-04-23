@@ -12,9 +12,10 @@
 // In:  predictedPosition, lod
 // Out: predictedPosition
 
+// numDescriptors must equal MAX_OBSTACLES (SharedConfig.hlsli). Update when MAX_OBSTACLES changes.
 #define CollisionPositionRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 1)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 3)), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -40,12 +41,14 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     float3 p = predictedPosition[i];
 
-    // Solid push-out: move p along the outward SDF gradient until it is pushRadius world units
-    // from the surface.
-    float d = SampleSdf(p);
-    if (d < pushRadius) {
-        float3 grad = SdfGradient(p);
-        p += (pushRadius - d) * normalize(grad);
+    // Solid push-out: for each obstacle, move p along the outward SDF gradient until it is
+    // pushRadius world units from the surface. Corrections are applied independently.
+    for (int obstIdx = 0; obstIdx < MAX_OBSTACLES; obstIdx++) {
+        float d = SampleSdf(obstIdx, p);
+        if (d < pushRadius) {
+            float3 grad = SdfGradient(obstIdx, p);
+            p += (pushRadius - d) * normalize(grad);
+        }
     }
     
     // clamp to bounding box
