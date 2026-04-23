@@ -1,5 +1,8 @@
+#ifndef SHARED_CONFIG_HLSLI
+#define SHARED_CONFIG_HLSLI
+
 // Stringification helpers — used by shaders to embed #define values into root-signature strings.
-// Usage: "SRV(t0, numDescriptors = " STR(MAX_OBSTACLES) ")"
+// Usage: "SRV(t0, numDescriptors = " STR(NUM_OBSTACLES) ")"
 // The two-level expansion is required: STR(x) -> XSTR(x) -> #x forces full macro expansion before stringification.
 #define XSTR(x) #x
 #define STR(x) XSTR(x)
@@ -60,4 +63,6 @@
 // To add a new obstacle: bump this, add an entry to the ObstacleDesc table in
 // InitObstacle(), and update numDescriptors in the PredictRootSig /
 // CollisionPositionRootSig strings in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
-#define MAX_OBSTACLES 3
+#define NUM_OBSTACLES 3
+
+#endif

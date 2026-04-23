@@ -80,6 +80,6 @@ __declspec(align(16)) struct ComputeCb {
 	Float3 cameraPos;       // offset 96: camera world position for DTC LOD computation
 	float _padC;            // offset 108
 	Float4x4 viewProjTransform; // offset 112: world-to-clip transform for DTVS depth projection
-	// offset 176: obstacles array placed last so extending MAX_OBSTACLES only grows the tail
-	ObstacleData obstacles[MAX_OBSTACLES]; // offset 176: per-obstacle transforms and SDF bounds
+	// offset 176: obstacles array placed last so extending NUM_OBSTACLES only grows the tail
+	ObstacleData obstacles[NUM_OBSTACLES]; // offset 176: per-obstacle transforms and SDF bounds
 };

@@ -164,11 +164,26 @@ GG_CLASS(SolidObstacle)
 
 public:
 
+    // Transform state driven by ImGui. RebuildTransform() computes and uploads the world matrix from these.
+    Float3 position = Float3(0.0f, 0.0f, 0.0f);
+    Float3 eulerDeg = Float3(0.0f, 0.0f, 0.0f);
+    float  scale    = 1.0f;
+
     // Accessors for PbfApp::UpdateComputeCb()
     const char* GetName() const { return name.c_str(); }
     Float3 GetSdfMin() const { return sdfObjMin; }
     Float3 GetSdfMax() const { return sdfObjMax; }
     Float4x4 GetInvTransform() const { return invTransform; }
+
+    // Recompute and upload the world matrix from the current position / eulerDeg / scale fields.
+    void RebuildTransform() {
+        const float deg2rad = 3.14159265358979323846f / 180.0f;
+        Float4x4 rot =
+            Float4x4::Rotation(Float3(1.0f, 0.0f, 0.0f), eulerDeg.x * deg2rad) *
+            Float4x4::Rotation(Float3(0.0f, 1.0f, 0.0f), eulerDeg.y * deg2rad) *
+            Float4x4::Rotation(Float3(0.0f, 0.0f, 1.0f), eulerDeg.z * deg2rad);
+        SetTransform(Float4x4::Scaling(Float3(scale, scale, scale)) * rot * Float4x4::Translation(position));
+    }
 
     // Update the world-space position and orientation of the obstacle.
     // Also uploads the new model matrix to the GPU constant buffer immediately.

@@ -1,17 +1,19 @@
 #ifndef SOLID_SDF_HLSLI
 #define SOLID_SDF_HLSLI
 
+#include "SharedConfig.hlsli"
+#include "ComputeCb.hlsli"
+
 // Shared SDF sampling helpers for solid-obstacle collision compute shaders.
-// Include this AFTER ComputeCb.hlsli (needs obstacles[i].invTransform/sdfMin/sdfMax).
-// Declares sdf[MAX_OBSTACLES] at t0..t(MAX_OBSTACLES-1) and sdfSampler at s0.
+// Declares sdf[NUM_OBSTACLES] at t0..t(NUM_OBSTACLES-1) and sdfSampler at s0.
 // The calling shader's root signature must expose
-//   DescriptorTable(SRV(t0, numDescriptors = MAX_OBSTACLES))   <- update numDescriptors when MAX_OBSTACLES changes
+//   DescriptorTable(SRV(t0, numDescriptors = NUM_OBSTACLES))   <- update numDescriptors when NUM_OBSTACLES changes
 // and a matching StaticSampler(s0).
 
 // Comment out to fall back to the 6-tap numeric gradient (useful for comparison).
 #define USE_PRECOMPUTED_GRADIENTS
 
-Texture3D<float4> sdf[MAX_OBSTACLES] : register(t0); // per-obstacle: R=distance, GBA=gradient xyz (object space)
+Texture3D<float4> sdf[NUM_OBSTACLES] : register(t0); // per-obstacle: R=distance, GBA=gradient xyz (object space)
 SamplerState sdfSampler : register(s0);
 
 // Returns the uniform object-to-world scale for obstacle i.

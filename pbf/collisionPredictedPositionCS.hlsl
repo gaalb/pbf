@@ -18,7 +18,7 @@
 
 #define CollisionPositionRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = " STR(MAX_OBSTACLES) ")), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = " STR(NUM_OBSTACLES) ")), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -42,7 +42,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     // Solid push-out: for each obstacle, move p along the outward SDF gradient until it is
     // pushRadius world units from the surface. Corrections are applied independently.
-    for (int obstIdx = 0; obstIdx < MAX_OBSTACLES; obstIdx++) {
+    for (int obstIdx = 0; obstIdx < NUM_OBSTACLES; obstIdx++) {
         float d = SampleSdf(obstIdx, p);
         if (d < pushRadius) {
             float3 grad = SdfGradient(obstIdx, p);

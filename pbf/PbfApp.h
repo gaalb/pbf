@@ -142,17 +142,10 @@ protected:
 	ComputeShader::P velocityFromScratchShader; // copy scratch -> velocity (Jacobi commit after viscosity)
 	ComputeShader::P updatePositionShader; // update position from predictedPosition (final step per paper)
 
-	// Solid obstacles: each owns a renderable mesh and its SDF volume texture.
-	// To add a new obstacle: bump MAX_OBSTACLES in SharedConfig.hlsli, add an entry to
-	// the ObstacleDesc table in InitObstacles(), and update the numDescriptors literals in
-	// predictCS.hlsl and collisionPredictedPositionCS.hlsl to match.
-	struct ObstacleTransform {
-		Float3 position;
-		Float3 eulerDeg;
-		float  scale;
-	};
-	SolidObstacle::P obstacles[MAX_OBSTACLES];
-	ObstacleTransform obstacleTransforms[MAX_OBSTACLES];
+	// Solid obstacles: each owns a renderable mesh, SDF volume, and its own transform state.
+	// To add a new obstacle: bump NUM_OBSTACLES in SharedConfig.hlsli, add an entry to
+	// the ObstacleDesc table in InitObstacle(), and add the corresponding asset files.
+	SolidObstacle::P obstacles[NUM_OBSTACLES];
 	int selectedObstacle = 0; // which obstacle the ImGui sliders currently target
 
 	// Readback buffers (readback heap, CPU-readable after CopyBufferRegion)

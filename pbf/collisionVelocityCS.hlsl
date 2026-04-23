@@ -24,7 +24,7 @@
 
 #define CollisionVelocityRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = " STR(MAX_OBSTACLES) ")), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = " STR(NUM_OBSTACLES) ")), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
@@ -57,7 +57,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // The committed position should be clear of the solid (corrected last frame by
     // collisionPredictedPositionCS). We check d < pushRadius to handle the first frame,
     // a newly moved solid, and numerical slip.
-    for (int obstIdx = 0; obstIdx < MAX_OBSTACLES; obstIdx++) {
+    for (int obstIdx = 0; obstIdx < NUM_OBSTACLES; obstIdx++) {
         float d = SampleSdf(obstIdx, pos);
         if (d < pushRadius) {
             float3 normal = normalize(SdfGradient(obstIdx, pos)); // outward surface normal in world space
