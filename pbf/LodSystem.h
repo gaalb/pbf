@@ -26,7 +26,7 @@
 // After CalculateLod(), PbfApp copies lodBuffer -> lodSnapshotDB via GetLodBuffer(),
 // before the solver loop that decrements the values.
 // PbfApp retains minLOD; it flows through the shared compute constant buffer.
-GG_CLASS(LodSubsystem)
+GG_CLASS(LodSystem)
     UINT numParticles_ = 0;
     // per-particle LOD countdown (UINT); written before the solver loop, decremented by positionFromScratchCS each iteration.
     GpuBuffer::P lodBuffer; 
@@ -59,7 +59,7 @@ public:
     // Create all GPU resources: lodBuffer, lodReductionBuffer, particleDsvAllocator,
     // and particleDepthDB (with DSV and SRV descriptors written into staticAlloc).
     // Must be called after both mainAlloc and staticAlloc exist.
-    LodSubsystem(
+    LodSystem(
         ID3D12Device* device,
         UINT numParticles,
         UINT width, UINT height,

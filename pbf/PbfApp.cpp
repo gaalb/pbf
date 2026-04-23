@@ -23,7 +23,7 @@ void PbfApp::CreateResources() {
 	InitParticleFields();
 	// Create the LOD subsystem now that both descriptor heaps exist. scissorRect was already
 	// set by the earlier CreateSwapChainResources call, so width/height are correct.
-	lod = LodSubsystem::Create(device.Get(), numParticles,
+	lod = LodSystem::Create(device.Get(), numParticles,
 		(UINT)scissorRect.right, (UINT)scissorRect.bottom,
 		*mainAllocator, *staticAllocator);
 	InitReadbackBuffers();
@@ -1063,7 +1063,7 @@ void PbfApp::RecordGraphicsCommands() {
 	if (shadingMode == ShadingMode::LIQUID)
 		positionSnapshotDB->getFront()->Transition(SRV_ALL, commandList.Get());
 
-	if (lod->mode == LodSubsystem::Mode::DTVS) { // DTVS requires depth data
+	if (lod->mode == LodSystem::Mode::DTVS) { // DTVS requires depth data
 		lod->DrawParticleDepth(
 			commandList.Get(),
 			perFrameCb.GetGPUVirtualAddress(),
@@ -1147,7 +1147,7 @@ void PbfApp::BuildImGui() {
 		static const char* lodModeItems[] = { "Non-adaptive", "DTC", "DTVS" };
 		int lodModeInt = (int)lod->mode;
 		if (ImGui::Combo("LOD mode", &lodModeInt, lodModeItems, IM_ARRAYSIZE(lodModeItems)))
-			lod->mode = (LodSubsystem::Mode)lodModeInt;
+			lod->mode = (LodSystem::Mode)lodModeInt;
 		ImGui::InputInt("Solver iterations", &solverIterations, 1);
 		ImGui::InputInt("Min LOD", &minLOD, 1);
 		ImGui::InputFloat("Epsilon (relaxation)", &epsilon, 0.5f, 1.0f, "%.2f");

@@ -20,7 +20,7 @@
 #include "DoubleBufferGpuBuffer.h"
 #include "DoubleBufferGpuTexture.h"
 #include "SpatialGrid.h"
-#include "LodSubsystem.h"
+#include "LodSystem.h"
 #include <immintrin.h>
 #include <thread>
 #include "SharedConfig.hlsli" 
@@ -123,7 +123,7 @@ protected:
 	DoubleBufferGpuBuffer::P particleFieldDB[PF_COUNT];
 
 	SpatialGrid::P spatialGrid; // owns grid buffers and all grid/sort shaders
-	LodSubsystem::P lod; // owns LOD buffers, depth textures, and all LOD shaders
+	LodSystem::P lod; // owns LOD buffers, depth textures, and all LOD shaders
 
 	// One ComputeShader per pass. Each holds its own PSO, root signature, fixed descriptor
 	// table handle, and input/output resource lists for UAV barrier insertion.

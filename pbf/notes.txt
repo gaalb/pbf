@@ -1,6 +1,3 @@
-﻿TODOS (most to least important):)
--new LOD mode: adjust LOD according to last known density data
--pre-compute neighboring cell offsets, each time we call NeighborCellIndices, we compute the same indices, 
- so we could pre-compute them and just add them to the cell index
+﻿TODOS:
+-better scene, with sdf that doesn't leak :)
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)
--cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?
