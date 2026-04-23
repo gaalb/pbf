@@ -82,5 +82,4 @@ __declspec(align(16)) struct ComputeCb {
 	Float4x4 viewProjTransform; // offset 112: world-to-clip transform for DTVS depth projection
 	// offset 176: obstacles array placed last so extending MAX_OBSTACLES only grows the tail
 	ObstacleData obstacles[MAX_OBSTACLES]; // offset 176: per-obstacle transforms and SDF bounds
-	// MAX_OBSTACLES=3: 3x96 = 288 bytes, total: 176+288 = 464 bytes -> 512-byte CB (Align256)
 };

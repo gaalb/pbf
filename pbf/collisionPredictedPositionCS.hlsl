@@ -12,19 +12,18 @@
 // In:  predictedPosition, lod
 // Out: predictedPosition
 
-// numDescriptors must equal MAX_OBSTACLES (SharedConfig.hlsli). Update when MAX_OBSTACLES changes.
+#include "SharedConfig.hlsli"
+#include "ComputeCb.hlsli"
+#include "SolidSdf.hlsli"
+
 #define CollisionPositionRootSig \
     "CBV(b0), " \
-    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = 3)), " \
+    "DescriptorTable(UAV(u0, numDescriptors = 2), SRV(t0, numDescriptors = " STR(MAX_OBSTACLES) ")), " \
     "StaticSampler(s0, " \
         "filter = FILTER_MIN_MAG_MIP_LINEAR, " \
         "addressU = TEXTURE_ADDRESS_CLAMP, " \
         "addressV = TEXTURE_ADDRESS_CLAMP, " \
         "addressW = TEXTURE_ADDRESS_CLAMP)"
-
-#include "SharedConfig.hlsli"
-#include "ComputeCb.hlsli"
-#include "SolidSdf.hlsli"
 
 RWStructuredBuffer<float3> predictedPosition : register(u0);
 RWStructuredBuffer<uint> lod : register(u1);

@@ -1,3 +1,9 @@
+// Stringification helpers — used by shaders to embed #define values into root-signature strings.
+// Usage: "SRV(t0, numDescriptors = " STR(MAX_OBSTACLES) ")"
+// The two-level expansion is required: STR(x) -> XSTR(x) -> #x forces full macro expansion before stringification.
+#define XSTR(x) #x
+#define STR(x) XSTR(x)
+
 #define THREAD_GROUP_SIZE 256
 #define CELL_PER_H 1
 
