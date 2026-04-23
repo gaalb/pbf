@@ -25,7 +25,7 @@ struct PSInput {
 };
 
 static const float3 kMaterialColor  = float3(0.2f, 0.2f, 0.2f); // dark grey
-static const float kAmbient = 0.25f;
+static const float kAmbient = 0.3f;
 static const float kSpecularStrength = 0.4f;
 static const float kShininess = 48.0f;
 

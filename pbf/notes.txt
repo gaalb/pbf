@@ -1,6 +1,7 @@
 ﻿NOTES: NO SOURCE, JUST NOTES FOR ME
 ---------------------------------------------------------------------------------------
 TODOS:
+-make it possible to have several lights
 -make sdf generation faster, more efficient, less memory usage, and watertight
 -make the two heavy graphics shader dispatches lighter: densityVolume and liquidPS (ray marching)
 -cellCount is used for two things now: maybe change that, so we don't need as many uav barriers?

@@ -233,8 +233,8 @@ void PbfApp::InitObstacles() {
 		float  scale;
 	};
 	static const ObstacleDesc descs[NUM_OBSTACLES] = {
-		{ "dragonite", Float3(-11.2f, -24.5f, -15.7f), Float3(0.0f, -7.0f, 0.0f), 4.0f },
-		{ "slide",     Float3(-7.0f,   0.0f, -4.2f), Float3(0.0f,  120.0f, 0.0f), 4.18f },
+		{ "dragonite", Float3(-10.0f, -24.5f, -10.5f), Float3(0.0f, -20.0f, 0.0f), 3.8f },
+		{ "slide",     Float3(-8.6f,   0.0f, -5.9f), Float3(0.0f,  120.0f, 0.0f), 4.2f },
 		{ "funnel",    Float3(0.0f,   19.0f, 0.0f), Float3(0.0f,  90.0f, 0.0f), 8.0f },
 	};
 
