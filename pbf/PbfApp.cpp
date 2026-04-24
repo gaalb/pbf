@@ -224,8 +224,7 @@ void PbfApp::InitBackground() {
 // No GPU commands are recorded here - uploads happen later in UploadAll().
 void PbfApp::InitObstacles() {
 	// Each entry: obstacle name (= filename stem), initial position, XYZ Euler degrees, uniform scale.
-	// To add a new obstacle: bump NUM_OBSTACLES in SharedConfig.hlsli, add a row here,
-	// and update numDescriptors in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
+	// To add a new obstacle: bump NUM_OBSTACLES in SharedConfig.hlsli, add a row here.
 	struct ObstacleDesc {
 		const char* name;
 		Float3 position;
@@ -233,9 +232,8 @@ void PbfApp::InitObstacles() {
 		float  scale;
 	};
 	static const ObstacleDesc descs[NUM_OBSTACLES] = {
-		{ "dragonite", Float3(-10.0f, -24.5f, -10.5f), Float3(0.0f, -20.0f, 0.0f), 3.8f },
-		{ "slide",     Float3(-8.6f,   0.0f, -5.9f), Float3(0.0f,  120.0f, 0.0f), 4.2f },
-		{ "funnel",    Float3(0.0f,   19.0f, 0.0f), Float3(0.0f,  90.0f, 0.0f), 8.0f },
+		{ "dragonite", Float3(2.3f, -31.0f, 3.5f), Float3(0.0f, 0.0f, 0.0f), 3.8f },
+		{ "funnel", Float3(0.0f, 14.0f, 0.0f), Float3(0.0f,  0.0f, 0.0f), 8.0f },
 	};
 
 	for (int i = 0; i < NUM_OBSTACLES; i++) {
@@ -1369,6 +1367,12 @@ void PbfApp::RunNTimes(int n, bool physicsEnabled) {
 
 void PbfApp::ReleaseSwapChainResources()  {
 	AsyncComputeApp::ReleaseSwapChainResources();
+}
+
+void PbfApp::Resize(int width, int height) {
+	cpuWaitForCompute(frameCount);
+	cpuWaitForGraphics(frameCount - 1);
+	Egg::App::Resize(width, height);
 }
 
 void PbfApp::ShutdownImGui() {

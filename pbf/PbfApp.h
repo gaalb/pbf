@@ -59,7 +59,7 @@ struct ParticleInitData {
 class PbfApp : public AsyncComputeApp {
 protected:
 	// Fixed particle and grid constants.
-	const int particlesX = 100, particlesY = 50, particlesZ = 100; // number of particles along each axis of the initial grid
+	const int particlesX = 100, particlesY = 75, particlesZ = 100; // number of particles along each axis of the initial grid
 	const int offsetX = 0, offsetY = 30, offsetZ = 0; // world space offset of the center of the initial particle grid
 	const int numParticles = particlesX * particlesY * particlesZ; // total number of particles in the simulation
 	// particleSpacing and hMultiplier are constants that define the SPH kernel width h,
@@ -85,7 +85,7 @@ protected:
 	const float boxExtent = gridDim * h / CELL_PER_H; // box side length: gridDim cells of width h/CELL_PER_H
 	const Float3 gridMin = Float3(-boxExtent / 2.0f, -boxExtent / 2.0f, -boxExtent / 2.0f); // most negative point of the grid
 	const Float3 gridMax = Float3( boxExtent / 2.0f,  boxExtent / 2.0f,  boxExtent / 2.0f); // most positive point of the grid
-	Float3 boxMin = Float3(-24.0f, -24.5f, -24.0f); // adjustable collision boundary
+	Float3 boxMin = Float3(-24.0f, -30.0f, -24.0f); // adjustable collision boundary
 	Float3 boxMax = Float3(24.0f, 40, 24.0f); // adjustable collision boundary
 
 	// parameters that are tunable via ImGui each frame
@@ -96,7 +96,7 @@ protected:
 	// artificial purely repulsive pressure term reduces clumping while leaving room for surface tension,
 	float sCorrK = 0.02f; // artificial pressure magnitude coefficient M&M: 0.1
 	float vorticityEpsilon = 0.01f; // vorticity confinement strength M&M: 0.01
-	float adhesion = 0.015f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
+	float adhesion = 0.01f; // tangential velocity damping on wall contact (0 = frictionless, 1 = full stop)
 	bool fountainEnabled = false; // toggle for the upward jet in a corner of the box, like a fountain :)
 
 	Float3 externalForce = Float3(0.0f, 0.0f, 0.0f); // current external acceleration from arrow keys
@@ -370,6 +370,11 @@ public:
 	virtual void CreateSwapChainResources() override;
 
 	virtual void ReleaseSwapChainResources() override;
+
+	// Drain both GPU queues using correct fence values before resizing.
+	// AsyncComputeApp::Resize() uses graphicsFrame/computeFrame (always 0)
+	// because PbfApp tracks frames via frameCount instead, making those waits no-ops.
+	virtual void Resize(int width, int height) override;
 
 	// Allocate all GPU resources that persist across frames: descriptor heaps,
 	// buffers for particles and sorting, textures for the environment and obstacle, etc.

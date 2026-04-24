@@ -1,22 +1,19 @@
 """
 Offline SDF (Signed Distance Field) generator for PBF solid obstacles.
 
-Loads a mesh, repairs topology, samples a regular 3D grid of signed distances
-in the mesh's own coordinate space, and saves a compact binary .sdf file for
-the PBF runtime.
+Loads a mesh, samples a regular 3D grid of signed distances in the mesh's
+own coordinate space, and saves a compact binary .sdf file for the PBF runtime.
 
 Setup (run once, inside this folder's venv):
-    pip install trimesh scipy scikit-image matplotlib tqdm
+    pip install .
 
 Usage:
-    python generate_sdf.py <mesh_path> <output.sdf> [--res N] [--padding F] [--skin F] [--no-preview]
+    python generate_sdf.py <mesh_path> <output.sdf> [--res N] [--padding F]
 
-    mesh_path    - any format trimesh can load: OBJ, FBX, GLB, STL, PLY, ...
-    output.sdf   - binary output file consumed by SolidObstacle::Load()
-    --res N      - voxel grid resolution (default 128, meaning 128^3 voxels)
-    --padding F  - fractional padding around the mesh AABB (default 0.1 = 10%)
-    --skin F     - dilation in mesh units (default 0, see Notes below)
-    --no-preview - skip the 3D isosurface preview after generation
+    mesh_path   - any format trimesh can load: OBJ, FBX, GLB, STL, PLY, ...
+    output.sdf  - binary output file consumed by SolidObstacle::Load()
+    --res N     - voxel grid resolution (default 64, meaning 64^3 voxels)
+    --padding F - fractional padding around the mesh AABB (default 0.1 = 10%)
 
 Output binary format (.sdf):
     int32   nx, ny, nz          grid dimensions (all equal to --res)
@@ -28,229 +25,93 @@ Output binary format (.sdf):
                                 gx,gy,gz : outward unit gradient in object space
 
 Notes:
-  - Unsigned distances are computed via BVH-accelerated closest-point queries,
-    processed in batches to keep memory usage bounded.
-
-  - Sign (inside/outside) is determined by a 6-connectivity flood-fill from all
-    bounding-box faces rather than ray-casting. This seals mesh gaps up to ~1 voxel
-    wide and is robust against non-watertight topology.
-
-  - --skin F (dilation / caulking):
-    At a sharp concave edge — e.g. the inner corner where the bottom of a slide
-    meets its side wall — the SDF gradient is discontinuous. The field correctly
-    reports the distance to the nearest surface point, but because two faces meet
-    at a point, it only enforces one face's normal at a time. A fast-moving
-    particle can slip through such an edge between timesteps.
-
-    --skin subtracts F from every voxel's signed distance, shifting the d=0
-    surface outward by F units uniformly. At a concave corner this fills the
-    sharp notch with a rounded fillet of radius F (like running a bead of caulk
-    into the corner), giving the collision response a smooth gradient to work
-    against rather than a knife-edge discontinuity.
-
-    The cost is that every interior cavity shrinks by F units on all sides.
-    A good starting value is 0.5–1.0 × voxel size (= extent / res). Use
-    --no-preview to regenerate quickly while tuning, then drop --no-preview
-    to inspect the result: the isosurface will visibly pull away from sharp
-    inner edges by roughly F units.
-
+  - Uses trimesh's BVH-accelerated closest-point query for unsigned distances,
+    then ray-casting for sign determination. Works best on watertight meshes.
+    Non-watertight meshes may produce sign errors near open boundaries.
   - The SDF is in the mesh's original coordinate space (same units as the OBJ).
     Place the SolidObstacle in world space by calling SetTransform() at runtime.
 """
 
 import argparse
 import struct
-
 import numpy as np
 import trimesh
 import trimesh.proximity
-import trimesh.repair
-
-try:
-    from tqdm import tqdm as _tqdm
-    def _progress(it, **kw):
-        return _tqdm(it, **kw)
-except ImportError:
-    def _progress(it, **kw):
-        return it
-
-# Number of query points processed per closest-point batch.
-# Keeps the BVH candidate expansion array well under 1 GB even for dense meshes.
-_BATCH = 50_000
 
 
-def _load_and_repair(mesh_path: str) -> trimesh.Trimesh:
-    raw = trimesh.load(mesh_path, force='mesh', process=False)
-    if isinstance(raw, trimesh.Scene):
-        parts = list(raw.geometry.values())
-        if not parts:
-            raise ValueError("Scene contains no geometry")
-        mesh = trimesh.util.concatenate(parts)
-    else:
-        mesh = raw
-
-    # OBJ (and similar formats) splits one geometric vertex into multiple records
-    # when adjacent faces reference it with different UV / normal indices.
-    # Merging back to unique positions fixes the phantom "open edges" that cause
-    # is_watertight to return False even on visually closed meshes.
-    mesh.merge_vertices()
-    trimesh.repair.fix_winding(mesh)
-    trimesh.repair.fill_holes(mesh)
-    return mesh
-
-
-def _unsigned_distances(mesh: trimesh.Trimesh, pts: np.ndarray):
-    """Return (distances float32 (N,), closest_pts float32 (N,3)) via batched BVH queries."""
-    n = len(pts)
-    dists   = np.empty(n,       dtype=np.float32)
-    closest = np.empty((n, 3),  dtype=np.float32)
-
-    batches = list(range(0, n, _BATCH))
-    for start in _progress(batches, desc="  distances", unit="batch"):
-        end = min(start + _BATCH, n)
-        cp, d, _ = trimesh.proximity.closest_point(mesh, pts[start:end])
-        dists[start:end]   = d
-        closest[start:end] = cp
-
-    return dists, closest
-
-
-def _flood_fill_outside(unsigned_grid: np.ndarray, voxel_size: float) -> np.ndarray:
-    """
-    6-connectivity flood-fill from all six bounding-box faces.
-    Returns boolean array of shape (nz, ny, nx): True = outside (positive SDF).
-
-    A voxel is passable only if its unsigned distance exceeds half a voxel,
-    which blocks any mesh gap narrower than one voxel from leaking the fill.
-    """
-    from scipy import ndimage
-
-    walkable = unsigned_grid > (voxel_size * 0.5)
-
-    struct6 = ndimage.generate_binary_structure(3, 1)   # 6-connectivity
-    labeled, _ = ndimage.label(walkable, structure=struct6)
-
-    # Any connected component that touches a face of the bounding box is exterior.
-    outside_labels = set()
-    outside_labels.update(np.unique(labeled[0,  :,  :]))
-    outside_labels.update(np.unique(labeled[-1, :,  :]))
-    outside_labels.update(np.unique(labeled[:,  0,  :]))
-    outside_labels.update(np.unique(labeled[:, -1,  :]))
-    outside_labels.update(np.unique(labeled[:, :,   0]))
-    outside_labels.update(np.unique(labeled[:, :,  -1]))
-    outside_labels.discard(0)   # 0 = non-walkable (surface or interior)
-
-    return np.isin(labeled, list(outside_labels))
-
-
-def _visualize(title: str, distances: np.ndarray,
-               sdf_min: np.ndarray, sdf_max: np.ndarray) -> None:
-    try:
-        from skimage.measure import marching_cubes
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    except ImportError:
-        print("  Preview requires scikit-image and matplotlib — skipping.")
-        print("  Install with: pip install scikit-image matplotlib")
-        return
-
-    nz, ny, nx = distances.shape
-    dx = (float(sdf_max[0]) - float(sdf_min[0])) / nx
-    dy = (float(sdf_max[1]) - float(sdf_min[1])) / ny
-    dz = (float(sdf_max[2]) - float(sdf_min[2])) / nz
-
-    try:
-        verts, faces, _, _ = marching_cubes(
-            distances, level=0.0, spacing=(dz, dy, dx), allow_degenerate=False)
-    except (ValueError, TypeError):
-        try:
-            verts, faces, _, _ = marching_cubes(distances, level=0.0, spacing=(dz, dy, dx))
-        except ValueError:
-            print("  Marching cubes found no zero-crossing — interior may be empty.")
-            return
-
-    # distances has axes (z, y, x), so marching_cubes verts are in (z, y, x) offsets.
-    world = np.column_stack([
-        float(sdf_min[0]) + verts[:, 2],
-        float(sdf_min[1]) + verts[:, 1],
-        float(sdf_min[2]) + verts[:, 0],
-    ])
-    print(f"  Isosurface: {len(verts):,} verts, {len(faces):,} faces")
-
-    fig = plt.figure(figsize=(10, 8))
-    ax  = fig.add_subplot(111, projection='3d')
-    poly = Poly3DCollection(world[faces], alpha=0.85, linewidth=0)
-    poly.set_facecolor('steelblue')
-    ax.add_collection3d(poly)
-
-    ax.set_xlim(float(sdf_min[0]), float(sdf_max[0]))
-    ax.set_ylim(float(sdf_min[1]), float(sdf_max[1]))
-    ax.set_zlim(float(sdf_min[2]), float(sdf_max[2]))
-    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
-    ax.set_title(title)
-    ax.set_aspect('equal')
-    plt.tight_layout()
-    plt.show()
-
-
-def generate_sdf(mesh_path: str, output_path: str, resolution: int,
-                 padding_factor: float, skin: float, preview: bool) -> None:
+def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_factor: float) -> None:
     print(f"Loading mesh: {mesh_path}")
-    mesh = _load_and_repair(mesh_path)
+    scene_or_mesh = trimesh.load(mesh_path, force='mesh')
 
-    print(f"  Vertices  : {len(mesh.vertices):,}")
-    print(f"  Faces     : {len(mesh.faces):,}")
+    # Some formats (GLB, DAE) produce a Scene with multiple sub-meshes; merge them.
+    if isinstance(scene_or_mesh, trimesh.Scene):
+        meshes = list(scene_or_mesh.geometry.values())
+        if not meshes:
+            raise ValueError("Scene contains no geometry")
+        mesh = trimesh.util.concatenate(meshes)
+    else:
+        mesh = scene_or_mesh
+
+    print(f"  Vertices : {len(mesh.vertices):,}")
+    print(f"  Faces    : {len(mesh.faces):,}")
     print(f"  Watertight: {mesh.is_watertight}")
 
     bounds_min = mesh.bounds[0].astype(np.float64)
     bounds_max = mesh.bounds[1].astype(np.float64)
-    extent     = bounds_max - bounds_min
-    print(f"  Bounds    : {bounds_min}  to  {bounds_max}")
-    print(f"  Extent    : {extent}")
+    extent = bounds_max - bounds_min
+    print(f"  Bounds   : {bounds_min}  to  {bounds_max}")
+    print(f"  Extent   : {extent}")
 
+    # Padded SDF bounding region (stored in the file for runtime UVW mapping)
     padding = np.maximum(extent * padding_factor, 1e-4)
     sdf_min = (bounds_min - padding).astype(np.float32)
     sdf_max = (bounds_max + padding).astype(np.float32)
-    print(f"  SDF region: {sdf_min}  to  {sdf_max}")
+    print(f"  SDF region after padding: {sdf_min}  to  {sdf_max}")
 
     N = resolution
+    # Sample at texel center positions, not at the sdfMin/sdfMax endpoints.
+    # A Texture3D with N texels along an axis places texel k's center at UV
+    # (k + 0.5) / N.  The shader maps position P to UV = (P - sdfMin) / (sdfMax - sdfMin),
+    # so texel k's center corresponds to position sdfMin + (k + 0.5)/N * (sdfMax - sdfMin).
+    # Using np.linspace(sdfMin, sdfMax, N) would place data at k/(N-1) fractions instead,
+    # creating a half-texel offset that shifts sampled distances by ~0.5 voxels — enough
+    # to cause visible collision penetration at typical grid resolutions.
     half_voxel = 0.5 * (sdf_max - sdf_min) / N
     xs = np.linspace(float(sdf_min[0] + half_voxel[0]), float(sdf_max[0] - half_voxel[0]), N)
     ys = np.linspace(float(sdf_min[1] + half_voxel[1]), float(sdf_max[1] - half_voxel[1]), N)
     zs = np.linspace(float(sdf_min[2] + half_voxel[2]), float(sdf_max[2] - half_voxel[2]), N)
 
-    # Build query points in z-major (x varies fastest) order to match D3D12 Texture3D layout.
-    ZZ, YY, XX = np.meshgrid(zs, ys, xs, indexing='ij')
-    pts = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
+    # Build query points in D3D12 Texture3D layout: z outermost, x innermost.
+    # After meshgrid with indexing='ij', arrays have shape (nz, ny, nx) so that
+    # C-order ravel gives z-major order (x varies fastest) — exactly what D3D12 expects.
+    ZZ, YY, XX = np.meshgrid(zs, ys, xs, indexing='ij')        # each shape (nz, ny, nx)
+    query_points = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)  # (N^3, 3)
 
-    print(f"Computing SDF for {N}^3 = {N**3:,} query points  (batch {_BATCH:,})...")
-    dists, closest = _unsigned_distances(mesh, pts)
+    print(f"Computing SDF for {N}^3 = {N**3:,} query points...")
 
-    print("  Determining inside/outside via flood-fill...")
-    voxel_size = float(np.max((sdf_max - sdf_min) / N))
-    outside = _flood_fill_outside(dists.reshape(N, N, N), voxel_size)
-    inside  = ~outside.ravel()
+    # Unsigned distances + closest surface points via BVH query (fast, O(n log n))
+    closest_pts, distances, _ = trimesh.proximity.closest_point(mesh, query_points)
 
-    sdf_vals = np.where(inside, -dists, dists).astype(np.float32)
+    # Sign: True = inside the solid = negative SDF value
+    inside = mesh.contains(query_points)
 
-    if skin != 0.0:
-        # Dilation: shift every distance value down by `skin` units, moving the
-        # zero-crossing outward. At concave inner edges this fills in the corner
-        # like caulk, giving particles a safe margin before reaching the edge.
-        sdf_vals -= np.float32(skin)
-        print(f"  Skin/dilation  : {skin:.4f} units applied")
+    sdf_values = np.where(inside, -distances, distances).astype(np.float32)
 
-    n_inside = int((sdf_vals < 0).sum())
-    print(f"  Distance range : [{sdf_vals.min():.4f}, {sdf_vals.max():.4f}]")
+    n_inside = int(inside.sum())
+    print(f"  Distance range : [{sdf_values.min():.4f}, {sdf_values.max():.4f}]")
     print(f"  Inside voxels  : {n_inside:,} / {N**3:,}  ({100.0 * n_inside / N**3:.1f}%)")
 
-    # Gradient: unit vector pointing outward from the nearest surface point.
-    direction = pts - closest
-    norm      = np.linalg.norm(direction, axis=-1, keepdims=True)
-    sign      = np.where(inside, -1.0, 1.0)[:, np.newaxis]
-    gradient  = (sign * direction / np.maximum(norm, 1e-8)).astype(np.float32)
+    # Geometric gradient: vector from closest surface point to query voxel, normalised.
+    # For exterior voxels this already points outward; for interior voxels it points
+    # inward (into the solid), so we flip with the sign of the SDF.
+    direction = query_points - closest_pts                          # shape (N³, 3)
+    norm      = np.linalg.norm(direction, axis=-1, keepdims=True)  # shape (N³, 1)
+    sign      = np.where(inside, -1.0, 1.0)[:, np.newaxis]        # +1 outside, -1 inside
+    gradient  = (sign * direction / np.maximum(norm, 1e-8)).astype(np.float32)  # shape (N³, 3)
 
-    data = np.stack([sdf_vals, gradient[:, 0], gradient[:, 1], gradient[:, 2]], axis=1)
+    # Pack into float4 per voxel: (d, gx, gy, gz), z-major (x varies fastest)
+    data = np.stack([sdf_values, gradient[:, 0], gradient[:, 1], gradient[:, 2]], axis=1)
+    # data shape: (N³, 4) — C-order write gives the correct z-major interleaved layout
 
     with open(output_path, 'wb') as f:
         f.write(struct.pack('<iii', N, N, N))
@@ -258,33 +119,24 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int,
         f.write(struct.pack('<fff', float(sdf_max[0]), float(sdf_max[1]), float(sdf_max[2])))
         data.tofile(f)
 
-    total_kb = (36 + N**3 * 16) / 1024
+    header_bytes = 3 * 4 + 3 * 4 + 3 * 4          # 36 bytes
+    data_bytes   = N * N * N * 4 * 4               # 4 floats per voxel
+    total_kb     = (header_bytes + data_bytes) / 1024
     print(f"Written {total_kb:.1f} KB  →  {output_path}")
-
-    if preview:
-        print("Rendering preview...")
-        _visualize(output_path, sdf_vals.reshape(N, N, N), sdf_min, sdf_max)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate a binary SDF file from a mesh for PBF solid-obstacle collision.")
-    parser.add_argument("mesh_path",    help="Input mesh file (OBJ, FBX, GLB, STL, ...)")
-    parser.add_argument("output_path",  help="Output .sdf file")
-    parser.add_argument("--res",        type=int,   default=128, metavar="N",
-                        help="Grid resolution (default: 128 → 128^3 voxels)")
-    parser.add_argument("--padding",    type=float, default=0.1, metavar="F",
+    parser.add_argument("mesh_path",   help="Input mesh file (OBJ, FBX, GLB, STL, ...)")
+    parser.add_argument("output_path", help="Output .sdf file")
+    parser.add_argument("--res",     type=int,   default=64,  metavar="N",
+                        help="Grid resolution (default: 64 → 64^3 voxels)")
+    parser.add_argument("--padding", type=float, default=0.1, metavar="F",
                         help="Fractional AABB padding (default: 0.1 = 10%%)")
-    parser.add_argument("--skin",       type=float, default=0.0, metavar="F",
-                        help="Dilation in mesh units (default: 0). Subtracts F from every "
-                             "SDF value, expanding the solid outward and caulking concave "
-                             "inner edges. Start around 0.5× voxel size.")
-    parser.add_argument("--no-preview", action="store_true",
-                        help="Skip the 3D isosurface preview after generation")
     args = parser.parse_args()
 
-    generate_sdf(args.mesh_path, args.output_path, args.res, args.padding,
-                 args.skin, preview=not args.no_preview)
+    generate_sdf(args.mesh_path, args.output_path, args.res, args.padding)
 
 
 if __name__ == "__main__":

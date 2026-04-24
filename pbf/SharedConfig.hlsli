@@ -63,7 +63,7 @@
 // To add a new obstacle: bump this, add an entry to the ObstacleDesc table in
 // InitObstacle(), and update numDescriptors in the PredictRootSig /
 // CollisionPositionRootSig strings in predictCS.hlsl / collisionPredictedPositionCS.hlsl.
-#define NUM_OBSTACLES 3
+#define NUM_OBSTACLES 2
 
 // Number of directional light sources.
 // To add a new light: bump this and add an entry to the lightDirs/lightColors
