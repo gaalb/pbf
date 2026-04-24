@@ -51,8 +51,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
     if (fountainEnabled) {
         float3 extent = boxMax - boxMin;
-        if (pos.x > boxMax.x - extent.x * 0.05 &&
-            pos.z > boxMax.z - extent.z * 0.05 &&
+        float3 center = (boxMin + boxMax) * 0.5;
+        if (abs(pos.x - center.x) < extent.x * 0.05 &&
+            abs(pos.z - center.z) < extent.z * 0.05 &&
             pos.y < boxMin.y + extent.y * 0.3)
             force.y += 250.0;
     }
