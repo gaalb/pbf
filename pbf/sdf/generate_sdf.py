@@ -37,6 +37,9 @@ import struct
 import numpy as np
 import trimesh
 import trimesh.proximity
+from tqdm import tqdm
+
+_CHUNK = 1 << 16   # 65 536 query points per batch — keeps peak temp alloc ≈ 200 MB
 
 
 def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_factor: float) -> None:
@@ -87,13 +90,22 @@ def generate_sdf(mesh_path: str, output_path: str, resolution: int, padding_fact
     ZZ, YY, XX = np.meshgrid(zs, ys, xs, indexing='ij')        # each shape (nz, ny, nx)
     query_points = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)  # (N^3, 3)
 
+    total_pts = len(query_points)
     print(f"Computing SDF for {N}^3 = {N**3:,} query points...")
 
-    # Unsigned distances + closest surface points via BVH query (fast, O(n log n))
-    closest_pts, distances, _ = trimesh.proximity.closest_point(mesh, query_points)
+    closest_pts = np.empty((total_pts, 3), dtype=np.float64)
+    distances   = np.empty(total_pts,      dtype=np.float64)
+    inside      = np.empty(total_pts,      dtype=bool)
 
-    # Sign: True = inside the solid = negative SDF value
-    inside = mesh.contains(query_points)
+    with tqdm(total=total_pts, desc="  Computing", unit="vox", unit_scale=True) as pbar:
+        for lo in range(0, total_pts, _CHUNK):
+            hi    = min(lo + _CHUNK, total_pts)
+            chunk = query_points[lo:hi]
+            cp, d, _ = trimesh.proximity.closest_point(mesh, chunk)
+            closest_pts[lo:hi] = cp
+            distances[lo:hi]   = d
+            inside[lo:hi]      = mesh.contains(chunk)
+            pbar.update(hi - lo)
 
     sdf_values = np.where(inside, -distances, distances).astype(np.float32)
 
